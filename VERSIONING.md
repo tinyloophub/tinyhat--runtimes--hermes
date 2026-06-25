@@ -70,13 +70,32 @@ curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--herm
    GitHub Latest marker and move `channels/latest` to the same commit.
 4. LTS is an operator decision. Move `channels/lts` only after the final release
    has enough confidence to become the conservative default.
+5. Additional channel branches must use `channels/<name>`, where `<name>` is a
+   short lowercase operator-facing name. Document why the channel exists before
+   making it a Computer creation option.
 
 Channel branch update example:
 
 ```bash
+TAG=vX.Y.Z
+CHANNEL=latest
 git fetch origin main --tags
-git checkout -B channels/latest vX.Y.Z
-git push origin channels/latest --force-with-lease
+gh release view "$TAG" \
+  --repo tinyloophub/tinyhat--runtimes--hermes \
+  --json tagName,name,isPrerelease,isDraft,isLatest
+git checkout -B "channels/$CHANNEL" "$TAG"
+git push origin "channels/$CHANNEL" --force-with-lease
 ```
 
-Use the same shape for `channels/lts` when promoting an LTS final.
+For `channels/latest`, also mark the GitHub release as Latest:
+
+```bash
+gh release edit "$TAG" \
+  --repo tinyloophub/tinyhat--runtimes--hermes \
+  --latest \
+  --prerelease=false \
+  --draft=false
+```
+
+For `channels/lts` or any other channel, leave the GitHub Latest marker alone
+unless the same tag is also being promoted to `channels/latest`.

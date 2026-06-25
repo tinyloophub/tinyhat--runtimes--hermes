@@ -56,7 +56,12 @@ This repo releases the Tinyhat Hermes runtime package itself.
 2. Cut an RC once the dev loop is stable enough for promotion review.
 3. Cut a final `vX.Y.Z` tag after review.
 4. Move `channels/latest` to the final when it should be the fast-moving
-   default.
+   default. Before moving the branch, run `gh release edit "$TAG" --latest
+   --prerelease=false --draft=false` so the GitHub marker matches the channel.
 5. Move `channels/lts` only when that final should be the conservative default.
+6. For any other channel, use `channels/<name>` with a short lowercase
+   operator-facing name. Move it with the same `git checkout -B` and
+   `git push origin ... --force-with-lease` shape, and do not change the GitHub
+   Latest marker unless the same tag is also promoted to `channels/latest`.
 
 Read `VERSIONING.md` before changing this flow.
