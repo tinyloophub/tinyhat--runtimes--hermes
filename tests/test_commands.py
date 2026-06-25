@@ -99,6 +99,7 @@ class CommandTests(TestCase):
             self.assertEqual(
                 staged["target_ref"], "v0.20.0-dev.20260625T173000Z.smoke"
             )
+            self.assertEqual(staged["activation"], "requires_activate_update")
             self.assertEqual(
                 ctx.staged_version(), "v0.20.0-dev.20260625T173000Z.smoke"
             )

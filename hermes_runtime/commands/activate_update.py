@@ -5,6 +5,18 @@ What it does:
     to exit after reporting success. The process manager then restarts it, and
     startup moves the staged version into ``current``.
 
+Update flow map:
+    [pick target release]
+        -> check_update     look only; writes updates/last_check.json
+        -> stage_update     prepare selected ref; current runtime keeps running
+        -> activate_update  request tinyhat-hermes-runtime.service restart
+        -> service startup  promote staged ref into current/VERSION
+
+    This command is the switch step. After its result is reported, the tinyhat
+    Hermes runtime service exits, systemd restarts that service, and startup
+    promotes staged -> current. It does not reboot the VPS and does not require
+    restarting the Hermes framework separately.
+
 When to use it:
     Use this from Hat admin only after ``stage_update`` or another safe staging
     path has prepared a version you want to run.

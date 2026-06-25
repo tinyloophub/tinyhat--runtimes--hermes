@@ -5,6 +5,17 @@ What it does:
     commit currently installed on the Computer, writes the latest check result
     to local state, and reports the result to the platform update-check API.
 
+Update flow map:
+    [pick target release]
+        -> check_update     look only; writes updates/last_check.json
+        -> stage_update     prepare selected ref; current runtime keeps running
+        -> activate_update  request tinyhat-hermes-runtime.service restart
+        -> service startup  promote staged ref into current/VERSION
+
+    The new version is used after the tinyhat Hermes runtime service restarts.
+    Activating does not reboot the VPS and does not require restarting the
+    Hermes framework separately.
+
 When to use it:
     Use this from Hat admin when you want an immediate answer instead of
     waiting for the once-a-day scheduled update check. LTS/latest checks should

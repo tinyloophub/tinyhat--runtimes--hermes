@@ -5,6 +5,17 @@ What it does:
     installed commit sha when known, any staged update marker, and the most
     recent update-check result.
 
+Update flow map:
+    [pick target release]
+        -> check_update     look only; writes updates/last_check.json
+        -> stage_update     prepare selected ref; current runtime keeps running
+        -> activate_update  request tinyhat-hermes-runtime.service restart
+        -> service startup  promote staged ref into current/VERSION
+
+    This command can be run at any point in the flow. It tells you what is
+    current now, what is staged for the next runtime-service restart, and what
+    the latest update check found.
+
 When to use it:
     Use this from Hat admin before or after staging an update to see what is
     currently running and what is ready to activate on restart.

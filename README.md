@@ -146,8 +146,60 @@ it.
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, and the last update-check result. | Reads state files only. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
-| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes a staged version marker. | Writes `staged/VERSION` under runtime state. |
+| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes staged update metadata. | Writes `staged/VERSION` and `staged/metadata.json`. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
+
+## How runtime updates work
+
+The update path is deliberately two-step so a running Computer does not change
+code while work is in progress. Discovery, preparation, and activation are
+separate.
+
+```text
+Operator or schedule
+        |
+        v
+check_update
+  - compares current/VERSION and current/COMMIT_SHA with the selected target
+  - writes updates/last_check.json
+  - reports the result to the platform
+  - does not download, stage, activate, or restart anything
+        |
+        v
+stage_update
+  - prepares the exact selected ref
+  - writes staged/VERSION and staged/metadata.json
+  - current/VERSION is unchanged, so the running runtime keeps using old code
+        |
+        v
+activate_update
+  - writes ACTIVATE_ON_RESTART
+  - reports command success to the platform
+  - asks only tinyhat-hermes-runtime.service to exit
+        |
+        v
+systemd restarts tinyhat-hermes-runtime.service
+        |
+        v
+runtime startup promotes staged -> current
+  - current/VERSION now contains the staged ref
+  - current/COMMIT_SHA is updated when the staged metadata includes a sha
+  - staged files and ACTIVATE_ON_RESTART are cleared
+```
+
+The new runtime version is used after the **tinyhat Hermes runtime service**
+restarts and starts up again. A VPS reboot is not required. The activation
+command does not restart the Hermes framework separately; it restarts the small
+Tinyhat runtime process that sends heartbeats and executes the whitelisted
+commands in this repository.
+
+`update_status` is the read-only command to run before or after any step. It
+shows the currently installed runtime ref, any staged ref waiting for
+activation, and the latest update-check result.
+
+The daily scheduled update check runs only the discovery part (`check_update`).
+It reports that an update is available, but it does not stage or activate a new
+version by itself.
 
 ## Daily update checks
 
