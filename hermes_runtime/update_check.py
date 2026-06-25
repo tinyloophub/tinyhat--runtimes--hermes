@@ -151,22 +151,20 @@ async def run_update_check(
     if not target_ref:
         raise ValueError("check_update requires target_ref for custom update checks")
 
-    resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
-    if (
-        not resolved.get("ok")
-        and os.getenv("TINYHAT_LOCAL_DEV_TOKEN")
-        and channel == "custom"
-    ):
+    if os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
         resolved = {
             "ok": True,
             "status": "dev_ref_check",
             "sha": None,
             "html_url": None,
             "message": (
-                "GitHub lookup was unavailable in local dev, so the runtime "
-                "compared the requested ref with the installed ref."
+                "Local dev update checks compare the platform-supplied ref "
+                "with the installed ref without calling GitHub from the "
+                "runtime container."
             ),
         }
+    else:
+        resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
     current_sha = (current_sha or "").strip() or None
     current_matches_target = target_ref == current_version

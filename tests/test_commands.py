@@ -203,7 +203,7 @@ class CommandTests(TestCase):
                 "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
 
-    def test_check_update_uses_dev_ref_fallback_for_custom_targets(self) -> None:
+    def test_check_update_uses_dev_ref_check_for_local_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
@@ -217,12 +217,7 @@ class CommandTests(TestCase):
             with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
                 with patch(
                     "hermes_runtime.update_check._fetch_github_commit",
-                    return_value={
-                        "ok": False,
-                        "status": "unavailable",
-                        "http_status": 403,
-                        "message": "rate limited",
-                    },
+                    side_effect=AssertionError("local dev must not call GitHub"),
                 ):
                     checked = asyncio.run(
                         run_command(
@@ -230,17 +225,17 @@ class CommandTests(TestCase):
                             {
                                 "kind": "check_update",
                                 "spec": {
-                                    "channel": "custom",
-                                    "target_ref": "v0.20.0-dev.20260625T173000Z.next",
+                                    "channel": "lts",
+                                    "target_ref": "v0.0.1",
                                 },
                             },
                         )
                     )
 
             self.assertEqual(checked["status"], "dev_ref_check")
-            self.assertTrue(checked["update_available"])
+            self.assertFalse(checked["update_available"])
             self.assertEqual(checked["target_sha"], None)
-            self.assertIn("local dev", checked["message"])
+            self.assertIn("Local dev", checked["message"])
 
     def test_heartbeat_metrics_do_not_embed_update_check_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
