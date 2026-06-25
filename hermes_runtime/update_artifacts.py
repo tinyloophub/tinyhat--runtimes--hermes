@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -12,6 +13,9 @@ from urllib import parse, request
 
 
 REPO_SLUG = "tinyloophub/tinyhat--runtimes--hermes"
+BOOTSTRAP_FILENAME = "tinyhat_hermes_runtime_bootstrap.py"
+_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+_SAFE_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def install_prefix() -> Path:
@@ -33,6 +37,36 @@ def staged_package_dir(state_dir: Path) -> Path:
     return staged_runtime_dir(state_dir) / "hermes_runtime"
 
 
+def staged_bootstrap_file(state_dir: Path) -> Path:
+    return staged_runtime_dir(state_dir) / BOOTSTRAP_FILENAME
+
+
+def installed_bootstrap_file() -> Path:
+    return install_prefix() / BOOTSTRAP_FILENAME
+
+
+def _validate_download_ref(value: str, *, field: str) -> str:
+    clean = value.strip()
+    if not clean:
+        raise ValueError(f"{field} is required")
+    if "\\" in clean or clean.startswith("/") or ".." in Path(clean).parts:
+        raise ValueError(f"{field} contains an unsafe path segment")
+    if not _SAFE_REF_RE.fullmatch(clean):
+        raise ValueError(f"{field} contains unsupported characters")
+    return clean
+
+
+def _validate_target_sha(value: str | None) -> str | None:
+    if value is None:
+        return None
+    clean = value.strip()
+    if not clean:
+        return None
+    if not _SAFE_SHA_RE.fullmatch(clean):
+        raise ValueError("target_sha must be a git commit sha")
+    return clean
+
+
 def _copy_package(source_root: Path, destination: Path) -> None:
     package = source_root / "hermes_runtime"
     if not package.is_dir():
@@ -41,6 +75,15 @@ def _copy_package(source_root: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(package, destination)
+
+
+def _copy_bootstrap(source_root: Path, destination: Path) -> bool:
+    bootstrap = source_root / BOOTSTRAP_FILENAME
+    if not bootstrap.is_file():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(bootstrap, destination)
+    return True
 
 
 def _safe_extract_tarball(archive_path: Path, destination: Path) -> None:
@@ -85,6 +128,8 @@ def prepare_staged_runtime(
     target_sha: str | None = None,
 ) -> dict[str, Any]:
     """Stage the target runtime package without touching the running package."""
+    target_ref = _validate_download_ref(target_ref, field="target_ref")
+    target_sha = _validate_target_sha(target_sha)
     staging_dir = staged_runtime_dir(state_dir)
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
@@ -94,12 +139,15 @@ def prepare_staged_runtime(
     if source_override:
         source_root = Path(source_override)
         _copy_package(source_root, staged_package_dir(state_dir))
+        bootstrap_staged = _copy_bootstrap(source_root, staged_bootstrap_file(state_dir))
         source = {"kind": "local_source", "path": str(source_root)}
     else:
         download_ref = target_sha or target_ref
+        _validate_download_ref(download_ref, field="download_ref")
         source_root = staging_dir / "source"
         _download_source_ref(download_ref, source_root)
         _copy_package(source_root, staged_package_dir(state_dir))
+        bootstrap_staged = _copy_bootstrap(source_root, staged_bootstrap_file(state_dir))
         source = {
             "kind": "github_tarball",
             "repo": REPO_SLUG,
@@ -111,6 +159,10 @@ def prepare_staged_runtime(
     return {
         "code_staged": True,
         "package_dir": str(staged_package_dir(state_dir)),
+        "bootstrap_staged": bootstrap_staged,
+        "bootstrap_file": (
+            str(staged_bootstrap_file(state_dir)) if bootstrap_staged else None
+        ),
         "source": source,
     }
 
@@ -151,10 +203,17 @@ def activate_staged_runtime_code(*, state_dir: Path) -> bool:
         shutil.rmtree(next_package)
     shutil.copytree(staged_package, next_package)
 
+    staged_bootstrap = staged_bootstrap_file(state_dir)
+    if staged_bootstrap.is_file():
+        bootstrap_next = prefix / f"{BOOTSTRAP_FILENAME}.next"
+        shutil.copy2(staged_bootstrap, bootstrap_next)
+
     if previous_package.exists():
         shutil.rmtree(previous_package)
     if target_package.exists():
         target_package.rename(previous_package)
     next_package.rename(target_package)
     shutil.rmtree(previous_package, ignore_errors=True)
+    if staged_bootstrap.is_file():
+        os.replace(prefix / f"{BOOTSTRAP_FILENAME}.next", installed_bootstrap_file())
     return True

@@ -24,6 +24,7 @@ from hermes_runtime.update_check import (
     scheduled_check_due,
 )
 from hermes_runtime.update_artifacts import activate_staged_runtime_code
+from hermes_runtime.update_artifacts import BOOTSTRAP_FILENAME
 from hermes_runtime.update_artifacts import staged_runtime_dir
 
 STATE_SCHEMA = "tinyhat_hermes_runtime_v1"
@@ -60,6 +61,10 @@ class RuntimeContext:
     @property
     def activation_marker(self) -> Path:
         return self.state_dir / "ACTIVATE_ON_RESTART"
+
+    @property
+    def activation_error_file(self) -> Path:
+        return self.state_dir / "updates" / "last_activation_error.json"
 
     def ensure_state(self) -> None:
         (self.state_dir / "current").mkdir(parents=True, exist_ok=True)
@@ -119,6 +124,7 @@ class RuntimeContext:
         if staged_runtime.exists():
             shutil.rmtree(staged_runtime, ignore_errors=True)
         self.activation_marker.unlink(missing_ok=True)
+        self.activation_error_file.unlink(missing_ok=True)
         return {"version": staged, "code_swapped": code_swapped}
 
 
@@ -134,21 +140,80 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     current_commit_sha = (
         ctx.current_commit_sha() if hasattr(ctx, "current_commit_sha") else None
     )
+    runtime = {
+        "schema": STATE_SCHEMA,
+        "mode": "local_dev",
+        "status": status,
+        "runtime_version": __version__,
+        "current_version": ctx.current_version(),
+        "current_commit_sha": current_commit_sha,
+        "staged_version": staged,
+        "pid": os.getpid(),
+        "uptime_seconds": int(time.monotonic() - ctx.started_at),
+        "updated_at_unix": int(time.time()),
+    }
+    activation_error = _read_activation_error(ctx)
+    if activation_error:
+        runtime["startup_activation_error"] = activation_error
     return {
         "runtime_generation": "tiny_runtime",
-        "hermes_runtime": {
-            "schema": STATE_SCHEMA,
-            "mode": "local_dev",
-            "status": status,
-            "runtime_version": __version__,
-            "current_version": ctx.current_version(),
-            "current_commit_sha": current_commit_sha,
-            "staged_version": staged,
-            "pid": os.getpid(),
-            "uptime_seconds": int(time.monotonic() - ctx.started_at),
-            "updated_at_unix": int(time.time()),
-        },
+        "hermes_runtime": runtime,
     }
+
+
+def _read_activation_error(ctx: RuntimeContext) -> dict[str, Any] | None:
+    activation_error_file = getattr(ctx, "activation_error_file", None)
+    if activation_error_file is None:
+        return None
+    try:
+        payload = json.loads(activation_error_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _record_activation_error(ctx: RuntimeContext, exc: Exception) -> dict[str, Any]:
+    payload = {
+        "message": str(exc),
+        "failure_code": exc.__class__.__name__,
+        "recorded_at": utc_now_iso(),
+        "traceback": traceback.format_exc(limit=3),
+    }
+    ctx.activation_error_file.parent.mkdir(parents=True, exist_ok=True)
+    ctx.activation_error_file.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return payload
+
+
+def _safe_activate_staged_on_startup(ctx: RuntimeContext) -> dict[str, Any] | None:
+    try:
+        return ctx.activate_staged_on_startup()
+    except Exception as exc:  # noqa: BLE001 - startup must reach heartbeat.
+        payload = _record_activation_error(ctx, exc)
+        print(
+            f"staged runtime activation failed: {payload['failure_code']}: {payload['message']}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
+
+def _exec_args_after_code_swap() -> list[str]:
+    bootstrap = (os.getenv("TINYHAT_RUNTIME_BOOTSTRAP") or "").strip()
+    if bootstrap:
+        return [sys.executable, bootstrap]
+    if sys.argv and Path(sys.argv[0]).name == BOOTSTRAP_FILENAME:
+        return [sys.executable, sys.argv[0], *sys.argv[1:]]
+    return [sys.executable, "-m", "hermes_runtime.main"]
+
+
+def _reexec_after_code_swap(activated: dict[str, Any] | None) -> None:
+    if not activated or not activated.get("code_swapped"):
+        return
+    print("runtime code updated; re-executing process", flush=True)
+    os.execv(sys.executable, _exec_args_after_code_swap())
 
 
 async def _report_command_result(
@@ -326,15 +391,13 @@ async def run() -> int:
         started_at=time.monotonic(),
         computer_id=computer_id,
     )
-    activated = ctx.activate_staged_on_startup()
+    activated = _safe_activate_staged_on_startup(ctx)
     if activated:
         print(
             f"activated staged runtime version {activated['version']}",
             flush=True,
         )
-        if activated.get("code_swapped"):
-            print("runtime code updated; re-executing process", flush=True)
-            os.execv(sys.executable, [sys.executable, "-m", "hermes_runtime.main"])
+        _reexec_after_code_swap(activated)
 
     while True:
         try:

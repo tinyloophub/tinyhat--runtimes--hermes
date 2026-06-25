@@ -8,6 +8,9 @@
 - Fetch staged updates by immutable `target_sha` when the platform provides
   one, reject unsafe archive paths, and recover interrupted package swaps on
   startup.
+- Run the service through an import-safe bootstrap outside the runtime package
+  and report startup activation failures through heartbeat/update status
+  instead of crash-looping silently.
 - Make Docker builds record the selected runtime ref instead of always
   recording `local-dev`.
 

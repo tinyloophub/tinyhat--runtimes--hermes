@@ -41,7 +41,16 @@ class InstallScriptTests(TestCase):
             self.assertEqual((prefix / "INSTALL_REF").read_text().strip(), ref)
             self.assertEqual((state_dir / "current" / "VERSION").read_text().strip(), ref)
             self.assertTrue((prefix / "hermes_runtime" / "main.py").is_file())
+            self.assertTrue(
+                (prefix / "tinyhat_hermes_runtime_bootstrap.py").is_file()
+            )
             self.assertTrue((prefix / "bin" / "tinyhat-hermes-runtime").is_file())
+            self.assertIn(
+                "tinyhat_hermes_runtime_bootstrap.py",
+                (prefix / "bin" / "tinyhat-hermes-runtime").read_text(
+                    encoding="utf-8"
+                ),
+            )
             self.assertTrue((state_dir).is_dir())
             expected_sha = subprocess.run(
                 ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD"],

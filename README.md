@@ -59,7 +59,8 @@ The foundation installer does this:
 
 1. Downloads this repo at the requested ref, unless `--source-dir` points at a
    local checkout.
-2. Copies the runtime Python package into `/opt/tinyhat-hermes-runtime`.
+2. Copies the runtime Python package and import-safe bootstrap into
+   `/opt/tinyhat-hermes-runtime`.
 3. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.
 4. Writes runtime state under `/var/lib/tinyhat-hermes-runtime`.
 5. Records the installed ref in `current/VERSION` and, when it can resolve one,
@@ -143,10 +144,10 @@ it.
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. |
-| `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, and the last update-check result. | Reads state files only. |
+| `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, startup activation errors, and the last update-check result. | Reads state files only. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
-| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, and a staged `staged/runtime/hermes_runtime` package. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
+| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
 
@@ -189,6 +190,7 @@ systemd restarts tinyhat-hermes-runtime.service
         v
 runtime startup promotes staged -> current
   - staged runtime package code replaces the installed hermes_runtime package
+  - the small import-safe bootstrap is replaced when the staged release has one
   - current/VERSION now contains the staged ref
   - current/COMMIT_SHA is updated when the staged metadata includes a sha
   - staged files and ACTIVATE_ON_RESTART are cleared
@@ -200,6 +202,14 @@ restarts and starts up again. A VPS reboot is not required. The activation
 command does not restart the Hermes framework separately; it restarts the small
 Tinyhat runtime process that sends heartbeats and executes the whitelisted
 commands in this repository.
+
+The launcher runs `tinyhat_hermes_runtime_bootstrap.py`, a tiny import-safe
+bootstrap outside the `hermes_runtime` package. If a process is interrupted
+between moving `hermes_runtime` to `.previous` and moving `.next` into place,
+the next start repairs that package directory before importing runtime code.
+If activation still fails, the process keeps heartbeating and records
+`updates/last_activation_error.json`; `update_status` and heartbeat metrics can
+surface that error from Hat admin.
 
 `update_status` is the read-only command to run before or after any step. It
 shows the currently installed runtime ref, any staged ref waiting for

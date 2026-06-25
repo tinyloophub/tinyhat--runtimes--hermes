@@ -67,6 +67,17 @@ def _activation_state(ctx: Any) -> str:
     return "requires_activate_update"
 
 
+def _read_activation_error(ctx: Any) -> dict[str, Any] | None:
+    activation_error_file = getattr(ctx, "activation_error_file", None)
+    if activation_error_file is None:
+        return None
+    try:
+        payload = json.loads(activation_error_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     staged_version = ctx.staged_version()
     staged_metadata = _read_staged_metadata(ctx)
@@ -92,5 +103,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "current_commit_sha": ctx.current_commit_sha(),
         "staged_version": staged_version,
         "ready_updates": ready_updates,
+        "startup_activation_error": _read_activation_error(ctx),
         "last_update_check": read_last_result(ctx.state_dir),
     }

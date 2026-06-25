@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -21,6 +22,8 @@ from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
     RuntimeContext,
     _heartbeat_metrics,
+    _reexec_after_code_swap,
+    _safe_activate_staged_on_startup,
     _run_one_command,
     _scheduled_update_check,
 )
@@ -29,9 +32,13 @@ from hermes_runtime.update_artifacts import (  # noqa: E402
     _safe_extract_tarball,
     activate_staged_runtime_code,
     prepare_staged_runtime,
+    staged_bootstrap_file,
     staged_package_dir,
 )
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
+from tinyhat_hermes_runtime_bootstrap import (  # noqa: E402
+    recover_interrupted_package_swap as bootstrap_recover_interrupted_package_swap,
+)
 
 
 class FakePlatform:
@@ -88,6 +95,10 @@ class CommandTests(TestCase):
             )
             (source_root / "hermes_runtime" / "commands" / "__init__.py").write_text(
                 "COMMAND_MODULES = {}\n",
+                encoding="utf-8",
+            )
+            (source_root / "tinyhat_hermes_runtime_bootstrap.py").write_text(
+                "BOOTSTRAP = True\n",
                 encoding="utf-8",
             )
             ctx = SimpleNamespace(
@@ -165,6 +176,10 @@ class CommandTests(TestCase):
                 "COMMAND_MODULES = {}\n",
                 encoding="utf-8",
             )
+            (source_root / "tinyhat_hermes_runtime_bootstrap.py").write_text(
+                "BOOTSTRAP = True\n",
+                encoding="utf-8",
+            )
             ctx = RuntimeContext(
                 platform=FakePlatform(),
                 state_dir=state_dir,
@@ -194,6 +209,9 @@ class CommandTests(TestCase):
             self.assertTrue(
                 (install_prefix / "hermes_runtime" / "new_command.py").is_file()
             )
+            self.assertTrue(
+                (install_prefix / "tinyhat_hermes_runtime_bootstrap.py").is_file()
+            )
             self.assertEqual(ctx.current_version(), "v0.0.3")
             self.assertFalse(staged_package_dir(state_dir).exists())
 
@@ -220,6 +238,24 @@ class CommandTests(TestCase):
                 (install_prefix / "hermes_runtime" / "old_runtime.py").is_file()
             )
             self.assertFalse(previous_package.exists())
+
+    def test_external_bootstrap_recovers_before_package_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_prefix = root / "install"
+            next_package = install_prefix / "hermes_runtime.next"
+            next_package.mkdir(parents=True)
+            (next_package / "new_runtime.py").write_text(
+                "NEW = True\n",
+                encoding="utf-8",
+            )
+
+            bootstrap_recover_interrupted_package_swap(install_prefix)
+
+            self.assertTrue(
+                (install_prefix / "hermes_runtime" / "new_runtime.py").is_file()
+            )
+            self.assertFalse(next_package.exists())
 
     def test_safe_tarball_extraction_rejects_escape_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,6 +316,53 @@ class CommandTests(TestCase):
             self.assertEqual(staged["source"]["download_ref"], target_sha)
             self.assertEqual(staged["source"]["target_sha"], target_sha)
             self.assertTrue((staged_package_dir(state_dir) / "__init__.py").is_file())
+
+    def test_prepare_staged_runtime_rejects_unsafe_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            with self.assertRaisesRegex(ValueError, "unsafe path"):
+                prepare_staged_runtime(
+                    state_dir=state_dir,
+                    target_ref="../main",
+                    target_sha=None,
+                )
+            with self.assertRaisesRegex(ValueError, "target_sha"):
+                prepare_staged_runtime(
+                    state_dir=state_dir,
+                    target_ref="v0.0.3",
+                    target_sha="not a sha",
+                )
+
+    def test_prepare_staged_runtime_stages_bootstrap_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            source_root = root / "source"
+            (source_root / "hermes_runtime").mkdir(parents=True)
+            (source_root / "hermes_runtime" / "__init__.py").write_text(
+                '__version__ = "0.0.3"\n',
+                encoding="utf-8",
+            )
+            (source_root / "tinyhat_hermes_runtime_bootstrap.py").write_text(
+                "BOOTSTRAP = True\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": str(source_root)},
+            ):
+                staged = prepare_staged_runtime(
+                    state_dir=state_dir,
+                    target_ref="v0.0.3",
+                    target_sha=None,
+                )
+
+            self.assertTrue(staged["bootstrap_staged"])
+            self.assertEqual(
+                Path(staged["bootstrap_file"]),
+                staged_bootstrap_file(state_dir),
+            )
 
     def test_restart_runtime_service_requests_restart(self) -> None:
         ctx = SimpleNamespace(restart_requested=False)
@@ -736,6 +819,51 @@ class CommandTests(TestCase):
             metrics = _heartbeat_metrics(ctx, status="running")
 
             self.assertNotIn("update_check", metrics["hermes_runtime"])
+
+    def test_startup_activation_failure_is_recorded_for_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+
+            class BrokenActivationContext(SimpleNamespace):
+                @property
+                def activation_error_file(self) -> Path:
+                    return state_dir / "updates" / "last_activation_error.json"
+
+                def activate_staged_on_startup(self) -> dict[str, Any] | None:
+                    raise RuntimeError("copy failed")
+
+            ctx = BrokenActivationContext(
+                state_dir=state_dir,
+                started_at=0.0,
+                current_version=lambda: "v0.0.2",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: "v0.0.3",
+            )
+
+            activated = _safe_activate_staged_on_startup(ctx)
+            metrics = _heartbeat_metrics(ctx, status="running")
+
+            self.assertIsNone(activated)
+            self.assertEqual(
+                metrics["hermes_runtime"]["startup_activation_error"]["failure_code"],
+                "RuntimeError",
+            )
+
+    def test_reexec_after_code_swap_uses_bootstrap_when_configured(self) -> None:
+        calls: list[tuple[str, list[str]]] = []
+
+        def fake_execv(executable: str, args: list[str]) -> None:
+            calls.append((executable, args))
+            raise RuntimeError("stop")
+
+        with patch.dict(
+            "os.environ",
+            {"TINYHAT_RUNTIME_BOOTSTRAP": "/opt/tinyhat-hermes-runtime/bootstrap.py"},
+        ), patch("hermes_runtime.main.os.execv", side_effect=fake_execv):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                _reexec_after_code_swap({"version": "v0.0.3", "code_swapped": True})
+
+        self.assertEqual(calls[0][1][1], "/opt/tinyhat-hermes-runtime/bootstrap.py")
 
     def test_scheduled_update_check_due_once_after_configured_local_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
