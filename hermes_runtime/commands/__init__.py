@@ -14,6 +14,7 @@ COMMAND_MODULES = {
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
+    "restart_runtime_service": "hermes_runtime.commands.restart_runtime_service",
 }
 
 

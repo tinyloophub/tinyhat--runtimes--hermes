@@ -7,10 +7,11 @@ What it does:
 
 Update flow map:
     [pick target release]
-        -> check_update     look only; writes updates/last_check.json
-        -> stage_update     prepare selected ref; current runtime keeps running
-        -> activate_update  request tinyhat-hermes-runtime.service restart
-        -> service startup  promote staged ref into current/VERSION
+        -> check_update             look only; writes updates/last_check.json
+        -> stage_update             prepare selected ref; current runtime keeps running
+        -> activate_update          mark staged ref and request service restart
+        -> restart_runtime_service  optional plain restart; no staging changes
+        -> service startup          promote staged ref into current/VERSION
 
     The new version is used after the tinyhat Hermes runtime service restarts.
     Activating does not reboot the VPS and does not require restarting the
