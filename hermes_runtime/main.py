@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -14,6 +15,7 @@ from typing import Any
 from hermes_runtime import __version__
 from hermes_runtime.client import PlatformClient, PlatformError
 from hermes_runtime.commands import run_command
+from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.update_check import (
     mark_scheduled_check_started,
     run_update_check,
@@ -31,6 +33,7 @@ class RuntimeContext:
     platform: PlatformClient
     state_dir: Path
     started_at: float
+    computer_id: str = "local-dev"
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
 
@@ -39,8 +42,16 @@ class RuntimeContext:
         return self.state_dir / "current" / "VERSION"
 
     @property
+    def current_commit_file(self) -> Path:
+        return self.state_dir / "current" / "COMMIT_SHA"
+
+    @property
     def staged_version_file(self) -> Path:
         return self.state_dir / "staged" / "VERSION"
+
+    @property
+    def staged_metadata_file(self) -> Path:
+        return self.state_dir / "staged" / "metadata.json"
 
     @property
     def activation_marker(self) -> Path:
@@ -62,6 +73,12 @@ class RuntimeContext:
         self.ensure_state()
         return self.current_version_file.read_text(encoding="utf-8").strip()
 
+    def current_commit_sha(self) -> str | None:
+        if not self.current_commit_file.exists():
+            return None
+        value = self.current_commit_file.read_text(encoding="utf-8").strip()
+        return value or None
+
     def staged_version(self) -> str | None:
         if not self.staged_version_file.exists():
             return None
@@ -77,7 +94,22 @@ class RuntimeContext:
             self.activation_marker.unlink(missing_ok=True)
             return None
         self.current_version_file.write_text(staged + "\n", encoding="utf-8")
+        staged_sha = None
+        if self.staged_metadata_file.exists():
+            try:
+                metadata = json.loads(
+                    self.staged_metadata_file.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+            if isinstance(metadata, dict):
+                staged_sha = str(metadata.get("target_sha") or "").strip() or None
+        if staged_sha:
+            self.current_commit_file.write_text(staged_sha + "\n", encoding="utf-8")
+        else:
+            self.current_commit_file.unlink(missing_ok=True)
         self.staged_version_file.unlink(missing_ok=True)
+        self.staged_metadata_file.unlink(missing_ok=True)
         self.activation_marker.unlink(missing_ok=True)
         return staged
 
@@ -91,6 +123,9 @@ def _env(name: str, default: str | None = None) -> str:
 
 def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     staged = ctx.staged_version()
+    current_commit_sha = (
+        ctx.current_commit_sha() if hasattr(ctx, "current_commit_sha") else None
+    )
     return {
         "runtime_generation": "tiny_runtime",
         "hermes_runtime": {
@@ -99,6 +134,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
             "status": status,
             "runtime_version": __version__,
             "current_version": ctx.current_version(),
+            "current_commit_sha": current_commit_sha,
             "staged_version": staged,
             "pid": os.getpid(),
             "uptime_seconds": int(time.monotonic() - ctx.started_at),
@@ -127,7 +163,7 @@ async def _report_command_result(
         "result": result,
     }
     await ctx.platform.post_json(
-        "/hapi/v1/computers/local-dev/runtime-command/result",
+        context_computer_api_path(ctx, "runtime-command/result"),
         {"result": payload},
     )
 
@@ -174,15 +210,20 @@ def _consume_update_check_task(ctx: RuntimeContext) -> None:
 
 
 async def _scheduled_update_check(ctx: RuntimeContext) -> dict[str, Any]:
+    due, _config, date_key = scheduled_check_due(state_dir=ctx.state_dir)
+    if not due:
+        return {"status": "skipped", "reason": "not_due"}
     result = await run_update_check(
         state_dir=ctx.state_dir,
         current_version=ctx.current_version(),
+        current_sha=ctx.current_commit_sha(),
         reason="scheduled",
     )
     await ctx.platform.post_json(
-        "/hapi/v1/computers/local-dev/update-check-results/v1",
+        context_computer_api_path(ctx, "update-check-results/v1"),
         {"result": result},
     )
+    mark_scheduled_check_started(state_dir=ctx.state_dir, date_key=date_key)
     return result
 
 
@@ -193,14 +234,13 @@ def _maybe_start_scheduled_update_check(ctx: RuntimeContext) -> None:
     due, _config, date_key = scheduled_check_due(state_dir=ctx.state_dir)
     if not due:
         return
-    mark_scheduled_check_started(state_dir=ctx.state_dir, date_key=date_key)
     ctx.update_check_task = asyncio.create_task(_scheduled_update_check(ctx))
 
 
 async def _heartbeat_once(ctx: RuntimeContext) -> None:
     _maybe_start_scheduled_update_check(ctx)
     response = await ctx.platform.post_json(
-        "/hapi/v1/computers/local-dev/heartbeat",
+        context_computer_api_path(ctx, "heartbeat"),
         {"metrics": _heartbeat_metrics(ctx, status="running")},
     )
     envelope = response.get("command")
@@ -218,7 +258,13 @@ async def run() -> int:
     )
     interval = float(os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "30")
     state_dir = Path(os.getenv("TINYHAT_RUNTIME_STATE_DIR") or DEFAULT_STATE_DIR)
-    ctx = RuntimeContext(platform=platform, state_dir=state_dir, started_at=time.monotonic())
+    computer_id = (os.getenv("TINYHAT_COMPUTER_ID") or "local-dev").strip() or "local-dev"
+    ctx = RuntimeContext(
+        platform=platform,
+        state_dir=state_dir,
+        started_at=time.monotonic(),
+        computer_id=computer_id,
+    )
     activated = ctx.activate_staged_on_startup()
     if activated:
         print(f"activated staged runtime version {activated}", flush=True)

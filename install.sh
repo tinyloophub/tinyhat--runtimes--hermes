@@ -106,6 +106,28 @@ need_cmd() {
 need_cmd python3
 need_cmd install
 
+resolve_ref_sha() {
+  local ref="$1"
+  python3 - "$REPO_SLUG" "$ref" <<'PY' || true
+import json
+import sys
+from urllib import error, parse, request
+
+repo = sys.argv[1]
+ref = sys.argv[2]
+url = f"https://api.github.com/repos/{repo}/commits/{parse.quote(ref, safe='')}"
+req = request.Request(url, headers={"Accept": "application/vnd.github+json"})
+try:
+    with request.urlopen(req, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except (error.URLError, json.JSONDecodeError, TimeoutError):
+    raise SystemExit(0)
+sha = str(payload.get("sha") or "").strip() if isinstance(payload, dict) else ""
+if sha:
+    print(sha)
+PY
+}
+
 tmp_dir=""
 cleanup() {
   if [[ -n "$tmp_dir" && -d "$tmp_dir" ]]; then
@@ -132,11 +154,25 @@ if [[ ! -d "$src/hermes_runtime" ]]; then
   exit 1
 fi
 
+runtime_sha=""
+if command -v git >/dev/null 2>&1 && git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  runtime_sha="$(git -C "$src" rev-parse --verify HEAD 2>/dev/null || true)"
+fi
+if [[ -z "$runtime_sha" && -z "$source_dir" ]]; then
+  runtime_sha="$(resolve_ref_sha "$runtime_ref")"
+fi
+
 echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
-install -d "$prefix" "$prefix/bin" "$state_dir"
+install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
 printf '%s\n' "$runtime_ref" > "$prefix/INSTALL_REF"
+printf '%s\n' "$runtime_ref" > "$state_dir/current/VERSION"
+if [[ -n "$runtime_sha" ]]; then
+  printf '%s\n' "$runtime_sha" > "$state_dir/current/COMMIT_SHA"
+else
+  rm -f "$state_dir/current/COMMIT_SHA"
+fi
 
 cat > "$prefix/bin/tinyhat-hermes-runtime" <<EOF
 #!/usr/bin/env bash

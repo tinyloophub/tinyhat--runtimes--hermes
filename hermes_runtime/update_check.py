@@ -137,6 +137,7 @@ async def run_update_check(
     *,
     state_dir: Path,
     current_version: str,
+    current_sha: str | None = None,
     spec: dict[str, Any] | None = None,
     reason: str = "scheduled",
 ) -> dict[str, Any]:
@@ -151,11 +152,13 @@ async def run_update_check(
 
     resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
-    update_available = bool(
-        resolved.get("ok")
-        and target_ref != current_version
-        and (target_sha is None or target_sha != current_version)
-    )
+    current_sha = (current_sha or "").strip() or None
+    current_matches_target = target_ref == current_version
+    if target_sha and current_sha:
+        current_matches_target = target_sha == current_sha
+    elif target_sha:
+        current_matches_target = target_sha == current_version
+    update_available = bool(resolved.get("ok") and not current_matches_target)
     result = {
         "schema": "tinyhat_hermes_update_check_v1",
         "reason": reason,
@@ -166,6 +169,7 @@ async def run_update_check(
         "target_sha": target_sha,
         "target_url": resolved.get("html_url"),
         "current_version": current_version,
+        "current_sha": current_sha,
         "update_available": update_available,
         "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "schedule": {
