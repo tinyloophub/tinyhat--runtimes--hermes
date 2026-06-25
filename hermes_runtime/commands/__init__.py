@@ -11,6 +11,7 @@ COMMAND_MODULES = {
     "check_update": "hermes_runtime.commands.check_update",
     "update_status": "hermes_runtime.commands.update_status",
     "recent_commands": "hermes_runtime.commands.recent_commands",
+    "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
 }

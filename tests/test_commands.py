@@ -167,6 +167,72 @@ class CommandTests(TestCase):
             self.assertEqual(result["commands"][0]["command_id"], "cmd-1")
             self.assertEqual(report(state_dir=state_dir)["commands"][0]["kind"], "ping")
 
+    def test_setup_snapshot_reports_install_and_service_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = root / "opt" / "tinyhat-hermes-runtime"
+            state_dir = root / "var" / "lib" / "tinyhat-hermes-runtime"
+            (install_root / "env").mkdir(parents=True)
+            (state_dir / "current").mkdir(parents=True)
+            (install_root / "INSTALL_REF").write_text("channels/lts\n", encoding="utf-8")
+            (install_root / "env" / "runtime.env").write_text(
+                "TINYHAT_LOCAL_DEV_TOKEN=secret\n",
+                encoding="utf-8",
+            )
+            (state_dir / "current" / "VERSION").write_text("0.0.1\n", encoding="utf-8")
+            (state_dir / "current" / "COMMIT_SHA").write_text(
+                "a" * 40 + "\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(state_dir=state_dir)
+
+            def fake_systemctl(args: list[str]) -> dict:
+                if args[0] == "show":
+                    return {
+                        "systemctl_available": True,
+                        "ok": True,
+                        "stdout": (
+                            "ActiveState=active\n"
+                            "Restart=always\n"
+                            "Nice=-5\n"
+                            "OOMScoreAdjust=-900\n"
+                        ),
+                        "stderr": "",
+                    }
+                return {
+                    "systemctl_available": True,
+                    "ok": True,
+                    "stdout": "[Service]\nRestart=always\n",
+                    "stderr": "",
+                }
+
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_PREFIX": str(install_root)},
+            ), patch(
+                "hermes_runtime.commands.setup_snapshot._run_systemctl",
+                side_effect=fake_systemctl,
+            ):
+                snapshot = asyncio.run(
+                    run_command(ctx, {"kind": "setup_snapshot", "spec": {}})
+                )
+
+            self.assertEqual(snapshot["schema"], "tinyhat_hermes_setup_snapshot_v1")
+            self.assertEqual(
+                snapshot["install"]["install_ref"]["value"],
+                "channels/lts",
+            )
+            self.assertEqual(
+                snapshot["state"]["current_version"]["value"],
+                "0.0.1",
+            )
+            self.assertEqual(
+                snapshot["service"]["properties"]["OOMScoreAdjust"],
+                "-900",
+            )
+            self.assertEqual(snapshot["warnings"], [])
+            self.assertNotIn("secret", str(snapshot))
+
     def test_ledger_write_failure_still_reports_command_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             platform = FakePlatform()
@@ -363,7 +429,99 @@ class CommandTests(TestCase):
             self.assertEqual(checked["status"], "dev_ref_check")
             self.assertFalse(checked["update_available"])
             self.assertEqual(checked["target_sha"], None)
-            self.assertIn("Local dev", checked["message"])
+            self.assertIn("Local dev", checked["detail"])
+
+    def test_lts_check_does_not_treat_dev_tag_as_available_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+            )
+
+            with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "v0.0.2-dev.20260625T173000Z.smoke",
+                            },
+                        },
+                    )
+                )
+
+            self.assertFalse(checked["channel_eligible"])
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(
+                checked["target_ref"], "v0.0.2-dev.20260625T173000Z.smoke"
+            )
+
+    def test_check_update_rejects_older_final_tag_for_bare_current_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "0.0.2",
+                current_commit_sha=lambda: None,
+            )
+
+            with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "latest",
+                                "target_ref": "v0.0.1",
+                            },
+                        },
+                    )
+                )
+
+            self.assertTrue(checked["channel_eligible"])
+            self.assertFalse(checked["target_final_version_is_newer"])
+            self.assertFalse(checked["update_available"])
+
+    def test_check_update_platform_report_failure_is_nonfatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            platform.fail_posts = True
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+            )
+
+            with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "v0.0.2",
+                            },
+                        },
+                    )
+                )
+
+            self.assertEqual(checked["message"], "update check complete")
+            self.assertTrue(checked["update_available"])
+            self.assertFalse(checked["report_delivered"])
+            self.assertEqual(checked["report_error"], "post failed")
+            self.assertTrue((state_dir / "updates" / "last_check.json").is_file())
 
     def test_heartbeat_metrics_do_not_embed_update_check_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

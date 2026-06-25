@@ -1,4 +1,30 @@
-"""Stage a runtime version for activation on the next restart."""
+"""Stage a runtime version for activation on the next restart.
+
+What it does:
+    Records the selected runtime ref as the staged update. The running process
+    keeps using the current code until a later activation/restart step.
+
+When to use it:
+    Use this from Hat admin after choosing an exact runtime release that should
+    be prepared but not activated yet.
+
+Example input:
+    {
+      "kind": "stage_update",
+      "spec": {"channel": "custom", "target_ref": "v0.0.2", "target_version": "v0.0.2"}
+    }
+
+Example output:
+    {
+      "message": "staged v0.0.2",
+      "target_ref": "v0.0.2",
+      "activation": "on_restart"
+    }
+
+Side effects:
+    Writes ``staged/VERSION`` and ``staged/metadata.json`` under runtime state.
+    It does not change the running process.
+"""
 
 from __future__ import annotations
 

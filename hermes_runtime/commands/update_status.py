@@ -1,4 +1,28 @@
-"""Report current and locally staged runtime update state."""
+"""Report current and locally staged runtime update state.
+
+What it does:
+    Returns the runtime code version, the installed runtime release ref, the
+    installed commit sha when known, any staged update marker, and the most
+    recent update-check result.
+
+When to use it:
+    Use this from Hat admin before or after staging an update to see what is
+    currently running and what is ready to activate on restart.
+
+Example input:
+    {"kind": "update_status", "spec": {}}
+
+Example output:
+    {
+      "current_version": "v0.0.1",
+      "current_commit_sha": "abc1234",
+      "staged_version": "v0.0.2",
+      "ready_updates": [{"version": "v0.0.2", "activation": "on_restart"}]
+    }
+
+Side effects:
+    None. It reads local state files only.
+"""
 
 from __future__ import annotations
 
