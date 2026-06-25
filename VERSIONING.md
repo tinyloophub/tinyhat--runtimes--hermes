@@ -41,10 +41,29 @@ For development, generate an identifiable secondary release tag:
 python3 scripts/make_dev_release_tag.py --base v0.20.0 --suffix smoke
 ```
 
+To test code from a PR branch before the PR branch is merged, publish a dev
+prerelease from that branch:
+
+```bash
+python3 scripts/publish_dev_release.py --base v0.20.0 --suffix smoke --publish
+```
+
+The script tags the selected commit, pushes the tag, creates a GitHub
+Pre-release with Latest off, and prints the exact `release_ref` to use in the
+Hat admin Custom/dev Computer creation flow. The exact dev tag installer shape
+is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--hermes/vX.Y.Z-dev.YYYYMMDDTHHMMSSZ.suffix/install.sh \
+  | bash -s -- --ref vX.Y.Z-dev.YYYYMMDDTHHMMSSZ.suffix
+```
+
 ## Promotion rules
 
-1. Dev tags may be created often. Publish them as GitHub pre-releases with
-   Latest off. They never move `channels/latest` or `channels/lts`.
+1. Dev tags may be created often from any committed branch, including an open
+   PR branch before the PR branch is merged. Publish them as GitHub
+   pre-releases with Latest off. They never move `channels/latest` or
+   `channels/lts`.
 2. RC tags are for promotion review. Publish them as GitHub pre-releases with
    Latest off. They never move channel branches.
 3. Final tags are immutable. If the final is the active default, update the

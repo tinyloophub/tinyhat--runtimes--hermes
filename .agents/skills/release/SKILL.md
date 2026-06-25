@@ -39,7 +39,16 @@ This repo releases the Tinyhat Hermes runtime package itself.
 
 ## Lifecycle
 
-1. Cut secondary dev releases freely while testing local Computers.
+1. Cut secondary dev releases freely while testing local Computers. For a PR
+   branch that needs GitHub-backed testing before merge, run:
+
+   ```bash
+   python3 scripts/publish_dev_release.py --base vX.Y.Z --suffix smoke --publish
+   ```
+
+   Use the printed `release_ref` in Hat admin's Custom/dev Computer creation
+   or update flow. Dev releases are GitHub Pre-releases, Latest off, and never
+   move `channels/latest` or `channels/lts`.
 2. Cut an RC once the dev loop is stable enough for promotion review.
 3. Cut a final `vX.Y.Z` tag after review.
 4. Move `channels/latest` to the final when it should be the fast-moving

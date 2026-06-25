@@ -53,19 +53,18 @@ gh release create "$TAG" \
 Secondary development release:
 
 ```bash
-TAG=$(python3 scripts/make_dev_release_tag.py --base vX.Y.Z --suffix smoke --apply)
-git push origin "$TAG"
-gh release create "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --title "$TAG" \
-  --prerelease \
-  --latest=false \
-  --verify-tag \
-  --notes "Secondary dev runtime release for local Computer testing."
+python3 scripts/publish_dev_release.py --base vX.Y.Z --suffix smoke --publish
 ```
 
-If the tag is created by release automation, keep the `gh release create`
-marker flags the same.
+Use this directly on a PR branch when you need to test a runtime change from
+GitHub before the PR is merged. The script tags the selected commit, pushes the
+tag, creates a GitHub Pre-release with Latest off, and prints the exact
+`release_ref` for Hat admin's Custom/dev Computer creation flow.
+
+The same flow is also available through the manual `dev-release` GitHub Actions
+workflow once this workflow exists on the default branch. If the tag is created
+by other release automation, keep the GitHub marker flags the same: Pre-release
+on, Latest off, no channel branch movement.
 
 Promote a final release to latest:
 

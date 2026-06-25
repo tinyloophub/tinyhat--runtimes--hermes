@@ -18,7 +18,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Byte-compile scripts
-        run: python -m compileall -q scripts
+        run: python -m compileall -q scripts hermes_runtime
+      - name: Runtime unit tests
+        run: python -m unittest discover -s tests -v
       - name: Development skill adapters
         run: python3 scripts/check_dev_skills.py
       - name: Repository basics

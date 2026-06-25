@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "install.sh",
     ".github/CODEOWNERS",
     ".github/workflows/ci.yml",
+    ".github/workflows/dev-release.yml",
     "hermes_runtime/__init__.py",
     "hermes_runtime/client.py",
     "hermes_runtime/main.py",
@@ -31,7 +32,9 @@ REQUIRED_FILES = (
     "scripts/check_dev_skills.py",
     "scripts/check_repo_basics.py",
     "scripts/make_dev_release_tag.py",
+    "scripts/publish_dev_release.py",
     "tests/test_commands.py",
+    "tests/test_dev_release_script.py",
     "tests/test_install_script.py",
 )
 
@@ -76,6 +79,7 @@ def main() -> None:
         "`activate_update`",
         "## Update channels",
         "vX.Y.Z-dev.YYYYMMDDTHHMMSSZ",
+        "publish_dev_release.py",
         "channels/latest",
         "channels/lts",
     )
@@ -89,14 +93,29 @@ def main() -> None:
             fail(f"AGENTS.md missing phrase: {phrase}")
 
     versioning = read(root, "VERSIONING.md")
-    for phrase in ("Release lifecycle", "channels/latest", "channels/lts"):
+    for phrase in (
+        "Release lifecycle",
+        "before the PR branch is merged",
+        "channels/latest",
+        "channels/lts",
+    ):
         if phrase not in versioning:
             fail(f"VERSIONING.md missing phrase: {phrase}")
 
     release_skill = read(root, ".agents/skills/release/SKILL.md")
-    for phrase in ("secondary development releases", "channels/latest", "channels/lts"):
+    for phrase in (
+        "secondary development releases",
+        "publish_dev_release.py",
+        "channels/latest",
+        "channels/lts",
+    ):
         if phrase not in release_skill:
             fail(f".agents/skills/release/SKILL.md missing phrase: {phrase}")
+
+    dev_release_workflow = read(root, ".github/workflows/dev-release.yml")
+    for phrase in ("workflow_dispatch", "publish_dev_release.py", "GH_TOKEN"):
+        if phrase not in dev_release_workflow:
+            fail(f".github/workflows/dev-release.yml missing phrase: {phrase}")
 
     print("repo-basics: ok")
 

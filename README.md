@@ -61,13 +61,26 @@ Versions should be immutable Git tags shaped like `vX.Y.Z`.
 For development, secondary test releases use prerelease tags shaped
 `vX.Y.Z-dev.YYYYMMDDTHHMMSSZ[.suffix]`, for example
 `v0.20.0-dev.20260625T173000Z.smoke`. They should be published as GitHub
-pre-releases with the Latest marker off. The helper below prints a tag in that
-shape and can optionally create an annotated local tag:
+pre-releases with the Latest marker off. Dev releases may point at a PR branch
+commit, so you can test from GitHub without waiting for the PR to merge.
+
+The helper below prints a tag in that shape and can optionally create an
+annotated local tag:
 
 ```bash
 python3 scripts/make_dev_release_tag.py --base v0.20.0 --suffix smoke
 python3 scripts/make_dev_release_tag.py --base v0.20.0 --suffix smoke --apply
 ```
+
+To publish the current branch as a testable GitHub prerelease, run:
+
+```bash
+python3 scripts/publish_dev_release.py --base v0.20.0 --suffix smoke --publish
+```
+
+The script prints `release_ref=<tag>` and an exact installer command. Paste that
+tag into Hat admin's Custom/dev release field when creating or updating a local
+Hermes Computer.
 
 The runtime does not decide which tag is safe. It asks the platform for a target
 version/channel, stages that target, and only activates it after restart. This
