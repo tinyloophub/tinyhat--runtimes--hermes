@@ -123,6 +123,7 @@ class CommandTests(TestCase):
                 state_dir=state_dir,
                 staged_version_file=state_dir / "staged" / "VERSION",
                 staged_metadata_file=state_dir / "staged" / "metadata.json",
+                activation_marker=state_dir / "ACTIVATE_ON_RESTART",
                 current_version=lambda: "v0.0.1",
                 current_commit_sha=lambda: None,
                 staged_version=lambda: "v0.20.0-dev.20260625T173000Z.next",
@@ -139,6 +140,20 @@ class CommandTests(TestCase):
             self.assertEqual(
                 status["ready_updates"][0]["version"],
                 "v0.20.0-dev.20260625T173000Z.next",
+            )
+            self.assertEqual(
+                status["ready_updates"][0]["activation"],
+                "requires_activate_update",
+            )
+
+            ctx.activation_marker.write_text(
+                "v0.20.0-dev.20260625T173000Z.next\n",
+                encoding="utf-8",
+            )
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+            self.assertEqual(
+                status["ready_updates"][0]["activation"],
+                "after_runtime_restart",
             )
 
     def test_recent_commands_returns_local_ledger_report(self) -> None:
