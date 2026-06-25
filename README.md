@@ -47,3 +47,14 @@ installer.
 This seed only establishes the public runtime repository. The VM bootstrap,
 systemd units, platform heartbeat/binding loop, and Hermes-specific Computer
 assignment flow will land in later steps.
+
+## Development
+
+Run the repository basics checks before opening a pull request:
+
+```bash
+git diff --check
+python -m compileall -q scripts
+python3 scripts/check_dev_skills.py
+python3 scripts/check_repo_basics.py
+```
