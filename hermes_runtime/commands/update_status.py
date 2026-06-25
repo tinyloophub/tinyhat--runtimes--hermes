@@ -7,10 +7,11 @@ What it does:
 
 Update flow map:
     [pick target release]
-        -> check_update     look only; writes updates/last_check.json
-        -> stage_update     prepare selected ref; current runtime keeps running
-        -> activate_update  request tinyhat-hermes-runtime.service restart
-        -> service startup  promote staged ref into current/VERSION
+        -> check_update             look only; writes updates/last_check.json
+        -> stage_update             prepare selected ref; current runtime keeps running
+        -> activate_update          mark staged ref and request service restart
+        -> restart_runtime_service  optional plain restart; no staging changes
+        -> service startup          promote staged ref into current/VERSION
 
     This command can be run at any point in the flow. It tells you what is
     current now, what is staged, whether that staged ref still needs

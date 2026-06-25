@@ -141,19 +141,19 @@ it.
 | Command | File | Why it exists | Side effects |
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
-| `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. Calls `/hapi/v1/computers/local-dev/whoami`; the platform resolves the Computer from the local-dev bearer token. |
+| `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. |
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, and the last update-check result. | Reads state files only. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes staged update metadata. | Writes `staged/VERSION` and `staged/metadata.json`. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
+| `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
 
 ## How runtime updates work
 
-The update path is deliberately two-step so a running Computer does not change
-code while work is in progress. Discovery, preparation, and activation are
-separate.
+The update path keeps discovery, preparation, activation, and restart visible so
+a running Computer does not change code while work is in progress.
 
 ```text
 Operator or schedule
@@ -176,6 +176,11 @@ activate_update
   - writes ACTIVATE_ON_RESTART
   - reports command success to the platform
   - asks only tinyhat-hermes-runtime.service to exit
+  - this is normally enough to make the staged update take effect
+        |
+        |  restart_runtime_service is the optional manual restart lever:
+        |  it only asks the same service/process to exit, without changing
+        |  staged files or activation state.
         |
         v
 systemd restarts tinyhat-hermes-runtime.service
@@ -195,7 +200,9 @@ commands in this repository.
 
 `update_status` is the read-only command to run before or after any step. It
 shows the currently installed runtime ref, any staged ref waiting for
-activation, and the latest update-check result.
+activation, and the latest update-check result. `restart_runtime_service` is the
+manual service restart command when you need the runtime process to start again
+without staging or activating anything new.
 
 The daily scheduled update check runs only the discovery part (`check_update`).
 It reports that an update is available, but it does not stage or activate a new

@@ -116,6 +116,20 @@ class CommandTests(TestCase):
                 "v0.20.0-dev.20260625T173000Z.smoke",
             )
 
+    def test_restart_runtime_service_requests_restart(self) -> None:
+        ctx = SimpleNamespace(restart_requested=False)
+
+        result = asyncio.run(
+            run_command(ctx, {"kind": "restart_runtime_service", "spec": {}})
+        )
+
+        self.assertTrue(ctx.restart_requested)
+        self.assertEqual(result["message"], "runtime service restart requested")
+        self.assertEqual(
+            result["restart_target"], "tinyhat-hermes-runtime.service"
+        )
+        self.assertEqual(result["effect"], "after_command_result")
+
     def test_update_status_reports_current_and_staged_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
