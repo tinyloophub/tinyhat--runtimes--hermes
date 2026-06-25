@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_SLUG="tinyloophub/tinyhat--runtimes--hermes"
+DEFAULT_REF="channels/lts"
+DEFAULT_PREFIX="/opt/tinyhat-hermes-runtime"
+DEFAULT_STATE_DIR="/var/lib/tinyhat-hermes-runtime"
+
+runtime_ref="${TINYHAT_RUNTIME_REF:-$DEFAULT_REF}"
+prefix="${TINYHAT_RUNTIME_PREFIX:-$DEFAULT_PREFIX}"
+state_dir="${TINYHAT_RUNTIME_STATE_DIR:-$DEFAULT_STATE_DIR}"
+source_dir="${TINYHAT_RUNTIME_SOURCE_DIR:-}"
+platform_url="${TINYHAT_PLATFORM_URL:-}"
+computer_id="${TINYHAT_COMPUTER_ID:-}"
+local_dev_token="${TINYHAT_LOCAL_DEV_TOKEN:-}"
+install_systemd=1
+
+usage() {
+  cat <<'USAGE'
+Tinyhat Hermes runtime installer.
+
+Usage:
+  curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--hermes/channels/lts/install.sh | bash -s -- [options]
+
+Options:
+  --ref REF                 Runtime git ref to install. Defaults to channels/lts.
+  --channel lts|latest      Shortcut for channels/lts or channels/latest.
+  --source-dir PATH         Install from an already checked-out source tree.
+  --prefix PATH             Install destination. Defaults to /opt/tinyhat-hermes-runtime.
+  --state-dir PATH          Runtime state directory. Defaults to /var/lib/tinyhat-hermes-runtime.
+  --platform-url URL        Tinyhat platform URL written to the runtime env file.
+  --computer-id ID          Computer id written to the runtime env file.
+  --local-dev-token TOKEN   Local-dev bearer token written to the runtime env file.
+  --no-systemd              Do not install or restart the systemd unit.
+  -h, --help                Show this help.
+
+The installer installs only the Tinyhat runtime process. It does not install
+upstream Hermes Agent yet.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ref)
+      runtime_ref="${2:?--ref requires a value}"
+      shift 2
+      ;;
+    --channel)
+      case "${2:?--channel requires a value}" in
+        lts) runtime_ref="channels/lts" ;;
+        latest) runtime_ref="channels/latest" ;;
+        *)
+          echo "install.sh: --channel must be lts or latest" >&2
+          exit 2
+          ;;
+      esac
+      shift 2
+      ;;
+    --source-dir)
+      source_dir="${2:?--source-dir requires a value}"
+      shift 2
+      ;;
+    --prefix)
+      prefix="${2:?--prefix requires a value}"
+      shift 2
+      ;;
+    --state-dir)
+      state_dir="${2:?--state-dir requires a value}"
+      shift 2
+      ;;
+    --platform-url)
+      platform_url="${2:?--platform-url requires a value}"
+      shift 2
+      ;;
+    --computer-id)
+      computer_id="${2:?--computer-id requires a value}"
+      shift 2
+      ;;
+    --local-dev-token)
+      local_dev_token="${2:?--local-dev-token requires a value}"
+      shift 2
+      ;;
+    --no-systemd)
+      install_systemd=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "install.sh: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "install.sh: missing required command: $1" >&2
+    exit 1
+  }
+}
+
+need_cmd python3
+need_cmd install
+
+tmp_dir=""
+cleanup() {
+  if [[ -n "$tmp_dir" && -d "$tmp_dir" ]]; then
+    rm -rf "$tmp_dir"
+  fi
+}
+trap cleanup EXIT
+
+if [[ -n "$source_dir" ]]; then
+  src="$source_dir"
+else
+  need_cmd curl
+  need_cmd tar
+  tmp_dir="$(mktemp -d)"
+  src="$tmp_dir/src"
+  mkdir -p "$src"
+  tarball_url="https://codeload.github.com/$REPO_SLUG/tar.gz/$runtime_ref"
+  echo "install.sh: downloading Tinyhat Hermes runtime from $tarball_url"
+  curl -fsSL "$tarball_url" | tar -xz -C "$src" --strip-components=1
+fi
+
+if [[ ! -d "$src/hermes_runtime" ]]; then
+  echo "install.sh: hermes_runtime package not found in $src" >&2
+  exit 1
+fi
+
+echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
+install -d "$prefix" "$prefix/bin" "$state_dir"
+rm -rf "$prefix/hermes_runtime"
+cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
+printf '%s\n' "$runtime_ref" > "$prefix/INSTALL_REF"
+
+cat > "$prefix/bin/tinyhat-hermes-runtime" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PYTHONPATH="$prefix:\${PYTHONPATH:-}"
+export TINYHAT_RUNTIME_STATE_DIR="\${TINYHAT_RUNTIME_STATE_DIR:-$state_dir}"
+exec python3 -m hermes_runtime.main
+EOF
+chmod 0755 "$prefix/bin/tinyhat-hermes-runtime"
+
+env_dir="$prefix/env"
+install -d -m 0700 "$env_dir"
+env_file="$env_dir/runtime.env"
+umask 077
+{
+  printf 'TINYHAT_RUNTIME_REF=%q\n' "$runtime_ref"
+  printf 'TINYHAT_RUNTIME_STATE_DIR=%q\n' "$state_dir"
+  if [[ -n "$platform_url" ]]; then
+    printf 'TINYHAT_PLATFORM_URL=%q\n' "$platform_url"
+  fi
+  if [[ -n "$computer_id" ]]; then
+    printf 'TINYHAT_COMPUTER_ID=%q\n' "$computer_id"
+  fi
+  if [[ -n "$local_dev_token" ]]; then
+    printf 'TINYHAT_LOCAL_DEV_TOKEN=%q\n' "$local_dev_token"
+  fi
+} > "$env_file"
+chmod 0600 "$env_file"
+
+if [[ "$install_systemd" -eq 1 ]]; then
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v systemctl >/dev/null 2>&1; then
+    echo "install.sh: systemd unavailable; installed files only"
+  elif [[ "$(id -u)" != "0" ]]; then
+    echo "install.sh: systemd install requires root; rerun as root or pass --no-systemd" >&2
+    exit 1
+  else
+    service_env="/etc/tinyhat/hermes-runtime.env"
+    install -d -m 0700 /etc/tinyhat
+    cp "$env_file" "$service_env"
+    chmod 0600 "$service_env"
+    cat > /etc/systemd/system/tinyhat-hermes-runtime.service <<EOF
+[Unit]
+Description=Tinyhat Hermes Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$service_env
+ExecStart=$prefix/bin/tinyhat-hermes-runtime
+Restart=always
+RestartSec=2
+Nice=-5
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable --now tinyhat-hermes-runtime.service
+    echo "install.sh: systemd service tinyhat-hermes-runtime.service is enabled"
+  fi
+fi
+
+echo "install.sh: installed Tinyhat Hermes runtime into $prefix"

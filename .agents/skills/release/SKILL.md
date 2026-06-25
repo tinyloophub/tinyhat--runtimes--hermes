@@ -25,6 +25,25 @@ This repo releases the Tinyhat Hermes runtime package itself.
 
 ## Release Shape
 
-- Tags use `vX.Y.Z`.
+- Tags use:
+  - `vX.Y.Z-dev.YYYYMMDDTHHMMSSZ[.suffix]` for secondary development releases.
+  - `vX.Y.Z-rc.N` for promotion candidates.
+  - `vX.Y.Z` for final releases.
+- GitHub Pre-release is on for dev and RC tags; Latest is off for both.
+- Final releases may receive the GitHub Latest marker when promoted.
+- `channels/latest` and `channels/lts` are movable branch refs used by
+  Computer creation. They must point at final release commits, never dev or RC
+  tags.
 - The GitHub release notes should be public-safe and should name any required companion Tinyloop monorepo or upstream Hermes Agent PRs.
 - Do not publish a runtime that requires unavailable upstream Hermes behavior unless the release notes call out the dependency.
+
+## Lifecycle
+
+1. Cut secondary dev releases freely while testing local Computers.
+2. Cut an RC once the dev loop is stable enough for promotion review.
+3. Cut a final `vX.Y.Z` tag after review.
+4. Move `channels/latest` to the final when it should be the fast-moving
+   default.
+5. Move `channels/lts` only when that final should be the conservative default.
+
+Read `VERSIONING.md` before changing this flow.

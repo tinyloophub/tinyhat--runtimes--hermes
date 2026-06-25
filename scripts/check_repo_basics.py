@@ -11,14 +11,28 @@ from pathlib import Path
 REQUIRED_FILES = (
     "AGENTS.md",
     "CHANGELOG.md",
+    "Dockerfile",
     "LICENSE",
     "README.md",
     "RELEASING.md",
     "VERSION",
+    "VERSIONING.md",
+    "install.sh",
     ".github/CODEOWNERS",
     ".github/workflows/ci.yml",
+    "hermes_runtime/__init__.py",
+    "hermes_runtime/client.py",
+    "hermes_runtime/main.py",
+    "hermes_runtime/commands/__init__.py",
+    "hermes_runtime/commands/ping.py",
+    "hermes_runtime/commands/whoami.py",
+    "hermes_runtime/commands/stage_update.py",
+    "hermes_runtime/commands/activate_update.py",
     "scripts/check_dev_skills.py",
     "scripts/check_repo_basics.py",
+    "scripts/make_dev_release_tag.py",
+    "tests/test_commands.py",
+    "tests/test_install_script.py",
 )
 
 
@@ -53,7 +67,17 @@ def main() -> None:
     required_readme_phrases = (
         "tinyhat/runtimes/hermes",
         "tinyloophub/tinyhat--runtimes--hermes",
+        "raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--hermes/channels/lts/install.sh",
         "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+        "## Command whitelist",
+        "`ping`",
+        "`whoami`",
+        "`stage_update`",
+        "`activate_update`",
+        "## Update channels",
+        "vX.Y.Z-dev.YYYYMMDDTHHMMSSZ",
+        "channels/latest",
+        "channels/lts",
     )
     for phrase in required_readme_phrases:
         if phrase not in readme:
@@ -63,6 +87,16 @@ def main() -> None:
     for phrase in ("Official Interfaces Only", "platform_repos/runtimes/hermes"):
         if phrase not in agents:
             fail(f"AGENTS.md missing phrase: {phrase}")
+
+    versioning = read(root, "VERSIONING.md")
+    for phrase in ("Release lifecycle", "channels/latest", "channels/lts"):
+        if phrase not in versioning:
+            fail(f"VERSIONING.md missing phrase: {phrase}")
+
+    release_skill = read(root, ".agents/skills/release/SKILL.md")
+    for phrase in ("secondary development releases", "channels/latest", "channels/lts"):
+        if phrase not in release_skill:
+            fail(f".agents/skills/release/SKILL.md missing phrase: {phrase}")
 
     print("repo-basics: ok")
 
