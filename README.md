@@ -172,6 +172,11 @@ debugging and is reported through the platform update-check result API. It is
 not embedded into heartbeat metrics. Use the admin `check_update` command when
 you want to run the same check immediately from Hat admin.
 
+In the local Docker harness, a custom dev-release check can fall back to a
+simple requested-ref versus installed-ref comparison if GitHub's anonymous API
+is unavailable or rate-limited. Production update target resolution should use
+the platform's attested machine identity path instead of this local fallback.
+
 The installer records the installed runtime ref in `current/VERSION` and, when
 available, the resolved commit sha in `current/COMMIT_SHA`. Update checks compare
 the target commit against that local commit before reporting an update.
