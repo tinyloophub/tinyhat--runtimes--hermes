@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
+from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import _heartbeat_metrics, _scheduled_update_check  # noqa: E402
 from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
@@ -109,6 +110,58 @@ class CommandTests(TestCase):
                 ctx.activation_marker.read_text().strip(),
                 "v0.20.0-dev.20260625T173000Z.smoke",
             )
+
+    def test_update_status_reports_current_and_staged_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_version_file=state_dir / "staged" / "VERSION",
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: "v0.20.0-dev.20260625T173000Z.next",
+            )
+            ctx.staged_metadata_file.parent.mkdir(parents=True)
+            ctx.staged_metadata_file.write_text(
+                '{"target_ref":"v0.20.0-dev.20260625T173000Z.next","channel":"custom"}\n',
+                encoding="utf-8",
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            self.assertEqual(status["current_version"], "v0.0.1")
+            self.assertEqual(
+                status["ready_updates"][0]["version"],
+                "v0.20.0-dev.20260625T173000Z.next",
+            )
+
+    def test_recent_commands_returns_local_ledger_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            append_entry(
+                state_dir=state_dir,
+                command={
+                    "command_id": "cmd-1",
+                    "kind": "ping",
+                    "spec": {},
+                    "created_at": "2026-06-25T10:00:00Z",
+                },
+                status="applied",
+                phase="ping",
+                result={"message": "pong"},
+                started_at="2026-06-25T10:00:01Z",
+                completed_at="2026-06-25T10:00:02Z",
+            )
+            ctx = SimpleNamespace(state_dir=state_dir)
+
+            result = asyncio.run(
+                run_command(ctx, {"kind": "recent_commands", "spec": {"limit": 5}})
+            )
+
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["commands"][0]["command_id"], "cmd-1")
+            self.assertEqual(report(state_dir=state_dir)["commands"][0]["kind"], "ping")
 
     def test_check_update_writes_last_result_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

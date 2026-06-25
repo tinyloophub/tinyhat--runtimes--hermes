@@ -141,6 +141,8 @@ it.
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. Calls `/hapi/v1/computers/local-dev/whoami`; the platform resolves the Computer from the local-dev bearer token. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, reports the result to the platform update-check API, does not stage or activate code. |
+| `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, and the last update-check result. | Reads state files only. |
+| `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes a staged version marker. | Writes `staged/VERSION` under runtime state. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 
