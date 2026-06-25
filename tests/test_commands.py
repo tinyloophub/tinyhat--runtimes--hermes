@@ -17,11 +17,13 @@ sys.path.insert(0, str(ROOT))
 from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
+    RuntimeContext,
     _heartbeat_metrics,
     _run_one_command,
     _scheduled_update_check,
 )
 from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
+from hermes_runtime.update_artifacts import staged_package_dir  # noqa: E402
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
 
 
@@ -71,6 +73,16 @@ class CommandTests(TestCase):
     def test_update_is_staged_then_marked_for_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
+            source_root = state_dir / "source"
+            (source_root / "hermes_runtime" / "commands").mkdir(parents=True)
+            (source_root / "hermes_runtime" / "__init__.py").write_text(
+                '__version__ = "0.20.0-dev"\n',
+                encoding="utf-8",
+            )
+            (source_root / "hermes_runtime" / "commands" / "__init__.py").write_text(
+                "COMMAND_MODULES = {}\n",
+                encoding="utf-8",
+            )
             ctx = SimpleNamespace(
                 state_dir=state_dir,
                 restart_requested=False,
@@ -84,22 +96,28 @@ class CommandTests(TestCase):
                     else None
                 ),
             )
-            staged = asyncio.run(
-                run_command(
-                    ctx,
-                    {
-                        "kind": "stage_update",
-                        "spec": {
-                            "target_ref": "v0.20.0-dev.20260625T173000Z.smoke",
-                            "channel": "custom",
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": str(source_root)},
+            ):
+                staged = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "stage_update",
+                            "spec": {
+                                "target_ref": "v0.20.0-dev.20260625T173000Z.smoke",
+                                "channel": "custom",
+                            },
                         },
-                    },
+                    )
                 )
-            )
             self.assertEqual(
                 staged["target_ref"], "v0.20.0-dev.20260625T173000Z.smoke"
             )
             self.assertEqual(staged["activation"], "requires_activate_update")
+            self.assertTrue(staged["code_staged"])
+            self.assertTrue((staged_package_dir(state_dir) / "__init__.py").is_file())
             self.assertEqual(
                 ctx.staged_version(), "v0.20.0-dev.20260625T173000Z.smoke"
             )
@@ -115,6 +133,62 @@ class CommandTests(TestCase):
                 ctx.activation_marker.read_text().strip(),
                 "v0.20.0-dev.20260625T173000Z.smoke",
             )
+
+    def test_activation_swaps_staged_runtime_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            install_prefix = root / "install"
+            source_root = root / "source"
+            (install_prefix / "hermes_runtime").mkdir(parents=True)
+            (install_prefix / "hermes_runtime" / "old_only.py").write_text(
+                "OLD = True\n",
+                encoding="utf-8",
+            )
+            (source_root / "hermes_runtime" / "commands").mkdir(parents=True)
+            (source_root / "hermes_runtime" / "__init__.py").write_text(
+                '__version__ = "0.0.3"\n',
+                encoding="utf-8",
+            )
+            (source_root / "hermes_runtime" / "new_command.py").write_text(
+                "NEW = True\n",
+                encoding="utf-8",
+            )
+            (source_root / "hermes_runtime" / "commands" / "__init__.py").write_text(
+                "COMMAND_MODULES = {}\n",
+                encoding="utf-8",
+            )
+            ctx = RuntimeContext(
+                platform=FakePlatform(),
+                state_dir=state_dir,
+                started_at=0,
+            )
+            with patch.dict(
+                "os.environ",
+                {
+                    "TINYHAT_RUNTIME_PREFIX": str(install_prefix),
+                    "TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": str(source_root),
+                },
+            ):
+                asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "stage_update",
+                            "spec": {"target_ref": "v0.0.3", "channel": "custom"},
+                        },
+                    )
+                )
+                asyncio.run(run_command(ctx, {"kind": "activate_update"}))
+                activated = ctx.activate_staged_on_startup()
+
+            self.assertEqual(activated, {"version": "v0.0.3", "code_swapped": True})
+            self.assertFalse((install_prefix / "hermes_runtime" / "old_only.py").exists())
+            self.assertTrue(
+                (install_prefix / "hermes_runtime" / "new_command.py").is_file()
+            )
+            self.assertEqual(ctx.current_version(), "v0.0.3")
+            self.assertFalse(staged_package_dir(state_dir).exists())
 
     def test_restart_runtime_service_requests_restart(self) -> None:
         ctx = SimpleNamespace(restart_requested=False)

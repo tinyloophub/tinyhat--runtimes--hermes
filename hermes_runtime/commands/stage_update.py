@@ -1,8 +1,9 @@
 """Stage a runtime version for activation on the next restart.
 
 What it does:
-    Records the selected runtime ref as the staged update. The running process
-    keeps using the current code until a later activation/restart step.
+    Downloads or copies the selected runtime package into the staged update
+    directory and records the selected runtime ref. The running process keeps
+    using the current code until a later activation/restart step.
 
 Update flow map:
     [pick target release]
@@ -34,8 +35,9 @@ Example output:
     }
 
 Side effects:
-    Writes ``staged/VERSION`` and ``staged/metadata.json`` under runtime state.
-    It does not change the running process, reboot the VPS, or restart Hermes.
+    Writes ``staged/VERSION``, ``staged/metadata.json``, and a staged
+    ``staged/runtime/hermes_runtime`` package under runtime state. It does not
+    change the running process, reboot the VPS, or restart Hermes.
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
+
+from hermes_runtime.update_artifacts import prepare_staged_runtime
 
 
 async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
@@ -55,6 +59,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     target_version = str(spec.get("target_version") or target_ref).strip()
     target_sha = str(spec.get("target_sha") or "").strip() or None
     channel = str(spec.get("channel") or "lts").strip() or "lts"
+    staged_artifact = prepare_staged_runtime(
+        state_dir=ctx.state_dir,
+        target_ref=target_ref,
+    )
     ctx.staged_version_file.parent.mkdir(parents=True, exist_ok=True)
     ctx.staged_version_file.write_text(target_ref + "\n", encoding="utf-8")
     metadata = {
@@ -63,6 +71,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "target_sha": target_sha,
         "channel": channel,
         "staged_at_unix": int(time.time()),
+        "artifact": staged_artifact,
     }
     (ctx.staged_version_file.parent / "metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
@@ -73,5 +82,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "target_ref": target_ref,
         "target_version": target_version,
         "channel": channel,
+        "code_staged": True,
+        "package_dir": staged_artifact["package_dir"],
         "activation": "requires_activate_update",
     }

@@ -22,6 +22,8 @@ from hermes_runtime.update_check import (
     run_update_check,
     scheduled_check_due,
 )
+from hermes_runtime.update_artifacts import activate_staged_runtime_code
+from hermes_runtime.update_artifacts import staged_runtime_dir
 
 STATE_SCHEMA = "tinyhat_hermes_runtime_v1"
 RESULT_SCHEMA = "tiny_runtime_command_result_v1"
@@ -86,7 +88,7 @@ class RuntimeContext:
         value = self.staged_version_file.read_text(encoding="utf-8").strip()
         return value or None
 
-    def activate_staged_on_startup(self) -> str | None:
+    def activate_staged_on_startup(self) -> dict[str, Any] | None:
         self.ensure_state()
         if not self.activation_marker.exists():
             return None
@@ -94,6 +96,7 @@ class RuntimeContext:
         if not staged:
             self.activation_marker.unlink(missing_ok=True)
             return None
+        code_swapped = activate_staged_runtime_code(state_dir=self.state_dir)
         self.current_version_file.write_text(staged + "\n", encoding="utf-8")
         staged_sha = None
         if self.staged_metadata_file.exists():
@@ -111,8 +114,13 @@ class RuntimeContext:
             self.current_commit_file.unlink(missing_ok=True)
         self.staged_version_file.unlink(missing_ok=True)
         self.staged_metadata_file.unlink(missing_ok=True)
+        staged_runtime = staged_runtime_dir(self.state_dir)
+        if staged_runtime.exists():
+            import shutil
+
+            shutil.rmtree(staged_runtime, ignore_errors=True)
         self.activation_marker.unlink(missing_ok=True)
-        return staged
+        return {"version": staged, "code_swapped": code_swapped}
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -321,7 +329,13 @@ async def run() -> int:
     )
     activated = ctx.activate_staged_on_startup()
     if activated:
-        print(f"activated staged runtime version {activated}", flush=True)
+        print(
+            f"activated staged runtime version {activated['version']}",
+            flush=True,
+        )
+        if activated.get("code_swapped"):
+            print("runtime code updated; re-executing process", flush=True)
+            os.execv(sys.executable, [sys.executable, "-m", "hermes_runtime.main"])
 
     while True:
         try:

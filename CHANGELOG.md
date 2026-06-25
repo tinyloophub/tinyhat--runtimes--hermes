@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.3 - 2026-06-25
+
+- Fix runtime updates so `stage_update` prepares the target runtime package
+  code, and activation swaps that code into the install prefix before the
+  runtime process re-executes.
+- Make Docker builds record the selected runtime ref instead of always
+  recording `local-dev`.
+
 ## 0.0.2 - 2026-06-25
 
 - Document the restart-activated update flow.

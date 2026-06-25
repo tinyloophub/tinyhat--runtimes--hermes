@@ -45,6 +45,7 @@ from typing import Any
 
 from hermes_runtime import __version__
 from hermes_runtime.update_check import read_last_result
+from hermes_runtime.update_artifacts import staged_package_dir
 
 
 def _read_staged_metadata(ctx: Any) -> dict[str, Any] | None:
@@ -71,6 +72,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     staged_metadata = _read_staged_metadata(ctx)
     ready_updates = []
     if staged_version:
+        code_staged = staged_package_dir(ctx.state_dir).is_dir()
         ready_updates.append(
             {
                 "version": staged_version,
@@ -78,6 +80,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
                 "sha": (staged_metadata or {}).get("target_sha"),
                 "channel": (staged_metadata or {}).get("channel"),
                 "staged_at_unix": (staged_metadata or {}).get("staged_at_unix"),
+                "code_staged": code_staged,
                 "activation": _activation_state(ctx),
             }
         )

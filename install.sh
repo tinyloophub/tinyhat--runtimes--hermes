@@ -31,8 +31,8 @@
 #     state/current, and COMMIT_SHA under state/current when the commit is
 #     known.
 # 11. Writes an executable wrapper named tinyhat-hermes-runtime. The wrapper
-#     sets PYTHONPATH, points the runtime at the state directory, and runs
-#     python3 -m hermes_runtime.main.
+#     sets PYTHONPATH, records the install prefix, points the runtime at the
+#     state directory, and runs python3 -m hermes_runtime.main.
 # 12. Writes a private env file at <prefix>/env/runtime.env with mode 0600.
 #     That file contains the runtime ref, state directory, optional platform
 #     URL/computer id, and the local-dev token only when --local-dev-token was
@@ -229,6 +229,7 @@ cat > "$prefix/bin/tinyhat-hermes-runtime" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export PYTHONPATH="$prefix:\${PYTHONPATH:-}"
+export TINYHAT_RUNTIME_PREFIX="\${TINYHAT_RUNTIME_PREFIX:-$prefix}"
 export TINYHAT_RUNTIME_STATE_DIR="\${TINYHAT_RUNTIME_STATE_DIR:-$state_dir}"
 exec python3 -m hermes_runtime.main
 EOF
@@ -240,6 +241,7 @@ env_file="$env_dir/runtime.env"
 umask 077
 {
   printf 'TINYHAT_RUNTIME_REF=%q\n' "$runtime_ref"
+  printf 'TINYHAT_RUNTIME_PREFIX=%q\n' "$prefix"
   printf 'TINYHAT_RUNTIME_STATE_DIR=%q\n' "$state_dir"
   if [[ -n "$platform_url" ]]; then
     printf 'TINYHAT_PLATFORM_URL=%q\n' "$platform_url"
