@@ -203,6 +203,44 @@ class CommandTests(TestCase):
                 "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
 
+    def test_check_update_is_not_available_when_current_ref_matches_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            current_ref = "v0.20.0-dev.20260625T153259Z.local-dev-check"
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: current_ref,
+                current_commit_sha=lambda: None,
+            )
+
+            with patch(
+                "hermes_runtime.update_check._fetch_github_commit",
+                return_value={
+                    "ok": True,
+                    "status": "ok",
+                    "sha": "b" * 40,
+                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                    + "b" * 40,
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "custom",
+                                "target_ref": current_ref,
+                            },
+                        },
+                    )
+                )
+
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(checked["target_ref"], current_ref)
+
     def test_check_update_uses_dev_ref_check_for_local_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)

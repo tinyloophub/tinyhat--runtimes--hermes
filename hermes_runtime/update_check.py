@@ -168,7 +168,9 @@ async def run_update_check(
     target_sha = str(resolved.get("sha") or "").strip() or None
     current_sha = (current_sha or "").strip() or None
     current_matches_target = target_ref == current_version
-    if target_sha and current_sha:
+    if current_matches_target:
+        pass
+    elif target_sha and current_sha:
         current_matches_target = target_sha == current_sha
     elif target_sha:
         current_matches_target = target_sha == current_version
