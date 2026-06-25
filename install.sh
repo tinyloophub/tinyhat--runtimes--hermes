@@ -8,11 +8,11 @@
 #    /opt/tinyhat-hermes-runtime and runtime state under
 #    /var/lib/tinyhat-hermes-runtime. You can override those with env vars or
 #    --prefix / --state-dir.
-# 3. Reads optional Tinyhat connection values: platform URL, computer id, and a
-#    local-dev token. These are written only when explicitly provided. The
-#    local-dev token is for local Docker-style development; production machine
-#    authentication is handled by the runtime through cloud identity
-#    attestation, not by this installer minting or storing a platform token.
+# 3. Reads optional Tinyhat connection values: platform URL and computer id.
+#    It can also accept --local-dev-token for local Docker development only.
+#    The installer does not create, fetch, or store a production Tinyhat API
+#    token. Production machine authentication is handled by the runtime through
+#    cloud identity attestation after installation.
 # 4. Requires python3 and install. If it needs to download the runtime source,
 #    it also requires curl and tar.
 # 5. Gets the runtime source either from --source-dir, when you already have a
@@ -34,8 +34,9 @@
 #     sets PYTHONPATH, points the runtime at the state directory, and runs
 #     python3 -m hermes_runtime.main.
 # 12. Writes a private env file at <prefix>/env/runtime.env with mode 0600.
-#     That file contains the runtime ref, state directory, and any optional
-#     Tinyhat connection values that were passed to the installer.
+#     That file contains the runtime ref, state directory, optional platform
+#     URL/computer id, and the local-dev token only when --local-dev-token was
+#     explicitly passed.
 # 13. Unless --no-systemd is passed, tries to install the runtime as a systemd
 #     service on Linux. On non-systemd systems it leaves the files installed
 #     and prints a message. On systemd systems it requires root.
