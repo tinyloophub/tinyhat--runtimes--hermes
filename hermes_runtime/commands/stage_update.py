@@ -4,6 +4,17 @@ What it does:
     Records the selected runtime ref as the staged update. The running process
     keeps using the current code until a later activation/restart step.
 
+Update flow map:
+    [pick target release]
+        -> check_update     look only; writes updates/last_check.json
+        -> stage_update     prepare selected ref; current runtime keeps running
+        -> activate_update  request tinyhat-hermes-runtime.service restart
+        -> service startup  promote staged ref into current/VERSION
+
+    This command is the prepare step. It does not switch the running runtime.
+    The selected version is used only after activate_update restarts the
+    tinyhat Hermes runtime service and startup promotes staged -> current.
+
 When to use it:
     Use this from Hat admin after choosing an exact runtime release that should
     be prepared but not activated yet.
@@ -18,12 +29,12 @@ Example output:
     {
       "message": "staged v0.0.2",
       "target_ref": "v0.0.2",
-      "activation": "on_restart"
+      "activation": "requires_activate_update"
     }
 
 Side effects:
     Writes ``staged/VERSION`` and ``staged/metadata.json`` under runtime state.
-    It does not change the running process.
+    It does not change the running process, reboot the VPS, or restart Hermes.
 """
 
 from __future__ import annotations
@@ -61,5 +72,5 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "target_ref": target_ref,
         "target_version": target_version,
         "channel": channel,
-        "activation": "on_restart",
+        "activation": "requires_activate_update",
     }

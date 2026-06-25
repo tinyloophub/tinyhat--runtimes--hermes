@@ -5,9 +5,20 @@ What it does:
     installed commit sha when known, any staged update marker, and the most
     recent update-check result.
 
+Update flow map:
+    [pick target release]
+        -> check_update     look only; writes updates/last_check.json
+        -> stage_update     prepare selected ref; current runtime keeps running
+        -> activate_update  request tinyhat-hermes-runtime.service restart
+        -> service startup  promote staged ref into current/VERSION
+
+    This command can be run at any point in the flow. It tells you what is
+    current now, what is staged, whether that staged ref still needs
+    activate_update, and what the latest update check found.
+
 When to use it:
-    Use this from Hat admin before or after staging an update to see what is
-    currently running and what is ready to activate on restart.
+    Use this from Hat admin before or after staging or activating an update to
+    see what is currently running and what step is still needed.
 
 Example input:
     {"kind": "update_status", "spec": {}}
@@ -17,7 +28,9 @@ Example output:
       "current_version": "v0.0.1",
       "current_commit_sha": "abc1234",
       "staged_version": "v0.0.2",
-      "ready_updates": [{"version": "v0.0.2", "activation": "on_restart"}]
+      "ready_updates": [
+        {"version": "v0.0.2", "activation": "requires_activate_update"}
+      ]
     }
 
 Side effects:
@@ -41,6 +54,17 @@ def _read_staged_metadata(ctx: Any) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _activation_state(ctx: Any) -> str:
+    marker = getattr(ctx, "activation_marker", None)
+    if marker is not None:
+        try:
+            if marker.exists():
+                return "after_runtime_restart"
+        except OSError:
+            pass
+    return "requires_activate_update"
+
+
 async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     staged_version = ctx.staged_version()
     staged_metadata = _read_staged_metadata(ctx)
@@ -53,7 +77,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
                 "sha": (staged_metadata or {}).get("target_sha"),
                 "channel": (staged_metadata or {}).get("channel"),
                 "staged_at_unix": (staged_metadata or {}).get("staged_at_unix"),
-                "activation": "on_restart",
+                "activation": _activation_state(ctx),
             }
         )
     return {
