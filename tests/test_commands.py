@@ -167,6 +167,72 @@ class CommandTests(TestCase):
             self.assertEqual(result["commands"][0]["command_id"], "cmd-1")
             self.assertEqual(report(state_dir=state_dir)["commands"][0]["kind"], "ping")
 
+    def test_setup_snapshot_reports_install_and_service_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = root / "opt" / "tinyhat-hermes-runtime"
+            state_dir = root / "var" / "lib" / "tinyhat-hermes-runtime"
+            (install_root / "env").mkdir(parents=True)
+            (state_dir / "current").mkdir(parents=True)
+            (install_root / "INSTALL_REF").write_text("channels/lts\n", encoding="utf-8")
+            (install_root / "env" / "runtime.env").write_text(
+                "TINYHAT_LOCAL_DEV_TOKEN=secret\n",
+                encoding="utf-8",
+            )
+            (state_dir / "current" / "VERSION").write_text("0.0.1\n", encoding="utf-8")
+            (state_dir / "current" / "COMMIT_SHA").write_text(
+                "a" * 40 + "\n",
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(state_dir=state_dir)
+
+            def fake_systemctl(args: list[str]) -> dict:
+                if args[0] == "show":
+                    return {
+                        "systemctl_available": True,
+                        "ok": True,
+                        "stdout": (
+                            "ActiveState=active\n"
+                            "Restart=always\n"
+                            "Nice=-5\n"
+                            "OOMScoreAdjust=-900\n"
+                        ),
+                        "stderr": "",
+                    }
+                return {
+                    "systemctl_available": True,
+                    "ok": True,
+                    "stdout": "[Service]\nRestart=always\n",
+                    "stderr": "",
+                }
+
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_PREFIX": str(install_root)},
+            ), patch(
+                "hermes_runtime.commands.setup_snapshot._run_systemctl",
+                side_effect=fake_systemctl,
+            ):
+                snapshot = asyncio.run(
+                    run_command(ctx, {"kind": "setup_snapshot", "spec": {}})
+                )
+
+            self.assertEqual(snapshot["schema"], "tinyhat_hermes_setup_snapshot_v1")
+            self.assertEqual(
+                snapshot["install"]["install_ref"]["value"],
+                "channels/lts",
+            )
+            self.assertEqual(
+                snapshot["state"]["current_version"]["value"],
+                "0.0.1",
+            )
+            self.assertEqual(
+                snapshot["service"]["properties"]["OOMScoreAdjust"],
+                "-900",
+            )
+            self.assertEqual(snapshot["warnings"], [])
+            self.assertNotIn("secret", str(snapshot))
+
     def test_ledger_write_failure_still_reports_command_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             platform = FakePlatform()
