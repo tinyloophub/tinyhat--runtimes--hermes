@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -150,11 +151,26 @@ async def run_update_check(
     if not target_ref:
         raise ValueError("check_update requires target_ref for custom update checks")
 
-    resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
+    if os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
+        resolved = {
+            "ok": True,
+            "status": "dev_ref_check",
+            "sha": None,
+            "html_url": None,
+            "message": (
+                "Local dev update checks compare the platform-supplied ref "
+                "with the installed ref without calling GitHub from the "
+                "runtime container."
+            ),
+        }
+    else:
+        resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
     current_sha = (current_sha or "").strip() or None
     current_matches_target = target_ref == current_version
-    if target_sha and current_sha:
+    if current_matches_target:
+        pass
+    elif target_sha and current_sha:
         current_matches_target = target_sha == current_sha
     elif target_sha:
         current_matches_target = target_sha == current_version
@@ -183,8 +199,9 @@ async def run_update_check(
             },
         },
     }
-    if not resolved.get("ok"):
+    if resolved.get("message"):
         result["message"] = resolved.get("message")
+    if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
     _write_json(state_dir / "updates" / "last_check.json", result)
     return result

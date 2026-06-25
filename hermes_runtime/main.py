@@ -15,6 +15,7 @@ from typing import Any
 from hermes_runtime import __version__
 from hermes_runtime.client import PlatformClient, PlatformError
 from hermes_runtime.commands import run_command
+from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.update_check import (
     mark_scheduled_check_started,
@@ -168,23 +169,76 @@ async def _report_command_result(
     )
 
 
+def _append_local_command_entry(
+    ctx: RuntimeContext,
+    *,
+    command: dict[str, Any],
+    status: str,
+    phase: str,
+    result: dict[str, Any],
+    started_at: str,
+    completed_at: str,
+    failure_code: str | None = None,
+) -> None:
+    try:
+        append_entry(
+            state_dir=ctx.state_dir,
+            command=command,
+            status=status,
+            phase=phase,
+            failure_code=failure_code,
+            result=result,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+    except Exception as exc:  # noqa: BLE001 - local diagnostics must be best-effort.
+        print(
+            f"local command ledger write failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None:
     kind = command.get("kind")
+    started_at = utc_now_iso()
     try:
         result = await run_command(ctx, command)
     except Exception as exc:  # noqa: BLE001 - command failures must be reported.
+        completed_at = utc_now_iso()
+        failure_result = {
+            "message": str(exc),
+            "traceback": traceback.format_exc(limit=3),
+        }
+        _append_local_command_entry(
+            ctx,
+            command=command,
+            status="failed",
+            phase="execute",
+            failure_code=exc.__class__.__name__,
+            result=failure_result,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
         await _report_command_result(
             ctx,
             command=command,
             status="failed",
             phase="execute",
             failure_code=exc.__class__.__name__,
-            result={
-                "message": str(exc),
-                "traceback": traceback.format_exc(limit=3),
-            },
+            result=failure_result,
         )
         return
+    completed_at = utc_now_iso()
+    _append_local_command_entry(
+        ctx,
+        command=command,
+        status="applied",
+        phase=str(kind or "execute"),
+        result=result,
+        started_at=started_at,
+        completed_at=completed_at,
+    )
     await _report_command_result(
         ctx,
         command=command,

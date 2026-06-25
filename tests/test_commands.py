@@ -15,7 +15,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
-from hermes_runtime.main import _heartbeat_metrics, _scheduled_update_check  # noqa: E402
+from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
+from hermes_runtime.main import (  # noqa: E402
+    _heartbeat_metrics,
+    _run_one_command,
+    _scheduled_update_check,
+)
+from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
 
 
@@ -41,7 +47,13 @@ class CommandTests(TestCase):
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "ping"}))
         self.assertEqual(result["message"], "pong")
 
-    def test_whoami_uses_computer_scoped_path(self) -> None:
+    def test_platform_paths_use_local_dev_context(self) -> None:
+        self.assertEqual(
+            computer_api_path("computer 123", "heartbeat"),
+            "/hapi/v1/computers/local-dev/heartbeat",
+        )
+
+    def test_whoami_uses_local_dev_attestation_path(self) -> None:
         platform = FakePlatform()
         ctx = SimpleNamespace(platform=platform, computer_id="computer 123")
 
@@ -49,11 +61,11 @@ class CommandTests(TestCase):
 
         self.assertEqual(
             platform.gets,
-            ["/hapi/v1/computers/computer%20123/whoami"],
+            ["/hapi/v1/computers/local-dev/whoami"],
         )
         self.assertEqual(
             result["attestation"]["path"],
-            "/hapi/v1/computers/computer%20123/whoami",
+            "/hapi/v1/computers/local-dev/whoami",
         )
 
     def test_update_is_staged_then_marked_for_restart(self) -> None:
@@ -102,6 +114,91 @@ class CommandTests(TestCase):
                 ctx.activation_marker.read_text().strip(),
                 "v0.20.0-dev.20260625T173000Z.smoke",
             )
+
+    def test_update_status_reports_current_and_staged_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_version_file=state_dir / "staged" / "VERSION",
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: "v0.20.0-dev.20260625T173000Z.next",
+            )
+            ctx.staged_metadata_file.parent.mkdir(parents=True)
+            ctx.staged_metadata_file.write_text(
+                '{"target_ref":"v0.20.0-dev.20260625T173000Z.next","channel":"custom"}\n',
+                encoding="utf-8",
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            self.assertEqual(status["current_version"], "v0.0.1")
+            self.assertEqual(
+                status["ready_updates"][0]["version"],
+                "v0.20.0-dev.20260625T173000Z.next",
+            )
+
+    def test_recent_commands_returns_local_ledger_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            append_entry(
+                state_dir=state_dir,
+                command={
+                    "command_id": "cmd-1",
+                    "kind": "ping",
+                    "spec": {},
+                    "created_at": "2026-06-25T10:00:00Z",
+                },
+                status="applied",
+                phase="ping",
+                result={"message": "pong"},
+                started_at="2026-06-25T10:00:01Z",
+                completed_at="2026-06-25T10:00:02Z",
+            )
+            ctx = SimpleNamespace(state_dir=state_dir)
+
+            result = asyncio.run(
+                run_command(ctx, {"kind": "recent_commands", "spec": {"limit": 5}})
+            )
+
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["commands"][0]["command_id"], "cmd-1")
+            self.assertEqual(report(state_dir=state_dir)["commands"][0]["kind"], "ping")
+
+    def test_ledger_write_failure_still_reports_command_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=Path(tmp),
+                computer_id="local-dev",
+            )
+
+            with patch(
+                "hermes_runtime.main.append_entry",
+                side_effect=OSError("ledger unavailable"),
+            ):
+                asyncio.run(
+                    _run_one_command(
+                        ctx,
+                        {
+                            "command_id": "cmd-ledger-fails",
+                            "idempotency_key": "idem-ledger-fails",
+                            "kind": "ping",
+                            "spec": {},
+                        },
+                    )
+                )
+
+            self.assertEqual(
+                platform.posts[0][0],
+                "/hapi/v1/computers/local-dev/runtime-command/result",
+            )
+            reported = platform.posts[0][1]["result"]
+            self.assertEqual(reported["status"], "applied")
+            self.assertEqual(reported["result"], {"message": "pong"})
 
     def test_check_update_writes_last_result_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,8 +290,80 @@ class CommandTests(TestCase):
             self.assertEqual(checked["current_sha"], target_sha)
             self.assertEqual(
                 platform.posts[0][0],
-                "/hapi/v1/computers/987/update-check-results/v1",
+                "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
+
+    def test_check_update_is_not_available_when_current_ref_matches_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            current_ref = "v0.20.0-dev.20260625T153259Z.local-dev-check"
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: current_ref,
+                current_commit_sha=lambda: None,
+            )
+
+            with patch(
+                "hermes_runtime.update_check._fetch_github_commit",
+                return_value={
+                    "ok": True,
+                    "status": "ok",
+                    "sha": "b" * 40,
+                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                    + "b" * 40,
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "custom",
+                                "target_ref": current_ref,
+                            },
+                        },
+                    )
+                )
+
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(checked["target_ref"], current_ref)
+
+    def test_check_update_uses_dev_ref_check_for_local_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+            )
+
+            with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
+                with patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    side_effect=AssertionError("local dev must not call GitHub"),
+                ):
+                    checked = asyncio.run(
+                        run_command(
+                            ctx,
+                            {
+                                "kind": "check_update",
+                                "spec": {
+                                    "channel": "lts",
+                                    "target_ref": "v0.0.1",
+                                },
+                            },
+                        )
+                    )
+
+            self.assertEqual(checked["status"], "dev_ref_check")
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(checked["target_sha"], None)
+            self.assertIn("Local dev", checked["message"])
 
     def test_heartbeat_metrics_do_not_embed_update_check_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -274,7 +443,7 @@ class CommandTests(TestCase):
             self.assertEqual(result["reason"], "scheduled")
             self.assertEqual(
                 platform.posts[0][0],
-                "/hapi/v1/computers/scheduled/update-check-results/v1",
+                "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
             self.assertTrue(
                 (state_dir / "updates" / "last_scheduled_check_date").is_file()
