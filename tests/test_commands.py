@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
+import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +25,12 @@ from hermes_runtime.main import (  # noqa: E402
     _scheduled_update_check,
 )
 from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
-from hermes_runtime.update_artifacts import staged_package_dir  # noqa: E402
+from hermes_runtime.update_artifacts import (  # noqa: E402
+    _safe_extract_tarball,
+    activate_staged_runtime_code,
+    prepare_staged_runtime,
+    staged_package_dir,
+)
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
 
 
@@ -189,6 +196,90 @@ class CommandTests(TestCase):
             )
             self.assertEqual(ctx.current_version(), "v0.0.3")
             self.assertFalse(staged_package_dir(state_dir).exists())
+
+    def test_activation_recovers_interrupted_package_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_prefix = root / "install"
+            state_dir = root / "state"
+            previous_package = install_prefix / "hermes_runtime.previous"
+            previous_package.mkdir(parents=True)
+            (previous_package / "old_runtime.py").write_text(
+                "OLD = True\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_PREFIX": str(install_prefix)},
+            ):
+                activated = activate_staged_runtime_code(state_dir=state_dir)
+
+            self.assertFalse(activated)
+            self.assertTrue(
+                (install_prefix / "hermes_runtime" / "old_runtime.py").is_file()
+            )
+            self.assertFalse(previous_package.exists())
+
+    def test_safe_tarball_extraction_rejects_escape_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive_path = root / "runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for name in (
+                    "repo-good/hermes_runtime/__init__.py",
+                    "../outside.py",
+                ):
+                    payload = b"VALUE = True\n"
+                    item = tarfile.TarInfo(name)
+                    item.size = len(payload)
+                    archive.addfile(item, io.BytesIO(payload))
+
+            with self.assertRaisesRegex(ValueError, "unsafe tarball path"):
+                _safe_extract_tarball(archive_path, root / "extract")
+
+            absolute_archive = root / "absolute.tar.gz"
+            with tarfile.open(absolute_archive, "w:gz") as archive:
+                payload = b"VALUE = True\n"
+                item = tarfile.TarInfo("/tmp/outside.py")
+                item.size = len(payload)
+                archive.addfile(item, io.BytesIO(payload))
+
+            with self.assertRaisesRegex(ValueError, "unsafe tarball path"):
+                _safe_extract_tarball(absolute_archive, root / "absolute-extract")
+
+    def test_prepare_staged_runtime_downloads_target_sha_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            target_sha = "a" * 40
+            downloaded_refs: list[str] = []
+
+            def fake_download(download_ref: str, destination: Path) -> None:
+                downloaded_refs.append(download_ref)
+                (destination / "hermes_runtime").mkdir(parents=True)
+                (destination / "hermes_runtime" / "__init__.py").write_text(
+                    '__version__ = "0.0.3"\n',
+                    encoding="utf-8",
+                )
+
+            with patch.dict(
+                "os.environ",
+                {"TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": ""},
+            ), patch(
+                "hermes_runtime.update_artifacts._download_source_ref",
+                side_effect=fake_download,
+            ):
+                staged = prepare_staged_runtime(
+                    state_dir=state_dir,
+                    target_ref="channels/lts",
+                    target_sha=target_sha,
+                )
+
+            self.assertEqual(downloaded_refs, [target_sha])
+            self.assertEqual(staged["source"]["ref"], "channels/lts")
+            self.assertEqual(staged["source"]["download_ref"], target_sha)
+            self.assertEqual(staged["source"]["target_sha"], target_sha)
+            self.assertTrue((staged_package_dir(state_dir) / "__init__.py").is_file())
 
     def test_restart_runtime_service_requests_restart(self) -> None:
         ctx = SimpleNamespace(restart_requested=False)

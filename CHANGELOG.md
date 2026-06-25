@@ -5,6 +5,9 @@
 - Fix runtime updates so `stage_update` prepares the target runtime package
   code, and activation swaps that code into the install prefix before the
   runtime process re-executes.
+- Fetch staged updates by immutable `target_sha` when the platform provides
+  one, reject unsafe archive paths, and recover interrupted package swaps on
+  startup.
 - Make Docker builds record the selected runtime ref instead of always
   recording `local-dev`.
 

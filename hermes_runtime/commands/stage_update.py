@@ -24,7 +24,12 @@ When to use it:
 Example input:
     {
       "kind": "stage_update",
-      "spec": {"channel": "custom", "target_ref": "v0.0.2", "target_version": "v0.0.2"}
+      "spec": {
+        "channel": "custom",
+        "target_ref": "v0.0.2",
+        "target_version": "v0.0.2",
+        "target_sha": "abc123..."
+      }
     }
 
 Example output:
@@ -37,7 +42,9 @@ Example output:
 Side effects:
     Writes ``staged/VERSION``, ``staged/metadata.json``, and a staged
     ``staged/runtime/hermes_runtime`` package under runtime state. It does not
-    change the running process, reboot the VPS, or restart Hermes.
+    change the running process, reboot the VPS, or restart Hermes. When
+    ``target_sha`` is supplied, the runtime downloads that immutable commit
+    instead of the movable target ref.
 """
 
 from __future__ import annotations
@@ -62,6 +69,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     staged_artifact = prepare_staged_runtime(
         state_dir=ctx.state_dir,
         target_ref=target_ref,
+        target_sha=target_sha,
     )
     ctx.staged_version_file.parent.mkdir(parents=True, exist_ok=True)
     ctx.staged_version_file.write_text(target_ref + "\n", encoding="utf-8")

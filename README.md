@@ -146,7 +146,7 @@ it.
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, and the last update-check result. | Reads state files only. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
-| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, and a staged `staged/runtime/hermes_runtime` package. Does not switch versions until `activate_update`. |
+| `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, and a staged `staged/runtime/hermes_runtime` package. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
 
@@ -168,6 +168,7 @@ check_update
         v
 stage_update
   - prepares the exact selected ref
+  - uses target_sha as the immutable download ref when the platform supplies it
   - writes staged/VERSION, staged/metadata.json, and staged runtime package code
   - current/VERSION is unchanged, so the running runtime keeps using old code
         |
@@ -209,6 +210,12 @@ without staging or activating anything new.
 The daily scheduled update check runs only the discovery part (`check_update`).
 It reports that an update is available, but it does not stage or activate a new
 version by itself.
+
+Without `TINYHAT_RUNTIME_UPDATE_SOURCE_DIR`, staging downloads runtime source
+archives from `codeload.github.com`. Production Computers therefore need
+ordinary outbound HTTPS access to GitHub's archive host. Local development can
+set `TINYHAT_RUNTIME_UPDATE_SOURCE_DIR` when the goal is to test unmerged local
+runtime code instead of a published tag or commit.
 
 ## Daily update checks
 

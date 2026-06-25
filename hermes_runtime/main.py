@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -116,8 +117,6 @@ class RuntimeContext:
         self.staged_metadata_file.unlink(missing_ok=True)
         staged_runtime = staged_runtime_dir(self.state_dir)
         if staged_runtime.exists():
-            import shutil
-
             shutil.rmtree(staged_runtime, ignore_errors=True)
         self.activation_marker.unlink(missing_ok=True)
         return {"version": staged, "code_swapped": code_swapped}
