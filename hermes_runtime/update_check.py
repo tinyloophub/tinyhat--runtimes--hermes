@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
@@ -83,7 +83,7 @@ def scheduled_check_due(
     now_utc: datetime | None = None,
 ) -> tuple[bool, UpdateCheckConfig, str]:
     config = read_config(state_dir)
-    now = (now_utc or datetime.now(UTC)).astimezone(ZoneInfo(config.timezone))
+    now = (now_utc or datetime.now(timezone.utc)).astimezone(ZoneInfo(config.timezone))
     today_key = now.date().isoformat()
     last_key = _read_file(state_dir / "updates" / "last_scheduled_check_date")
     due_clock = now.strftime("%H:%M") >= config.local_time
@@ -167,7 +167,7 @@ async def run_update_check(
         "target_url": resolved.get("html_url"),
         "current_version": current_version,
         "update_available": update_available,
-        "checked_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "schedule": {
             "time": config.local_time,
             "timezone": config.timezone,

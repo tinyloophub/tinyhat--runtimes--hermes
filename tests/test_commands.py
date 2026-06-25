@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
@@ -155,7 +155,7 @@ class CommandTests(TestCase):
             config_dir.mkdir(parents=True)
             (config_dir / "update_check_time").write_text("02:35\n")
             (config_dir / "update_check_timezone").write_text("America/Los_Angeles\n")
-            now = datetime(2026, 6, 25, 10, 0, tzinfo=UTC)
+            now = datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc)
 
             due, config, date_key = scheduled_check_due(
                 state_dir=state_dir,

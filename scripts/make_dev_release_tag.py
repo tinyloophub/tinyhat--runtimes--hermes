@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -34,7 +34,7 @@ def clean_suffix(value: str | None) -> str | None:
 def make_tag(*, base: str, suffix: str | None) -> str:
     if not re.fullmatch(r"v\d+\.\d+\.\d+", base):
         raise SystemExit("--base must be shaped vX.Y.Z")
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tag = f"{base}-dev.{stamp}"
     if suffix:
         tag = f"{tag}.{suffix}"

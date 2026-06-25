@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import TestCase
 
@@ -22,7 +22,7 @@ class DevReleaseScriptTests(TestCase):
         tag = publish_dev_release.make_tag(
             base="v0.20.0",
             suffix="PR #2 smoke!",
-            now=datetime(2026, 6, 25, 18, 30, 45, tzinfo=UTC),
+            now=datetime(2026, 6, 25, 18, 30, 45, tzinfo=timezone.utc),
         )
 
         self.assertEqual(tag, "v0.20.0-dev.20260625T183045Z.PR-2-smoke")

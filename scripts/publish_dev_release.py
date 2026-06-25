@@ -7,7 +7,7 @@ import argparse
 import re
 import shlex
 import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -46,7 +46,7 @@ def clean_suffix(value: str | None) -> str:
 
 
 def make_tag(*, base: str, suffix: str, now: datetime | None = None) -> str:
-    stamp = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tag = f"{normalize_base(base)}-dev.{stamp}.{clean_suffix(suffix)}"
     if not TAG_RE.fullmatch(tag):
         raise SystemExit(f"generated invalid dev tag: {tag}")
