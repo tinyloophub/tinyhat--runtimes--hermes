@@ -20,12 +20,15 @@ Example output:
       "channel": "lts",
       "target_ref": "v0.0.2",
       "current_version": "v0.0.1",
-      "update_available": true
+      "update_available": true,
+      "report_delivered": true
     }
 
 Side effects:
-    Writes ``updates/last_check.json`` and posts the same result to the
-    platform. It does not download, stage, activate, or restart anything.
+    Writes ``updates/last_check.json`` and best-effort posts the same result to
+    the platform. A platform delivery failure is reported in the command result
+    but does not turn a successful local check into a failed command. It does
+    not download, stage, activate, or restart anything.
 """
 
 from __future__ import annotations
@@ -48,8 +51,21 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         spec=spec if isinstance(spec, dict) else {},
         reason="admin_check_update",
     )
-    await ctx.platform.post_json(
-        context_computer_api_path(ctx, "update-check-results/v1"),
-        {"result": result},
-    )
-    return {"message": "update check complete", **result}
+    report_delivered = True
+    report_error = None
+    try:
+        await ctx.platform.post_json(
+            context_computer_api_path(ctx, "update-check-results/v1"),
+            {"result": result},
+        )
+    except Exception as exc:
+        report_delivered = False
+        report_error = str(exc)[:300]
+    result_detail = result.get("message") if isinstance(result.get("message"), str) else None
+    return {
+        **result,
+        "message": "update check complete",
+        "detail": result_detail,
+        "report_delivered": report_delivered,
+        "report_error": report_error,
+    }

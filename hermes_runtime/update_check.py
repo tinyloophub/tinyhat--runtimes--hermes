@@ -26,7 +26,7 @@ GITHUB_API_BASE = f"https://api.github.com/repos/{REPO}"
 DEFAULT_CHECK_TIME = "02:35"
 DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
-FINAL_RELEASE_RE = re.compile(r"^v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
 
 
 @dataclass(frozen=True)
