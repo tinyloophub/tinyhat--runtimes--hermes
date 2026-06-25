@@ -1,4 +1,54 @@
 #!/usr/bin/env bash
+#
+# Plain-English summary of what this installer does:
+#
+# 1. Reads the runtime ref to install. By default it installs channels/lts.
+#    You can override that with TINYHAT_RUNTIME_REF, --ref, or --channel.
+# 2. Reads the install locations. By default it writes program files under
+#    /opt/tinyhat-hermes-runtime and runtime state under
+#    /var/lib/tinyhat-hermes-runtime. You can override those with env vars or
+#    --prefix / --state-dir.
+# 3. Reads optional Tinyhat connection values: platform URL, computer id, and a
+#    local-dev token. These are written only when explicitly provided. The
+#    local-dev token is for local Docker-style development; production machine
+#    authentication is handled by the runtime through cloud identity
+#    attestation, not by this installer minting or storing a platform token.
+# 4. Requires python3 and install. If it needs to download the runtime source,
+#    it also requires curl and tar.
+# 5. Gets the runtime source either from --source-dir, when you already have a
+#    checkout, or by downloading the selected ref from
+#    tinyloophub/tinyhat--runtimes--hermes as a GitHub tarball.
+# 6. Stops immediately if the downloaded or supplied source does not contain
+#    the hermes_runtime Python package.
+# 7. Records the installed commit when it can. For a git checkout it reads
+#    HEAD; for a downloaded ref it asks the GitHub commits API. If it cannot
+#    resolve a commit, install still continues without COMMIT_SHA.
+# 8. Creates the install directory, bin directory, state directory, and
+#    state/current directory if they do not already exist.
+# 9. Replaces only the installed hermes_runtime package under the install
+#    prefix. It does not delete the runtime state directory.
+# 10. Writes audit files: INSTALL_REF under the install prefix, VERSION under
+#     state/current, and COMMIT_SHA under state/current when the commit is
+#     known.
+# 11. Writes an executable wrapper named tinyhat-hermes-runtime. The wrapper
+#     sets PYTHONPATH, points the runtime at the state directory, and runs
+#     python3 -m hermes_runtime.main.
+# 12. Writes a private env file at <prefix>/env/runtime.env with mode 0600.
+#     That file contains the runtime ref, state directory, and any optional
+#     Tinyhat connection values that were passed to the installer.
+# 13. Unless --no-systemd is passed, tries to install the runtime as a systemd
+#     service on Linux. On non-systemd systems it leaves the files installed
+#     and prints a message. On systemd systems it requires root.
+# 14. When installing systemd as root, copies the private env file to
+#     /etc/tinyhat/hermes-runtime.env, writes
+#     /etc/systemd/system/tinyhat-hermes-runtime.service, reloads systemd, and
+#     enables and starts tinyhat-hermes-runtime.service.
+# 15. The systemd service restarts automatically, starts after the network is
+#     online, runs with Nice=-5, and uses OOMScoreAdjust=-900 so the OS strongly
+#     prefers keeping the heartbeat/runtime process alive.
+# 16. This installer installs only the Tinyhat Hermes runtime process. It does
+#     not install upstream Hermes Agent yet, create a Tinyhat Computer row, or
+#     assign a Computer to an Agent.
 set -euo pipefail
 
 REPO_SLUG="tinyloophub/tinyhat--runtimes--hermes"
