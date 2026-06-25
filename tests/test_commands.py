@@ -16,7 +16,11 @@ sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
-from hermes_runtime.main import _heartbeat_metrics, _scheduled_update_check  # noqa: E402
+from hermes_runtime.main import (  # noqa: E402
+    _heartbeat_metrics,
+    _run_one_command,
+    _scheduled_update_check,
+)
 from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
 
@@ -162,6 +166,39 @@ class CommandTests(TestCase):
             self.assertEqual(result["count"], 1)
             self.assertEqual(result["commands"][0]["command_id"], "cmd-1")
             self.assertEqual(report(state_dir=state_dir)["commands"][0]["kind"], "ping")
+
+    def test_ledger_write_failure_still_reports_command_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=Path(tmp),
+                computer_id="local-dev",
+            )
+
+            with patch(
+                "hermes_runtime.main.append_entry",
+                side_effect=OSError("ledger unavailable"),
+            ):
+                asyncio.run(
+                    _run_one_command(
+                        ctx,
+                        {
+                            "command_id": "cmd-ledger-fails",
+                            "idempotency_key": "idem-ledger-fails",
+                            "kind": "ping",
+                            "spec": {},
+                        },
+                    )
+                )
+
+            self.assertEqual(
+                platform.posts[0][0],
+                "/hapi/v1/computers/local-dev/runtime-command/result",
+            )
+            reported = platform.posts[0][1]["result"]
+            self.assertEqual(reported["status"], "applied")
+            self.assertEqual(reported["result"], {"message": "pong"})
 
     def test_check_update_writes_last_result_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

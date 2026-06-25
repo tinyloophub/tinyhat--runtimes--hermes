@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,12 @@ def ledger_path(state_dir: Path) -> Path:
 
 
 def utc_now_iso() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def append_entry(
@@ -86,14 +91,14 @@ def compact(
     if stat.st_size <= max_bytes:
         return
 
-    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     kept: list[dict[str, Any]] = []
     for entry in read_entries(state_dir=state_dir, limit=2000):
         completed_at = str(entry.get("completed_at") or "")
         try:
             observed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
         except ValueError:
-            observed = datetime.now(UTC)
+            observed = datetime.now(timezone.utc)
         if observed >= cutoff:
             kept.append(entry)
 
