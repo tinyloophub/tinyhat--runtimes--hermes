@@ -45,8 +45,37 @@ it.
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime token belongs to. | None. Calls `/hapi/v1/computers/local-dev/whoami` in local dev. |
+| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Calls GitHub release refs, writes `updates/last_check.json`, reports the result to the platform update-check API, does not stage or activate code. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes a staged version marker. | Writes `staged/VERSION` under runtime state. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
+
+## Daily update checks
+
+The runtime does not check GitHub for updates on every heartbeat. Each heartbeat
+only performs a fast local due-time check against small config files. When the
+configured time has arrived and the check has not already run for that local
+date, the runtime starts the network check as an async background task so the
+heartbeat can continue.
+
+Default schedule:
+
+```text
+02:35 America/Los_Angeles
+```
+
+Override the schedule by writing these files under the runtime state directory:
+
+| File | Example | Meaning |
+| --- | --- | --- |
+| `config/update_check_time` | `02:35` | Local 24-hour time for the daily check. |
+| `config/update_check_timezone` | `America/Los_Angeles` | IANA timezone for interpreting the check time. |
+| `config/update_check_channel` | `lts` | `lts`, `latest`, or `custom`. |
+| `config/update_check_ref` | `v0.20.0-dev.20260625T125559Z.pr2-smoke` | Optional exact ref. Required for custom checks. |
+
+The latest check result is stored at `updates/last_check.json` for local
+debugging and is reported through the platform update-check result API. It is
+not embedded into heartbeat metrics. Use the admin `check_update` command when
+you want to run the same check immediately from Hat admin.
 
 ## Update channels
 

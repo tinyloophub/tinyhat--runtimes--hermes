@@ -24,9 +24,11 @@ REQUIRED_FILES = (
     "hermes_runtime/__init__.py",
     "hermes_runtime/client.py",
     "hermes_runtime/main.py",
+    "hermes_runtime/update_check.py",
     "hermes_runtime/commands/__init__.py",
     "hermes_runtime/commands/ping.py",
     "hermes_runtime/commands/whoami.py",
+    "hermes_runtime/commands/check_update.py",
     "hermes_runtime/commands/stage_update.py",
     "hermes_runtime/commands/activate_update.py",
     "scripts/check_dev_skills.py",
@@ -75,8 +77,11 @@ def main() -> None:
         "## Command whitelist",
         "`ping`",
         "`whoami`",
+        "`check_update`",
         "`stage_update`",
         "`activate_update`",
+        "config/update_check_time",
+        "config/update_check_timezone",
         "## Update channels",
         "vX.Y.Z-dev.YYYYMMDDTHHMMSSZ",
         "publish_dev_release.py",
@@ -106,11 +111,17 @@ def main() -> None:
     for phrase in (
         "secondary development releases",
         "publish_dev_release.py",
+        "README.md command whitelist",
         "channels/latest",
         "channels/lts",
     ):
         if phrase not in release_skill:
             fail(f".agents/skills/release/SKILL.md missing phrase: {phrase}")
+
+    commands = read(root, "hermes_runtime/commands/__init__.py")
+    for command in re.findall(r'"([a-z_]+)"\s*:', commands):
+        if f"`{command}`" not in readme:
+            fail(f"README.md command table missing `{command}`")
 
     dev_release_workflow = read(root, ".github/workflows/dev-release.yml")
     for phrase in ("workflow_dispatch", "publish_dev_release.py", "GH_TOKEN"):

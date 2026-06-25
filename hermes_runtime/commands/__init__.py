@@ -8,6 +8,7 @@ from typing import Any
 COMMAND_MODULES = {
     "ping": "hermes_runtime.commands.ping",
     "whoami": "hermes_runtime.commands.whoami",
+    "check_update": "hermes_runtime.commands.check_update",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
 }

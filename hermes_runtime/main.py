@@ -14,6 +14,11 @@ from typing import Any
 from hermes_runtime import __version__
 from hermes_runtime.client import PlatformClient, PlatformError
 from hermes_runtime.commands import run_command
+from hermes_runtime.update_check import (
+    mark_scheduled_check_started,
+    run_update_check,
+    scheduled_check_due,
+)
 
 STATE_SCHEMA = "tinyhat_hermes_runtime_v1"
 RESULT_SCHEMA = "tiny_runtime_command_result_v1"
@@ -27,6 +32,7 @@ class RuntimeContext:
     state_dir: Path
     started_at: float
     restart_requested: bool = False
+    update_check_task: asyncio.Task[dict[str, Any]] | None = None
 
     @property
     def current_version_file(self) -> Path:
@@ -152,7 +158,47 @@ async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None
     )
 
 
+def _consume_update_check_task(ctx: RuntimeContext) -> None:
+    task = ctx.update_check_task
+    if task is None or not task.done():
+        return
+    ctx.update_check_task = None
+    try:
+        result = task.result()
+    except Exception as exc:  # noqa: BLE001 - background failures are reported later.
+        print(f"scheduled update check failed: {exc}", file=sys.stderr, flush=True)
+        return
+    target = result.get("target_ref")
+    status = result.get("status")
+    print(f"scheduled update check complete: {status} {target}", flush=True)
+
+
+async def _scheduled_update_check(ctx: RuntimeContext) -> dict[str, Any]:
+    result = await run_update_check(
+        state_dir=ctx.state_dir,
+        current_version=ctx.current_version(),
+        reason="scheduled",
+    )
+    await ctx.platform.post_json(
+        "/hapi/v1/computers/local-dev/update-check-results/v1",
+        {"result": result},
+    )
+    return result
+
+
+def _maybe_start_scheduled_update_check(ctx: RuntimeContext) -> None:
+    _consume_update_check_task(ctx)
+    if ctx.update_check_task is not None:
+        return
+    due, _config, date_key = scheduled_check_due(state_dir=ctx.state_dir)
+    if not due:
+        return
+    mark_scheduled_check_started(state_dir=ctx.state_dir, date_key=date_key)
+    ctx.update_check_task = asyncio.create_task(_scheduled_update_check(ctx))
+
+
 async def _heartbeat_once(ctx: RuntimeContext) -> None:
+    _maybe_start_scheduled_update_check(ctx)
     response = await ctx.platform.post_json(
         "/hapi/v1/computers/local-dev/heartbeat",
         {"metrics": _heartbeat_metrics(ctx, status="running")},

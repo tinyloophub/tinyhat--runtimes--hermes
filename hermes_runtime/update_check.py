@@ -1,0 +1,186 @@
+"""Scheduled update discovery for the Tinyhat Hermes runtime."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from urllib import error, parse, request
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+REPO = "tinyloophub/tinyhat--runtimes--hermes"
+GITHUB_API_BASE = f"https://api.github.com/repos/{REPO}"
+DEFAULT_CHECK_TIME = "02:35"
+DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+@dataclass(frozen=True)
+class UpdateCheckConfig:
+    local_time: str
+    timezone: str
+    channel: str
+    target_ref: str
+
+
+def _read_file(path: Path) -> str | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    return value or None
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def read_last_result(state_dir: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads((state_dir / "updates" / "last_check.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def read_config(state_dir: Path) -> UpdateCheckConfig:
+    config_dir = state_dir / "config"
+    local_time = _read_file(config_dir / "update_check_time") or DEFAULT_CHECK_TIME
+    if TIME_RE.fullmatch(local_time) is None:
+        local_time = DEFAULT_CHECK_TIME
+
+    timezone = _read_file(config_dir / "update_check_timezone") or DEFAULT_CHECK_TIMEZONE
+    try:
+        ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        timezone = DEFAULT_CHECK_TIMEZONE
+
+    channel = _read_file(config_dir / "update_check_channel") or "lts"
+    if channel not in {"lts", "latest", "custom"}:
+        channel = "lts"
+
+    target_ref = _read_file(config_dir / "update_check_ref")
+    if not target_ref:
+        target_ref = f"channels/{channel}" if channel in {"lts", "latest"} else ""
+
+    return UpdateCheckConfig(
+        local_time=local_time,
+        timezone=timezone,
+        channel=channel,
+        target_ref=target_ref,
+    )
+
+
+def scheduled_check_due(
+    *,
+    state_dir: Path,
+    now_utc: datetime | None = None,
+) -> tuple[bool, UpdateCheckConfig, str]:
+    config = read_config(state_dir)
+    now = (now_utc or datetime.now(UTC)).astimezone(ZoneInfo(config.timezone))
+    today_key = now.date().isoformat()
+    last_key = _read_file(state_dir / "updates" / "last_scheduled_check_date")
+    due_clock = now.strftime("%H:%M") >= config.local_time
+    return due_clock and last_key != today_key, config, today_key
+
+
+def mark_scheduled_check_started(*, state_dir: Path, date_key: str) -> None:
+    path = state_dir / "updates" / "last_scheduled_check_date"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(date_key + "\n", encoding="utf-8")
+
+
+def _fetch_github_commit(ref: str) -> dict[str, Any]:
+    encoded = parse.quote(ref, safe="")
+    req = request.Request(
+        f"{GITHUB_API_BASE}/commits/{encoded}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "tinyhat-hermes-runtime-update-check/0.0.1",
+        },
+        method="GET",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw = response.read()
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "http_status": exc.code,
+            "message": detail[:500],
+        }
+    except error.URLError as exc:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "message": str(exc.reason),
+        }
+    payload = json.loads(raw.decode("utf-8"))
+    sha = str(payload.get("sha") or "").strip() if isinstance(payload, dict) else ""
+    return {
+        "ok": bool(sha),
+        "status": "ok" if sha else "malformed",
+        "sha": sha or None,
+        "html_url": payload.get("html_url") if isinstance(payload, dict) else None,
+    }
+
+
+async def run_update_check(
+    *,
+    state_dir: Path,
+    current_version: str,
+    spec: dict[str, Any] | None = None,
+    reason: str = "scheduled",
+) -> dict[str, Any]:
+    config = read_config(state_dir)
+    command_spec = spec if isinstance(spec, dict) else {}
+    channel = str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
+    target_ref = str(command_spec.get("target_ref") or config.target_ref or "").strip()
+    if not target_ref and channel in {"lts", "latest"}:
+        target_ref = f"channels/{channel}"
+    if not target_ref:
+        raise ValueError("check_update requires target_ref for custom update checks")
+
+    resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
+    target_sha = str(resolved.get("sha") or "").strip() or None
+    update_available = bool(
+        resolved.get("ok")
+        and target_ref != current_version
+        and (target_sha is None or target_sha != current_version)
+    )
+    result = {
+        "schema": "tinyhat_hermes_update_check_v1",
+        "reason": reason,
+        "status": resolved.get("status") or "unknown",
+        "repo": REPO,
+        "channel": channel,
+        "target_ref": target_ref,
+        "target_sha": target_sha,
+        "target_url": resolved.get("html_url"),
+        "current_version": current_version,
+        "update_available": update_available,
+        "checked_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "schedule": {
+            "time": config.local_time,
+            "timezone": config.timezone,
+            "config_files": {
+                "time": "config/update_check_time",
+                "timezone": "config/update_check_timezone",
+                "channel": "config/update_check_channel",
+                "target_ref": "config/update_check_ref",
+            },
+        },
+    }
+    if not resolved.get("ok"):
+        result["message"] = resolved.get("message")
+        result["http_status"] = resolved.get("http_status")
+    _write_json(state_dir / "updates" / "last_check.json", result)
+    return result
