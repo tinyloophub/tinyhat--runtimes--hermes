@@ -1,0 +1,49 @@
+name: dev-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base version, shaped vX.Y.Z"
+        required: true
+        default: "v0.20.0"
+      suffix:
+        description: "Short dev-release reason"
+        required: true
+        default: "manual"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-dev-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Configure release identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Validate runtime repo
+        run: |
+          git diff --check
+          bash -n install.sh
+          python -m compileall -q scripts hermes_runtime
+          python -m unittest discover -s tests -v
+          python3 scripts/check_dev_skills.py
+          python3 scripts/check_repo_basics.py
+      - name: Publish dev prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/publish_dev_release.py \
+            --base "${{ inputs.base }}" \
+            --suffix "${{ inputs.suffix }}" \
+            --target "$GITHUB_SHA" \
+            --publish \
+            --skip-clean-check
