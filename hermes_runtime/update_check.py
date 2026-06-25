@@ -1,4 +1,11 @@
-"""Scheduled update discovery for the Tinyhat Hermes runtime."""
+"""Scheduled update discovery for the Tinyhat Hermes runtime.
+
+The runtime checks the target that the platform or local config asks it to
+check. For channel checks, such as ``lts`` or ``latest``, it only treats a
+channel ref or final SemVer tag as a valid update target. Dev and RC tags are
+still supported, but they must be requested through the explicit ``custom``
+path so a newer prerelease is never reported as an available LTS update.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ GITHUB_API_BASE = f"https://api.github.com/repos/{REPO}"
 DEFAULT_CHECK_TIME = "02:35"
 DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+FINAL_RELEASE_RE = re.compile(r"^v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
 
 
 @dataclass(frozen=True)
@@ -134,6 +142,37 @@ def _fetch_github_commit(ref: str) -> dict[str, Any]:
     }
 
 
+def _final_version_tuple(value: str | None) -> tuple[int, int, int] | None:
+    match = FINAL_RELEASE_RE.fullmatch(str(value or "").strip())
+    if match is None:
+        return None
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+    )
+
+
+def _is_channel_eligible_target(*, channel: str, target_ref: str) -> bool:
+    if channel == "custom":
+        return True
+    if target_ref == f"channels/{channel}":
+        return True
+    return _final_version_tuple(target_ref) is not None
+
+
+def _is_strictly_newer_final(
+    *,
+    current_version: str,
+    target_ref: str,
+) -> bool | None:
+    current = _final_version_tuple(current_version)
+    target = _final_version_tuple(target_ref)
+    if current is None or target is None:
+        return None
+    return target > current
+
+
 async def run_update_check(
     *,
     state_dir: Path,
@@ -174,7 +213,24 @@ async def run_update_check(
         current_matches_target = target_sha == current_sha
     elif target_sha:
         current_matches_target = target_sha == current_version
-    update_available = bool(resolved.get("ok") and not current_matches_target)
+    channel_eligible = _is_channel_eligible_target(
+        channel=channel,
+        target_ref=target_ref,
+    )
+    final_version_is_newer = _is_strictly_newer_final(
+        current_version=current_version,
+        target_ref=target_ref,
+    )
+    if final_version_is_newer is False:
+        version_gate_allows_update = False
+    else:
+        version_gate_allows_update = True
+    update_available = bool(
+        resolved.get("ok")
+        and channel_eligible
+        and version_gate_allows_update
+        and not current_matches_target
+    )
     result = {
         "schema": "tinyhat_hermes_update_check_v1",
         "reason": reason,
@@ -186,6 +242,8 @@ async def run_update_check(
         "target_url": resolved.get("html_url"),
         "current_version": current_version,
         "current_sha": current_sha,
+        "channel_eligible": channel_eligible,
+        "target_final_version_is_newer": final_version_is_newer,
         "update_available": update_available,
         "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "schedule": {

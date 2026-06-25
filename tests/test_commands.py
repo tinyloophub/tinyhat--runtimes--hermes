@@ -365,6 +365,37 @@ class CommandTests(TestCase):
             self.assertEqual(checked["target_sha"], None)
             self.assertIn("Local dev", checked["message"])
 
+    def test_lts_check_does_not_treat_dev_tag_as_available_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.1",
+                current_commit_sha=lambda: None,
+            )
+
+            with patch.dict("os.environ", {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"}):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "v0.0.2-dev.20260625T173000Z.smoke",
+                            },
+                        },
+                    )
+                )
+
+            self.assertFalse(checked["channel_eligible"])
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(
+                checked["target_ref"], "v0.0.2-dev.20260625T173000Z.smoke"
+            )
+
     def test_heartbeat_metrics_do_not_embed_update_check_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
