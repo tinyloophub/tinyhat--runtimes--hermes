@@ -140,7 +140,7 @@ it.
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. Calls `/hapi/v1/computers/local-dev/whoami`; the platform resolves the Computer from the local-dev bearer token. |
-| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Calls GitHub release refs, writes `updates/last_check.json`, reports the result to the platform update-check API, does not stage or activate code. |
+| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, reports the result to the platform update-check API, does not stage or activate code. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes a staged version marker. | Writes `staged/VERSION` under runtime state. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 
@@ -172,10 +172,10 @@ debugging and is reported through the platform update-check result API. It is
 not embedded into heartbeat metrics. Use the admin `check_update` command when
 you want to run the same check immediately from Hat admin.
 
-In the local Docker harness, a custom dev-release check can fall back to a
-simple requested-ref versus installed-ref comparison if GitHub's anonymous API
-is unavailable or rate-limited. Production update target resolution should use
-the platform's attested machine identity path instead of this local fallback.
+In the local Docker harness, the platform supplies the target ref and the
+runtime only compares that ref with the installed ref. It does not need
+anonymous GitHub API access. Production update target resolution should use the
+platform's attested machine identity path instead of this local shortcut.
 
 The installer records the installed runtime ref in `current/VERSION` and, when
 available, the resolved commit sha in `current/COMMIT_SHA`. Update checks compare
