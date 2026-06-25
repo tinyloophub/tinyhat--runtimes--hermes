@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.main import _heartbeat_metrics, _scheduled_update_check  # noqa: E402
+from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
 from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
 
 
@@ -41,7 +42,13 @@ class CommandTests(TestCase):
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "ping"}))
         self.assertEqual(result["message"], "pong")
 
-    def test_whoami_uses_computer_scoped_path(self) -> None:
+    def test_platform_paths_use_local_dev_context(self) -> None:
+        self.assertEqual(
+            computer_api_path("computer 123", "heartbeat"),
+            "/hapi/v1/computers/local-dev/heartbeat",
+        )
+
+    def test_whoami_uses_local_dev_attestation_path(self) -> None:
         platform = FakePlatform()
         ctx = SimpleNamespace(platform=platform, computer_id="computer 123")
 
@@ -49,11 +56,11 @@ class CommandTests(TestCase):
 
         self.assertEqual(
             platform.gets,
-            ["/hapi/v1/computers/computer%20123/whoami"],
+            ["/hapi/v1/computers/local-dev/whoami"],
         )
         self.assertEqual(
             result["attestation"]["path"],
-            "/hapi/v1/computers/computer%20123/whoami",
+            "/hapi/v1/computers/local-dev/whoami",
         )
 
     def test_update_is_staged_then_marked_for_restart(self) -> None:
@@ -193,7 +200,7 @@ class CommandTests(TestCase):
             self.assertEqual(checked["current_sha"], target_sha)
             self.assertEqual(
                 platform.posts[0][0],
-                "/hapi/v1/computers/987/update-check-results/v1",
+                "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
 
     def test_heartbeat_metrics_do_not_embed_update_check_results(self) -> None:
@@ -274,7 +281,7 @@ class CommandTests(TestCase):
             self.assertEqual(result["reason"], "scheduled")
             self.assertEqual(
                 platform.posts[0][0],
-                "/hapi/v1/computers/scheduled/update-check-results/v1",
+                "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
             self.assertTrue(
                 (state_dir / "updates" / "last_scheduled_check_date").is_file()

@@ -35,6 +35,20 @@ production Linux Computer the same runtime should run under a process manager
 such as systemd with restart enabled and a high enough priority that Hermes can
 use the machine's resources without starving the heartbeat process.
 
+## Authentication model
+
+Production Hermes Computers should not store a long-lived Tinyhat platform
+token. The production path is Google Cloud VM identity attestation: the runtime
+fetches a Google-signed VM identity token from the metadata server when calling
+Tinyhat, and the platform verifies that the token belongs to the expected
+project, zone, and instance id before accepting the request.
+
+The current `v0.0.1` foundation is local-development only. A local Docker
+container does not have GCE metadata identity, so the Hat admin launch service
+mints a scoped `TINYHAT_LOCAL_DEV_TOKEN` for `/hapi/v1/computers/local-dev/*`.
+That local bearer secret is a dev harness substitute for attestation, not the
+production authentication model.
+
 ## How a Computer is set up
 
 The installer is intentionally a regular public shell script. You can read
@@ -72,9 +86,10 @@ sudo cat /var/lib/tinyhat-hermes-runtime/current/VERSION
 sudo cat /var/lib/tinyhat-hermes-runtime/current/COMMIT_SHA
 ```
 
-The env files contain platform connection data and tokens, so they are written
-with `0600` permissions and should not be pasted into issues, logs, or support
-threads.
+The env files contain platform connection data, such as the platform URL and
+Computer id, so they are written with `0600` permissions. In the local Docker
+harness they also contain the dev-only `TINYHAT_LOCAL_DEV_TOKEN` described
+above. Do not paste env files into issues, logs, or support threads.
 
 ## Heartbeat protection
 
@@ -124,7 +139,7 @@ it.
 | Command | File | Why it exists | Side effects |
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
-| `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime token belongs to. | None. Calls the Computer-scoped platform attestation endpoint. |
+| `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. Calls `/hapi/v1/computers/local-dev/whoami`; the platform resolves the Computer from the local-dev bearer token. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Calls GitHub release refs, writes `updates/last_check.json`, reports the result to the platform update-check API, does not stage or activate code. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. In the local foundation it writes a staged version marker. | Writes `staged/VERSION` under runtime state. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
