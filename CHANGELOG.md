@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `install.sh --run-foreground` so local Docker machines can use the same
+  public installer surface as production machines while letting Docker supervise
+  the long-running process; foreground mode now forwards TERM and INT cleanly to
+  the runtime child.
+
 ## 0.0.6 - 2026-06-26
 
 - Treat legacy cached update-check results that do not record the checked

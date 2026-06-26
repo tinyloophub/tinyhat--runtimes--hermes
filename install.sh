@@ -39,17 +39,24 @@
 #     That file contains the runtime ref, state directory, optional platform
 #     URL/computer id, and the local-dev token only when --local-dev-token was
 #     explicitly passed.
-# 13. Unless --no-systemd is passed, tries to install the runtime as a systemd
+# 13. If --run-foreground is passed, runs the installed runtime in the
+#     foreground with a small restart loop. This is the local Docker path for
+#     machines without systemd; the loop is public here instead of being a
+#     private platform script. TERM and INT are forwarded as the same signal to
+#     the runtime child so Docker or another supervisor can stop the process
+#     cleanly. If a stop signal lands during child startup, the loop also checks
+#     Bash's background job table so the just-started child is still stopped.
+# 14. Unless --no-systemd or --run-foreground is passed, tries to install the runtime as a systemd
 #     service on Linux. On non-systemd systems it leaves the files installed
 #     and prints a message. On systemd systems it requires root.
-# 14. When installing systemd as root, copies the private env file to
+# 15. When installing systemd as root, copies the private env file to
 #     /etc/tinyhat/hermes-runtime.env, writes
 #     /etc/systemd/system/tinyhat-hermes-runtime.service, reloads systemd, and
 #     enables and starts tinyhat-hermes-runtime.service.
-# 15. The systemd service restarts automatically, starts after the network is
+# 16. The systemd service restarts automatically, starts after the network is
 #     online, runs with Nice=-5, and uses OOMScoreAdjust=-900 so the OS strongly
 #     prefers keeping the heartbeat/runtime process alive.
-# 16. This installer installs only the Tinyhat Hermes runtime process. It does
+# 17. This installer installs only the Tinyhat Hermes runtime process. It does
 #     not install upstream Hermes Agent yet, create a Tinyhat Computer row, or
 #     assign a Computer to an Agent.
 set -euo pipefail
@@ -67,6 +74,7 @@ platform_url="${TINYHAT_PLATFORM_URL:-}"
 computer_id="${TINYHAT_COMPUTER_ID:-}"
 local_dev_token="${TINYHAT_LOCAL_DEV_TOKEN:-}"
 install_systemd=1
+run_foreground=0
 
 usage() {
   cat <<'USAGE'
@@ -85,6 +93,9 @@ Options:
   --computer-id ID          Computer id written to the runtime env file.
   --local-dev-token TOKEN   Local-dev bearer token written to the runtime env file.
   --no-systemd              Do not install or restart the systemd unit.
+  --run-foreground          Install, then run the runtime in the foreground with
+                            a restart loop. Implies --no-systemd. Intended for
+                            local Docker or another external supervisor.
   -h, --help                Show this help.
 
 The installer installs only the Tinyhat runtime process. It does not install
@@ -134,6 +145,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-systemd)
+      install_systemd=0
+      shift
+      ;;
+    --run-foreground)
+      run_foreground=1
       install_systemd=0
       shift
       ;;
@@ -264,6 +280,46 @@ umask 077
 } > "$env_file"
 chmod 0600 "$env_file"
 
+run_runtime_foreground() {
+  echo "install.sh: running tinyhat-hermes-runtime in foreground restart mode"
+  local child_pid=""
+
+  stop_foreground_runtime() {
+    local signal="${1:-TERM}"
+    local pid="$child_pid"
+    trap - TERM INT
+    if [[ -z "$pid" ]]; then
+      pid="$(jobs -pr | tail -n 1 || true)"
+    fi
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "-$signal" "$pid" >/dev/null 2>&1 || true
+      wait "$pid" || true
+    fi
+    exit 0
+  }
+
+  trap 'stop_foreground_runtime TERM' TERM
+  trap 'stop_foreground_runtime INT' INT
+
+  while true; do
+    if [[ -f "$env_file" ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      . "$env_file"
+      set +a
+    fi
+    set +e
+    "$prefix/bin/tinyhat-hermes-runtime" &
+    child_pid="$!"
+    wait "$child_pid"
+    local status="$?"
+    child_pid=""
+    set -e
+    echo "tinyhat-hermes-runtime exited with status ${status}; restarting in 2s" >&2
+    sleep 2
+  done
+}
+
 if [[ "$install_systemd" -eq 1 ]]; then
   if [[ "$(uname -s)" != "Linux" ]] || ! command -v systemctl >/dev/null 2>&1; then
     echo "install.sh: systemd unavailable; installed files only"
@@ -300,3 +356,7 @@ EOF
 fi
 
 echo "install.sh: installed Tinyhat Hermes runtime into $prefix"
+
+if [[ "$run_foreground" -eq 1 ]]; then
+  run_runtime_foreground
+fi
