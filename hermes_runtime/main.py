@@ -35,6 +35,9 @@ STATE_SCHEMA = "tinyhat_hermes_runtime_v1"
 RESULT_SCHEMA = "tiny_runtime_command_result_v1"
 DEFAULT_STATE_DIR = "/var/lib/tinyhat-hermes-runtime"
 DEFAULT_CURRENT_VERSION = "0.0.1"
+DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 1.0
+DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 10.0
+ASSIGNED_PLATFORM_STATES = {"assigned", "active"}
 
 
 @dataclass
@@ -44,6 +47,7 @@ class RuntimeContext:
     started_at: float
     computer_id: str = "local-dev"
     platform_auth: str = "local_dev"
+    platform_state: str = "provisioning"
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
 
@@ -138,6 +142,25 @@ def _env(name: str, default: str | None = None) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def _heartbeat_interval_seconds(ctx: RuntimeContext) -> float:
+    legacy_override = (os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "").strip()
+    if legacy_override:
+        return max(0.1, float(legacy_override))
+
+    assigned_interval = float(
+        os.getenv("TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS")
+        or DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS
+    )
+    unassigned_interval = float(
+        os.getenv("TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS")
+        or DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS
+    )
+    state = (getattr(ctx, "platform_state", "") or "").strip().lower()
+    if state in ASSIGNED_PLATFORM_STATES:
+        return max(0.1, assigned_interval)
+    return max(0.1, unassigned_interval)
 
 
 def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
@@ -374,6 +397,9 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
         context_computer_api_path(ctx, "heartbeat"),
         {"metrics": _heartbeat_metrics(ctx, status="running")},
     )
+    platform_state = response.get("state")
+    if isinstance(platform_state, str) and platform_state.strip():
+        ctx.platform_state = platform_state.strip()
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
         return
@@ -397,7 +423,6 @@ async def run() -> int:
             token_provider=CachedGoogleIdentityToken(audience=audience),
         )
         platform_auth = "gcloud"
-    interval = float(os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "30")
     state_dir = Path(os.getenv("TINYHAT_RUNTIME_STATE_DIR") or DEFAULT_STATE_DIR)
     computer_id = (os.getenv("TINYHAT_COMPUTER_ID") or "local-dev").strip() or "local-dev"
     ctx = RuntimeContext(
@@ -423,7 +448,7 @@ async def run() -> int:
         if ctx.restart_requested:
             print("restart requested after command settlement", flush=True)
             return 0
-        await asyncio.sleep(interval)
+        await asyncio.sleep(_heartbeat_interval_seconds(ctx))
 
 
 def main() -> None:

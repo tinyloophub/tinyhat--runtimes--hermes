@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import sys
 import tarfile
 import tempfile
@@ -23,7 +24,9 @@ from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
     RuntimeContext,
+    _heartbeat_interval_seconds,
     _heartbeat_metrics,
+    _heartbeat_once,
     _reexec_after_code_swap,
     _safe_activate_staged_on_startup,
     _run_one_command,
@@ -51,12 +54,13 @@ class FakePlatform:
         self.posts: list[tuple[str, dict]] = []
         self.gets: list[str] = []
         self.fail_posts = False
+        self.post_response: dict[str, Any] = {"ok": True}
 
     async def post_json(self, path: str, payload: dict) -> dict:
         if self.fail_posts:
             raise RuntimeError("post failed")
         self.posts.append((path, payload))
-        return {"ok": True}
+        return self.post_response
 
     async def get_json(self, path: str) -> dict:
         self.gets.append(path)
@@ -113,6 +117,45 @@ class CommandTests(TestCase):
 
         self.assertEqual(platform.gets, ["/hapi/v1/computers/me/whoami"])
         self.assertEqual(result["attestation"]["path"], "/hapi/v1/computers/me/whoami")
+
+    def test_heartbeat_records_platform_state_for_cadence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            platform = FakePlatform()
+            platform.post_response = {"ok": True, "state": "assigned"}
+            ctx = RuntimeContext(
+                platform=platform,
+                state_dir=Path(tmp),
+                started_at=0,
+                platform_state="ready",
+            )
+
+            asyncio.run(_heartbeat_once(ctx))
+
+        self.assertEqual(ctx.platform_state, "assigned")
+
+    def test_heartbeat_interval_is_fast_until_assigned(self) -> None:
+        ctx = SimpleNamespace(platform_state="ready")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 1.0)
+
+        ctx.platform_state = "assigned"
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 10.0)
+
+        ctx.platform_state = "active"
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS": "12"},
+            clear=True,
+        ):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 12.0)
+
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_HEARTBEAT_INTERVAL_SECONDS": "30"},
+            clear=True,
+        ):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 30.0)
 
     def test_update_is_staged_then_marked_for_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
