@@ -478,7 +478,8 @@ async def run() -> int:
             await _heartbeat_once(ctx)
         except PlatformError as exc:
             print(f"heartbeat failed: {exc}", file=sys.stderr, flush=True)
-        if ctx.restart_requested:
+        _consume_command_task(ctx)
+        if ctx.restart_requested and ctx.command_task is None:
             print("restart requested after command settlement", flush=True)
             return 0
         await asyncio.sleep(_heartbeat_interval_seconds(ctx))
