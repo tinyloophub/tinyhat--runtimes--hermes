@@ -31,6 +31,7 @@ from hermes_runtime.main import (  # noqa: E402
     _safe_activate_staged_on_startup,
     _run_one_command,
     _scheduled_update_check,
+    run,
 )
 from hermes_runtime.platform_paths import (  # noqa: E402
     computer_api_path,
@@ -132,6 +133,239 @@ class CommandTests(TestCase):
             asyncio.run(_heartbeat_once(ctx))
 
         self.assertEqual(ctx.platform_state, "assigned")
+
+    def test_heartbeat_starts_any_command_without_blocking_loop(self) -> None:
+        async def scenario() -> tuple[RuntimeContext, FakePlatform]:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {
+                    "ok": True,
+                    "state": "ready",
+                    "command": {
+                        "command_id": "cmd-slow",
+                        "idempotency_key": "idem-slow",
+                        "kind": "install_hermes",
+                        "spec": {},
+                    },
+                }
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="ready",
+                )
+                started = asyncio.Event()
+                release = asyncio.Event()
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, str]:
+                    self.assertEqual(command["command_id"], "cmd-slow")
+                    started.set()
+                    await release.wait()
+                    return {"message": "done"}
+
+                with patch("hermes_runtime.main.run_command", fake_run_command):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    await asyncio.wait_for(started.wait(), timeout=0.2)
+
+                    self.assertIsNotNone(ctx.command_task)
+                    self.assertFalse(ctx.command_task.done())
+                    self.assertEqual(ctx.command_id, "cmd-slow")
+                    self.assertEqual(ctx.command_kind, "install_hermes")
+                    self.assertFalse(
+                        any(
+                            path.endswith("/runtime-command/result")
+                            for path, _payload in platform.posts
+                        )
+                    )
+
+                    platform.post_response = {"ok": True, "state": "ready"}
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    heartbeat = platform.posts[-1][1]["metrics"]["hermes_runtime"]
+                    self.assertEqual(
+                        heartbeat["active_command"],
+                        {
+                            "command_id": "cmd-slow",
+                            "kind": "install_hermes",
+                            "status": "running",
+                        },
+                    )
+
+                    release.set()
+                    await asyncio.wait_for(ctx.command_task, timeout=0.2)
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+
+                self.assertIsNone(ctx.command_task)
+                self.assertIsNone(ctx.command_id)
+                self.assertIsNone(ctx.command_kind)
+                result_posts = [
+                    payload
+                    for path, payload in platform.posts
+                    if path.endswith("/runtime-command/result")
+                ]
+                self.assertEqual(len(result_posts), 1)
+                self.assertEqual(result_posts[0]["result"]["status"], "applied")
+                self.assertEqual(
+                    result_posts[0]["result"]["result"], {"message": "done"}
+                )
+                return ctx, platform
+
+        asyncio.run(scenario())
+
+    def test_heartbeat_ignores_new_command_while_one_is_running(self) -> None:
+        async def scenario() -> tuple[RuntimeContext, FakePlatform]:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {
+                    "ok": True,
+                    "state": "ready",
+                    "command": {
+                        "command_id": "cmd-a",
+                        "idempotency_key": "idem-a",
+                        "kind": "install_hermes",
+                        "spec": {},
+                    },
+                }
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="ready",
+                )
+                release = asyncio.Event()
+                started = asyncio.Event()
+                started_commands: list[str] = []
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, str]:
+                    started_commands.append(str(command["command_id"]))
+                    started.set()
+                    await release.wait()
+                    return {"message": f"done:{command['command_id']}"}
+
+                with patch("hermes_runtime.main.run_command", fake_run_command):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    await asyncio.wait_for(started.wait(), timeout=0.2)
+                    self.assertEqual(started_commands, ["cmd-a"])
+
+                    platform.post_response = {
+                        "ok": True,
+                        "state": "ready",
+                        "command": {
+                            "command_id": "cmd-b",
+                            "idempotency_key": "idem-b",
+                            "kind": "setup_snapshot",
+                            "spec": {},
+                        },
+                    }
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+
+                    self.assertEqual(started_commands, ["cmd-a"])
+                    self.assertEqual(ctx.command_id, "cmd-a")
+                    self.assertEqual(ctx.command_kind, "install_hermes")
+                    self.assertFalse(
+                        any(
+                            path.endswith("/runtime-command/result")
+                            for path, _payload in platform.posts
+                        )
+                    )
+
+                    platform.post_response = {"ok": True, "state": "ready"}
+                    release.set()
+                    await asyncio.wait_for(ctx.command_task, timeout=0.2)
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+
+                result_posts = [
+                    payload
+                    for path, payload in platform.posts
+                    if path.endswith("/runtime-command/result")
+                ]
+                self.assertEqual(len(result_posts), 1)
+                self.assertEqual(result_posts[0]["result"]["command_id"], "cmd-a")
+                self.assertEqual(
+                    result_posts[0]["result"]["result"], {"message": "done:cmd-a"}
+                )
+                return ctx, platform
+
+        asyncio.run(scenario())
+
+    def test_restart_waits_for_async_command_result_report(self) -> None:
+        class SlowResultPlatform(FakePlatform):
+            def __init__(self) -> None:
+                super().__init__()
+                self.heartbeat_count = 0
+                self.result_started = asyncio.Event()
+                self.result_finished = asyncio.Event()
+
+            async def post_json(self, path: str, payload: dict) -> dict:
+                if path.endswith("/runtime-command/result"):
+                    self.result_started.set()
+                    await asyncio.sleep(0.2)
+                    self.posts.append((path, payload))
+                    self.result_finished.set()
+                    return {"ok": True}
+                self.posts.append((path, payload))
+                self.heartbeat_count += 1
+                if self.heartbeat_count == 1:
+                    return {
+                        "ok": True,
+                        "state": "ready",
+                        "command": {
+                            "command_id": "cmd-restart",
+                            "idempotency_key": "idem-restart",
+                            "kind": "restart_runtime_service",
+                            "spec": {},
+                        },
+                    }
+                return {"ok": True, "state": "ready"}
+
+        async def scenario() -> SlowResultPlatform:
+            platform = SlowResultPlatform()
+
+            async def fake_run_command(
+                ctx: RuntimeContext, _command: dict[str, Any]
+            ) -> dict[str, str]:
+                ctx.restart_requested = True
+                return {"effect": "after_command_result"}
+
+            with (
+                tempfile.TemporaryDirectory() as tmp,
+                patch.dict(
+                    os.environ,
+                    {
+                        "TINYHAT_PLATFORM_URL": "http://platform.test",
+                        "TINYHAT_LOCAL_DEV_TOKEN": "dev-token",
+                        "TINYHAT_COMPUTER_ID": "local-dev",
+                        "TINYHAT_RUNTIME_STATE_DIR": tmp,
+                        "TINYHAT_HEARTBEAT_INTERVAL_SECONDS": "0.1",
+                    },
+                    clear=True,
+                ),
+                patch("hermes_runtime.main.PlatformClient", return_value=platform),
+                patch(
+                    "hermes_runtime.main._safe_activate_staged_on_startup",
+                    return_value=None,
+                ),
+                patch("hermes_runtime.main.run_command", fake_run_command),
+            ):
+                result = await asyncio.wait_for(run(), timeout=2)
+
+            self.assertEqual(result, 0)
+            self.assertTrue(platform.result_started.is_set())
+            self.assertTrue(platform.result_finished.is_set())
+            result_posts = [
+                payload
+                for path, payload in platform.posts
+                if path.endswith("/runtime-command/result")
+            ]
+            self.assertEqual(len(result_posts), 1)
+            self.assertEqual(result_posts[0]["result"]["command_id"], "cmd-restart")
+            self.assertGreaterEqual(platform.heartbeat_count, 2)
+            return platform
+
+        asyncio.run(scenario())
 
     def test_heartbeat_interval_is_fast_until_assigned(self) -> None:
         ctx = SimpleNamespace(platform_state="ready")

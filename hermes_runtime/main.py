@@ -50,6 +50,9 @@ class RuntimeContext:
     platform_state: str = "provisioning"
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
+    command_task: asyncio.Task[None] | None = None
+    command_id: str | None = None
+    command_kind: str | None = None
 
     @property
     def current_version_file(self) -> Path:
@@ -180,6 +183,13 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "uptime_seconds": int(time.monotonic() - ctx.started_at),
         "updated_at_unix": int(time.time()),
     }
+    command_task = getattr(ctx, "command_task", None)
+    if command_task is not None and not command_task.done():
+        runtime["active_command"] = {
+            "command_id": getattr(ctx, "command_id", None),
+            "kind": getattr(ctx, "command_kind", None),
+            "status": "running",
+        }
     activation_error = _read_activation_error(ctx)
     if activation_error:
         runtime["startup_activation_error"] = activation_error
@@ -348,6 +358,28 @@ async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None
     )
 
 
+def _consume_command_task(ctx: RuntimeContext) -> None:
+    task = ctx.command_task
+    if task is None or not task.done():
+        return
+    ctx.command_task = None
+    ctx.command_id = None
+    ctx.command_kind = None
+    try:
+        task.result()
+    except Exception as exc:  # noqa: BLE001 - command runner logs/report best effort.
+        print(f"runtime command task failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _maybe_start_command(ctx: RuntimeContext, command: dict[str, Any]) -> None:
+    _consume_command_task(ctx)
+    if ctx.command_task is not None:
+        return
+    ctx.command_id = str(command.get("command_id") or "").strip() or None
+    ctx.command_kind = str(command.get("kind") or "").strip() or None
+    ctx.command_task = asyncio.create_task(_run_one_command(ctx, command))
+
+
 def _consume_update_check_task(ctx: RuntimeContext) -> None:
     task = ctx.update_check_task
     if task is None or not task.done():
@@ -392,6 +424,7 @@ def _maybe_start_scheduled_update_check(ctx: RuntimeContext) -> None:
 
 
 async def _heartbeat_once(ctx: RuntimeContext) -> None:
+    _consume_command_task(ctx)
     _maybe_start_scheduled_update_check(ctx)
     response = await ctx.platform.post_json(
         context_computer_api_path(ctx, "heartbeat"),
@@ -405,7 +438,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
         return
     command = envelope.get("command") if envelope.get("type") else envelope
     if isinstance(command, dict) and command:
-        await _run_one_command(ctx, command)
+        _maybe_start_command(ctx, command)
 
 
 async def run() -> int:
@@ -445,7 +478,8 @@ async def run() -> int:
             await _heartbeat_once(ctx)
         except PlatformError as exc:
             print(f"heartbeat failed: {exc}", file=sys.stderr, flush=True)
-        if ctx.restart_requested:
+        _consume_command_task(ctx)
+        if ctx.restart_requested and ctx.command_task is None:
             print("restart requested after command settlement", flush=True)
             return 0
         await asyncio.sleep(_heartbeat_interval_seconds(ctx))
