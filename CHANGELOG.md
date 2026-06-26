@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.10 - 2026-06-26
+
+- Tune heartbeat cadence from platform state: unassigned/provisioning Computers
+  check in quickly for faster assignment, while assigned/active Computers use a
+  slower default cadence.
+- Add explicit environment overrides for assigned and unassigned heartbeat
+  intervals while preserving the legacy fixed-interval override.
+
 ## 0.0.9 - 2026-06-26
 
 - Use Google Cloud identity tokens for production platform API calls so GCloud
