@@ -100,6 +100,8 @@ def _final_release_key(value: str | None) -> tuple[int, int, int] | None:
 
 
 def _version_matches(left: str | None, right: str | None) -> bool:
+    left = _clean_text(left)
+    right = _clean_text(right)
     if not left or not right:
         return False
     if left == right:
@@ -122,10 +124,13 @@ def _last_update_check_for_current_state(
     checked_version = _clean_text(payload.get("current_version"))
     checked_sha = _clean_text(payload.get("current_sha"))
     live_sha = _clean_text(current_sha)
+    live_version = _clean_text(current_version)
     stale_reason = None
-    if checked_sha and live_sha and checked_sha != live_sha:
+    if checked_sha is None and checked_version is None:
+        stale_reason = "cached_check_missing_current_state"
+    elif checked_sha and live_sha and checked_sha != live_sha:
         stale_reason = "current_sha_changed_since_check"
-    elif checked_version and not _version_matches(checked_version, current_version):
+    elif checked_version and not _version_matches(checked_version, live_version):
         stale_reason = "current_version_changed_since_check"
 
     if stale_reason is None:
@@ -136,14 +141,21 @@ def _last_update_check_for_current_state(
     stale_payload["stale_reason"] = stale_reason
     stale_payload["checked_current_version"] = checked_version
     stale_payload["checked_current_sha"] = checked_sha
-    stale_payload["live_current_version"] = current_version
+    stale_payload["live_current_version"] = live_version
     stale_payload["live_current_sha"] = live_sha
     stale_payload["previous_update_available"] = payload.get("update_available")
     stale_payload["update_available"] = None
-    stale_payload["message"] = (
-        "Cached update check is stale because the installed runtime changed "
-        "after that check. Run check_update again for a current decision."
-    )
+    if stale_reason == "cached_check_missing_current_state":
+        stale_payload["message"] = (
+            "Cached update check is stale because it does not record which "
+            "installed runtime it checked. Run check_update again for a current "
+            "decision."
+        )
+    else:
+        stale_payload["message"] = (
+            "Cached update check is stale because the installed runtime changed "
+            "after that check. Run check_update again for a current decision."
+        )
     return stale_payload
 
 

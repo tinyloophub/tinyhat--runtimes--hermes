@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Treat legacy cached update-check results that do not record the checked
+  runtime version or sha as stale, so `update_status` does not surface an
+  unprovable `update_available` decision.
+- Normalize the live runtime version before comparing it with cached update
+  checks.
+
 ## 0.0.5 - 2026-06-26
 
 - Mark cached update-check results as stale in `update_status` when the runtime
