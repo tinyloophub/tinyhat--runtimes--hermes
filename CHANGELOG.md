@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.8 - 2026-06-26
+
 - Make update decisions explicit when a channel selector is unresolved:
   `channels/lts` or `channels/latest` alone no longer reports an update as
   available unless the platform supplies a concrete final tag that is newer
