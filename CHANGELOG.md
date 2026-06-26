@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.12 - 2026-06-26
+
+- Keep heartbeat polling alive while any runtime command is running, so slow
+  commands such as Hermes installation do not make the Computer look offline.
+- Preserve the one-active-command invariant while heartbeats continue, and
+  report restart-triggering command results before the runtime exits.
+
 ## 0.0.11 - 2026-06-26
 
 - Add `install_hermes`, an idempotent runtime command that installs upstream
