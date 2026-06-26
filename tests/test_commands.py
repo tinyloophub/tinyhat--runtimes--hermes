@@ -17,6 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from hermes_runtime import __version__  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
@@ -422,7 +423,7 @@ class CommandTests(TestCase):
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "running_version"}))
 
         self.assertEqual(result["schema"], "tinyhat_hermes_running_version_v1")
-        self.assertEqual(result["code_version"], "0.0.3")
+        self.assertEqual(result["code_version"], __version__)
         self.assertTrue(result["module_file"].endswith("hermes_runtime/__init__.py"))
         self.assertIn("imported by the Python process", result["proof"])
 

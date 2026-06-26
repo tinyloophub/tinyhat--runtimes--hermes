@@ -10,7 +10,10 @@ This repo releases the Tinyhat Hermes runtime package itself.
 
 ## Before Release
 
-- Confirm `VERSION` and `CHANGELOG.md` match the intended runtime behavior.
+- Confirm `VERSION`, `hermes_runtime/__init__.py` `__version__`, and
+  `CHANGELOG.md` match the intended runtime behavior. `VERSION` and
+  `__version__` must stay identical so the `running_version` command proves the
+  same code version the release tag advertises.
 - Confirm the README.md command whitelist matches
   `hermes_runtime/commands/__init__.py`: every command must have one row, the
   row must name its file, why the platform needs it, and whether it has side

@@ -4,6 +4,11 @@ This repository publishes the public runtime slot for Tinyhat-managed Hermes
 Computers. It versions independently from Tinyloop, OpenClaw, and upstream
 Hermes Agent.
 
+Before tagging a release, update `VERSION`, `hermes_runtime/__init__.py`
+`__version__`, and `CHANGELOG.md` together. The repository conformance check
+fails if `VERSION` and `__version__` drift, because `running_version` reports
+the imported package version from the live service process.
+
 ## Release shapes
 
 - Final releases use tags shaped `vX.Y.Z`.

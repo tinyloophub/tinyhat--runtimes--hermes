@@ -40,7 +40,8 @@ from hermes_runtime import __version__
 
 
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
-    module_file = Path(getattr(hermes_runtime, "__file__", "") or "")
+    raw_module_file = getattr(hermes_runtime, "__file__", None)
+    module_file = Path(raw_module_file) if raw_module_file else None
     package_dir = module_file.parent if module_file else None
     return {
         "schema": "tinyhat_hermes_running_version_v1",
