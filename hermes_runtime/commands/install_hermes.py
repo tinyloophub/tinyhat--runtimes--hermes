@@ -24,9 +24,14 @@ Example output:
     {
       "installed_before": false,
       "installed_now": true,
+      "installed_after": true,
       "changed": true,
       "status": {"ok": true, "version": "Hermes Agent 0.1.0"}
     }
+
+    ``installed_now`` means the installer ran during this command. If Hermes
+    was already present, ``installed_now`` is false, ``installed_after`` is
+    true, and ``changed`` is false.
 
 Side effects:
     May install Debian packages ``ca-certificates``, ``curl``, ``git``, and
@@ -71,11 +76,16 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if not status.get("ok"):
         raise RuntimeError("Hermes CLI is installed, but status checks failed.")
 
+    installed_after = bool(status.get("installed"))
+    installed_by_command = not installed_before
+
     return {
         "schema": "tinyhat_hermes_install_v1",
         "installed_before": installed_before,
-        "installed_now": True,
-        "changed": not installed_before,
+        "installed_now": installed_by_command,
+        "installed_after": installed_after,
+        "already_installed": installed_before,
+        "changed": installed_by_command,
         "install_url": "https://hermes-agent.nousresearch.com/install.sh",
         "install_args_source": "TINYHAT_HERMES_INSTALL_ARGS",
         "prerequisites": prerequisites,

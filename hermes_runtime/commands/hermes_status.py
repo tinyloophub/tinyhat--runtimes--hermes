@@ -18,6 +18,7 @@ Example input:
 
 Example output:
     {
+      "schema": "tinyhat_hermes_status_v1",
       "installed": true,
       "ok": true,
       "version": "Hermes Agent 0.1.0",

@@ -28,6 +28,8 @@ def find_hermes_binary() -> Path | None:
     candidates.extend(
         [
             str(home / ".local" / "bin" / "hermes"),
+            # Best-effort fallback for the current upstream installer layout.
+            # The documented interface remains the global ``hermes`` command.
             str(home / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes"),
             "/usr/local/bin/hermes",
         ]
@@ -65,6 +67,7 @@ async def run_process(
     except asyncio.TimeoutError:
         with suppress(ProcessLookupError):
             process.kill()
+        await process.wait()
         returncode = None
         stdout = b""
         stderr = f"command timed out after {timeout_seconds}s".encode()
