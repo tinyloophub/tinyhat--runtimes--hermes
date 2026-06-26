@@ -390,8 +390,8 @@ async def run() -> int:
         platform_auth = "local_dev"
     else:
         audience = (
-            os.getenv("TINYHAT_COMPUTER_TOKEN_AUDIENCE") or platform_url
-        ).strip()
+            os.getenv("TINYHAT_COMPUTER_TOKEN_AUDIENCE") or ""
+        ).strip() or platform_url
         platform = PlatformClient(
             base_url=platform_url,
             token_provider=CachedGoogleIdentityToken(audience=audience),

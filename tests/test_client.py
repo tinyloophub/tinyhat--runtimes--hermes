@@ -54,7 +54,7 @@ def test_cached_google_identity_token_fetches_metadata_token_once(
     monkeypatch.setattr(client_module.request, "urlopen", fake_urlopen)
 
     provider = CachedGoogleIdentityToken(
-        audience="https://tinyloop-wt34.ngrok.app/",
+        audience="https://platform.example/",
         timeout_seconds=3,
     )
 
@@ -64,6 +64,6 @@ def test_cached_google_identity_token_fetches_metadata_token_once(
     url, timeout, headers = calls[0]
     assert timeout == 3
     assert "metadata.google.internal/computeMetadata/v1/instance" in url
-    assert "audience=https%3A%2F%2Ftinyloop-wt34.ngrok.app" in url
+    assert "audience=https%3A%2F%2Fplatform.example" in url
     assert "format=full" in url
     assert headers["Metadata-flavor"] == "Google"

@@ -105,8 +105,10 @@ The env files contain platform connection data, such as the platform URL and
 Computer id, so they are written with `0600` permissions. In the local Docker
 harness they also contain the dev-only `TINYHAT_LOCAL_DEV_TOKEN` described
 above. GCloud Computers should not have a Tinyhat platform bearer token in these
-files; they use metadata-server identity tokens at request time. Do not paste env
-files into issues, logs, or support threads.
+files; they use metadata-server identity tokens at request time. By default the
+identity-token audience is the platform URL; set `TINYHAT_COMPUTER_TOKEN_AUDIENCE`
+only when the platform verifier is configured for a different audience. Do not
+paste env files into issues, logs, or support threads.
 
 ## Heartbeat protection
 
