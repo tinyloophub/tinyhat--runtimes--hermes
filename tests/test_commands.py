@@ -133,6 +133,85 @@ class CommandTests(TestCase):
 
         self.assertEqual(ctx.platform_state, "assigned")
 
+    def test_heartbeat_starts_command_without_blocking_loop(self) -> None:
+        async def scenario() -> tuple[RuntimeContext, FakePlatform]:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {
+                    "ok": True,
+                    "state": "ready",
+                    "command": {
+                        "command_id": "cmd-slow",
+                        "idempotency_key": "idem-slow",
+                        "kind": "ping",
+                        "spec": {},
+                    },
+                }
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="ready",
+                )
+                started = asyncio.Event()
+                release = asyncio.Event()
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, str]:
+                    self.assertEqual(command["command_id"], "cmd-slow")
+                    started.set()
+                    await release.wait()
+                    return {"message": "done"}
+
+                with patch("hermes_runtime.main.run_command", fake_run_command):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    await asyncio.wait_for(started.wait(), timeout=0.2)
+
+                    self.assertIsNotNone(ctx.command_task)
+                    self.assertFalse(ctx.command_task.done())
+                    self.assertEqual(ctx.command_id, "cmd-slow")
+                    self.assertEqual(ctx.command_kind, "ping")
+                    self.assertFalse(
+                        any(
+                            path.endswith("/runtime-command/result")
+                            for path, _payload in platform.posts
+                        )
+                    )
+
+                    platform.post_response = {"ok": True, "state": "ready"}
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    heartbeat = platform.posts[-1][1]["metrics"]["hermes_runtime"]
+                    self.assertEqual(
+                        heartbeat["active_command"],
+                        {
+                            "command_id": "cmd-slow",
+                            "kind": "ping",
+                            "status": "running",
+                        },
+                    )
+
+                    release.set()
+                    await asyncio.wait_for(ctx.command_task, timeout=0.2)
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+
+                self.assertIsNone(ctx.command_task)
+                self.assertIsNone(ctx.command_id)
+                self.assertIsNone(ctx.command_kind)
+                result_posts = [
+                    payload
+                    for path, payload in platform.posts
+                    if path.endswith("/runtime-command/result")
+                ]
+                self.assertEqual(len(result_posts), 1)
+                self.assertEqual(result_posts[0]["result"]["status"], "applied")
+                self.assertEqual(
+                    result_posts[0]["result"]["result"], {"message": "done"}
+                )
+                return ctx, platform
+
+        asyncio.run(scenario())
+
     def test_heartbeat_interval_is_fast_until_assigned(self) -> None:
         ctx = SimpleNamespace(platform_state="ready")
         with patch.dict(os.environ, {}, clear=True):
