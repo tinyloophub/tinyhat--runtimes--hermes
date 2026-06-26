@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `running_version`, a read-only command that proves which runtime package
+  version the running Python process imported.
+
 ## 0.0.3 - 2026-06-25
 
 - Fix runtime updates so `stage_update` prepares the target runtime package

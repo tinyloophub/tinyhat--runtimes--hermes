@@ -145,6 +145,7 @@ it.
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. |
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, startup activation errors, and the last update-check result. | Reads state files only. |
+| `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
@@ -216,6 +217,11 @@ shows the currently installed runtime ref, any staged ref waiting for
 activation, and the latest update-check result. `restart_runtime_service` is the
 manual service restart command when you need the runtime process to start again
 without staging or activating anything new.
+
+`running_version` is the direct post-update proof command. It returns the
+`hermes_runtime.__version__` value and the file path from the package imported
+by the Python process that handled the command. That makes it useful when state
+files or platform metadata disagree with what the service is actually running.
 
 The daily scheduled update check runs only the discovery part (`check_update`).
 It reports that an update is available, but it does not stage or activate a new
