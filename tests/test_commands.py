@@ -496,6 +496,79 @@ class CommandTests(TestCase):
             self.assertNotIn("stale", last_check)
             self.assertFalse(last_check["update_available"])
 
+    def test_update_status_marks_legacy_cached_check_without_state_stale(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "updates").mkdir()
+            (state_dir / "updates" / "last_check.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tinyhat_hermes_update_check_v1",
+                        "status": "dev_ref_check",
+                        "channel": "lts",
+                        "target_ref": "v0.0.4",
+                        "update_available": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                activation_marker=state_dir / "ACTIVATE_ON_RESTART",
+                current_version=lambda: "v0.0.5",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: None,
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            last_check = status["last_update_check"]
+            self.assertTrue(last_check["stale"])
+            self.assertEqual(
+                last_check["stale_reason"],
+                "cached_check_missing_current_state",
+            )
+            self.assertIsNone(last_check["checked_current_version"])
+            self.assertEqual(last_check["live_current_version"], "v0.0.5")
+            self.assertTrue(last_check["previous_update_available"])
+            self.assertIsNone(last_check["update_available"])
+
+    def test_update_status_cleans_live_version_before_cache_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "updates").mkdir()
+            (state_dir / "updates" / "last_check.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tinyhat_hermes_update_check_v1",
+                        "status": "dev_ref_check",
+                        "channel": "lts",
+                        "target_ref": "v0.0.5",
+                        "current_version": "v0.0.5",
+                        "current_sha": None,
+                        "update_available": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                activation_marker=state_dir / "ACTIVATE_ON_RESTART",
+                current_version=lambda: " 0.0.5\n",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: None,
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            last_check = status["last_update_check"]
+            self.assertNotIn("stale", last_check)
+            self.assertFalse(last_check["update_available"])
+
     def test_running_version_reads_imported_runtime_code(self) -> None:
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "running_version"}))
 
