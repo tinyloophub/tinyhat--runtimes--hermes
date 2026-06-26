@@ -42,7 +42,8 @@
 # 13. If --run-foreground is passed, runs the installed runtime in the
 #     foreground with a small restart loop. This is the local Docker path for
 #     machines without systemd; the loop is public here instead of being a
-#     private platform script.
+#     private platform script. TERM/INT are forwarded to the runtime child so
+#     Docker or another supervisor can stop the process cleanly.
 # 14. Unless --no-systemd or --run-foreground is passed, tries to install the runtime as a systemd
 #     service on Linux. On non-systemd systems it leaves the files installed
 #     and prints a message. On systemd systems it requires root.
@@ -279,6 +280,19 @@ chmod 0600 "$env_file"
 
 run_runtime_foreground() {
   echo "install.sh: running tinyhat-hermes-runtime in foreground restart mode"
+  local child_pid=""
+
+  stop_foreground_runtime() {
+    trap - TERM INT
+    if [[ -n "$child_pid" ]] && kill -0 "$child_pid" >/dev/null 2>&1; then
+      kill -TERM "$child_pid" >/dev/null 2>&1 || true
+      wait "$child_pid" || true
+    fi
+    exit 0
+  }
+
+  trap stop_foreground_runtime TERM INT
+
   while true; do
     if [[ -f "$env_file" ]]; then
       set -a
@@ -287,8 +301,11 @@ run_runtime_foreground() {
       set +a
     fi
     set +e
-    "$prefix/bin/tinyhat-hermes-runtime"
+    "$prefix/bin/tinyhat-hermes-runtime" &
+    child_pid="$!"
+    wait "$child_pid"
     status="$?"
+    child_pid=""
     set -e
     echo "tinyhat-hermes-runtime exited with status ${status}; restarting in 2s" >&2
     sleep 2

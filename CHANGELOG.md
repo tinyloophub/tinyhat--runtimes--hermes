@@ -4,7 +4,8 @@
 
 - Add `install.sh --run-foreground` so local Docker machines can use the same
   public installer surface as production machines while letting Docker supervise
-  the long-running process.
+  the long-running process; foreground mode now forwards stop signals to the
+  runtime child.
 
 ## 0.0.6 - 2026-06-26
 
