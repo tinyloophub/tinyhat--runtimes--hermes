@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.9 - 2026-06-26
+
+- Use Google Cloud identity tokens for production platform API calls so GCloud
+  Computers authenticate through instance attestation instead of static runtime
+  tokens.
+- Keep local development on the explicit `local-dev` path while preserving the
+  same command and heartbeat contract used by GCloud Computers.
+
 ## 0.0.8 - 2026-06-26
 
 - Make update decisions explicit when a channel selector is unresolved:
