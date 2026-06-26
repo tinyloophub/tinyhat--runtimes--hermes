@@ -10,6 +10,7 @@ COMMAND_MODULES = {
     "whoami": "hermes_runtime.commands.whoami",
     "check_update": "hermes_runtime.commands.check_update",
     "update_status": "hermes_runtime.commands.update_status",
+    "running_version": "hermes_runtime.commands.running_version",
     "recent_commands": "hermes_runtime.commands.recent_commands",
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "stage_update": "hermes_runtime.commands.stage_update",

@@ -32,6 +32,7 @@ REQUIRED_FILES = (
     "hermes_runtime/commands/whoami.py",
     "hermes_runtime/commands/check_update.py",
     "hermes_runtime/commands/update_status.py",
+    "hermes_runtime/commands/running_version.py",
     "hermes_runtime/commands/recent_commands.py",
     "hermes_runtime/commands/setup_snapshot.py",
     "hermes_runtime/commands/stage_update.py",
@@ -69,6 +70,16 @@ def main() -> None:
     version = read(root, "VERSION").strip()
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         fail("VERSION must be shaped X.Y.Z")
+    init_py = read(root, "hermes_runtime/__init__.py")
+    version_match = re.search(
+        r'^__version__\s*=\s*"([^"]+)"\s*$',
+        init_py,
+        flags=re.MULTILINE,
+    )
+    if version_match is None:
+        fail("hermes_runtime/__init__.py must define __version__")
+    if version_match.group(1) != version:
+        fail("hermes_runtime.__version__ must match VERSION")
 
     codeowners = read(root, ".github/CODEOWNERS")
     if "@farid-tinyloop" not in codeowners:
@@ -90,6 +101,7 @@ def main() -> None:
         "`whoami`",
         "`check_update`",
         "`update_status`",
+        "`running_version`",
         "`recent_commands`",
         "`setup_snapshot`",
         "`stage_update`",

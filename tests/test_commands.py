@@ -418,6 +418,14 @@ class CommandTests(TestCase):
                 "after_runtime_restart",
             )
 
+    def test_running_version_reads_imported_runtime_code(self) -> None:
+        result = asyncio.run(run_command(SimpleNamespace(), {"kind": "running_version"}))
+
+        self.assertEqual(result["schema"], "tinyhat_hermes_running_version_v1")
+        self.assertEqual(result["code_version"], "0.0.3")
+        self.assertTrue(result["module_file"].endswith("hermes_runtime/__init__.py"))
+        self.assertIn("imported by the Python process", result["proof"])
+
     def test_recent_commands_returns_local_ledger_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
