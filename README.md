@@ -82,11 +82,11 @@ The foundation installer does this:
 8. When systemd is enabled, installs a service named
    `tinyhat-hermes-runtime.service`.
 
-This foundation does **not** create Unix users yet and does **not** install
-upstream Hermes Agent yet. In the current systemd path, the service is installed
-by root and managed by systemd. When Hermes Agent installation is added, this
-section should be updated in the same PR that creates or changes any service
-user.
+This foundation does **not** create Unix users yet. In the current systemd path,
+the Tinyhat runtime service is installed by root and managed by systemd. Hermes
+Agent installation is handled separately by the whitelisted `install_hermes`
+runtime command, which uses the official Hermes installer after the Tinyhat
+runtime is alive.
 
 You can verify a machine setup from Hat admin with the read-only
 `setup_snapshot` command. On the machine itself, these local checks show the
@@ -181,6 +181,8 @@ it.
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
+| `install_hermes` | `hermes_runtime/commands/install_hermes.py` | Installs upstream Hermes Agent after the Tinyhat runtime is alive, and skips reinstalling when `hermes` already exists. | May install Debian prerequisites as root, then runs `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash`. By default Tinyhat passes `--skip-browser`; set `TINYHAT_HERMES_INSTALL_ARGS` to override. Result fields distinguish no-op from install: `installed_now` means this command ran the installer; `installed_after` means Hermes is present after the command. |
+| `hermes_status` | `hermes_runtime/commands/hermes_status.py` | Checks Hermes Agent through its public CLI. | Read-only. Runs `hermes --version`, `hermes status`, and `hermes status --all`, then returns bounded stdout/stderr for Hat admin. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
@@ -385,9 +387,11 @@ Hermes Agent's Linux command-line installer is:
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-The installer expects Git plus `curl` and `xz-utils` on Linux. It handles the
-Hermes clone, Python 3.11 via uv, Node.js 22, ripgrep, ffmpeg, a virtual
-environment, and the global `hermes` command setup.
+The installer expects Git plus `curl` and `xz-utils` on Linux. Tinyhat's
+`install_hermes` command installs those Debian prerequisites when it is running
+as root and they are missing, then calls the official installer. The upstream
+installer handles the Hermes clone, Python 3.11 via uv, Node.js 22, ripgrep,
+ffmpeg, a virtual environment, and the global `hermes` command setup.
 
 For a dedicated unprivileged service account, install Chromium system
 libraries separately when browser automation is needed:
@@ -402,9 +406,10 @@ installer.
 
 ## Current scope
 
-This foundation does not install Hermes Agent yet and does not assign a
-Computer to an agent. It proves the management loop first: heartbeat,
-attestation, command dispatch, and restart-activated updates.
+This foundation installs Hermes Agent after the Tinyhat runtime starts, but it
+does not assign a Computer to an agent yet. It proves the management loop first:
+heartbeat, attestation, command dispatch, Hermes install/status checks, and
+restart-activated updates.
 
 ## Development
 
