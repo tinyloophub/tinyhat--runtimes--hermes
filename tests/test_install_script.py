@@ -63,6 +63,23 @@ class InstallScriptTests(TestCase):
                 expected_sha,
             )
 
+    def test_installer_documents_foreground_runtime_mode(self) -> None:
+        script = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn("--run-foreground", script)
+        self.assertIn("run_runtime_foreground()", script)
+        self.assertIn("tinyhat-hermes-runtime exited with status", script)
+
+        help_result = subprocess.run(
+            ["bash", str(ROOT / "install.sh"), "--help"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertIn("--run-foreground", help_result.stdout)
+        self.assertIn("local Docker", help_result.stdout)
+
 
 if __name__ == "__main__":
     import unittest

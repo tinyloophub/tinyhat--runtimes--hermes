@@ -35,6 +35,12 @@ production Linux Computer the same runtime should run under a process manager
 such as systemd with restart enabled and a high enough priority that Hermes can
 use the machine's resources without starving the heartbeat process.
 
+Local Docker creation still uses the same public installer surface. The
+platform starts a plain Linux/Python container, passes local development
+connection values as environment variables, and runs `install.sh` with
+`--run-foreground`. The foreground restart loop lives in this repository's
+public installer, not in a private platform-generated shell script.
+
 ## Authentication model
 
 Production Hermes Computers should not store a long-lived Tinyhat platform
@@ -67,7 +73,10 @@ The foundation installer does this:
    the installed commit in `current/COMMIT_SHA`.
 6. Writes a private env file at `/opt/tinyhat-hermes-runtime/env/runtime.env`.
    With systemd, the same env is copied to `/etc/tinyhat/hermes-runtime.env`.
-7. When systemd is enabled, installs a service named
+7. When `--run-foreground` is passed, runs the installed runtime in the
+   foreground with a small restart loop for local Docker or another external
+   supervisor.
+8. When systemd is enabled, installs a service named
    `tinyhat-hermes-runtime.service`.
 
 This foundation does **not** create Unix users yet and does **not** install
