@@ -127,6 +127,23 @@ These settings protect the heartbeat without putting artificial CPU or memory
 caps on Hermes Agent. If the Computer needs more room for Hermes, the intended
 fix is to resize the machine, not to silently starve the runtime or the agent.
 
+## Heartbeat cadence
+
+Heartbeat timing is intentionally simple and state-aware:
+
+- before assignment, including `provisioning` and `ready`, the runtime checks in
+  every 1 second so the platform can attach the Computer to an agent quickly;
+- after assignment, `assigned` and `active` Computers check in every 10 seconds
+  by default because the Computer is no longer sitting idle waiting to be used;
+- `TINYHAT_HEARTBEAT_INTERVAL_SECONDS` is a fixed override for tests and unusual
+  debugging sessions;
+- `TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS` and
+  `TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS` can tune the two normal
+  intervals without changing runtime code.
+
+The runtime learns the platform state from the heartbeat response, so local
+Docker and GCloud Computers use the same cadence rules.
+
 ## Transparency and trust layer
 
 The runtime only accepts a small command whitelist. Each command is a normal file
