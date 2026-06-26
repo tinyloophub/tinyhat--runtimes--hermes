@@ -904,6 +904,55 @@ class CommandTests(TestCase):
                 checked["decision"], "channel_selector_needs_concrete_release"
             )
 
+    def test_check_update_treats_protected_channel_merge_sha_as_unresolved(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            release_tag_sha = "7" * 40
+            protected_channel_merge_sha = "8" * 40
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.7",
+                current_commit_sha=lambda: release_tag_sha,
+            )
+
+            with patch(
+                "hermes_runtime.update_check._fetch_github_commit",
+                return_value={
+                    "ok": True,
+                    "status": "ok",
+                    "sha": protected_channel_merge_sha,
+                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                    + protected_channel_merge_sha,
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "channels/lts",
+                            },
+                        },
+                    )
+                )
+
+            self.assertTrue(checked["channel_eligible"])
+            self.assertEqual(checked["current_version"], "v0.0.7")
+            self.assertEqual(checked["current_sha"], release_tag_sha)
+            self.assertEqual(checked["target_sha"], protected_channel_merge_sha)
+            self.assertIsNone(checked["target_final_version_is_newer"])
+            self.assertFalse(checked["current_matches_target"])
+            self.assertFalse(checked["update_available"])
+            self.assertEqual(
+                checked["decision"], "channel_selector_needs_concrete_release"
+            )
+
     def test_check_update_matches_final_versions_with_or_without_v_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
