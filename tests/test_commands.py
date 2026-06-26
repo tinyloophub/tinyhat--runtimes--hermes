@@ -133,7 +133,7 @@ class CommandTests(TestCase):
 
         self.assertEqual(ctx.platform_state, "assigned")
 
-    def test_heartbeat_starts_command_without_blocking_loop(self) -> None:
+    def test_heartbeat_starts_any_command_without_blocking_loop(self) -> None:
         async def scenario() -> tuple[RuntimeContext, FakePlatform]:
             with tempfile.TemporaryDirectory() as tmp:
                 platform = FakePlatform()
@@ -143,7 +143,7 @@ class CommandTests(TestCase):
                     "command": {
                         "command_id": "cmd-slow",
                         "idempotency_key": "idem-slow",
-                        "kind": "ping",
+                        "kind": "install_hermes",
                         "spec": {},
                     },
                 }
@@ -171,7 +171,7 @@ class CommandTests(TestCase):
                     self.assertIsNotNone(ctx.command_task)
                     self.assertFalse(ctx.command_task.done())
                     self.assertEqual(ctx.command_id, "cmd-slow")
-                    self.assertEqual(ctx.command_kind, "ping")
+                    self.assertEqual(ctx.command_kind, "install_hermes")
                     self.assertFalse(
                         any(
                             path.endswith("/runtime-command/result")
@@ -186,7 +186,7 @@ class CommandTests(TestCase):
                         heartbeat["active_command"],
                         {
                             "command_id": "cmd-slow",
-                            "kind": "ping",
+                            "kind": "install_hermes",
                             "status": "running",
                         },
                     )
