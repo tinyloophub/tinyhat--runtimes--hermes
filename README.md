@@ -152,7 +152,7 @@ it.
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
-| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. |
+| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. LTS/latest decisions require a concrete final tag such as `v0.0.7`; a raw channel selector like `channels/lts` is not enough evidence to report an update as available. |
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, startup activation errors, and the last update-check result. | Reads state files only. |
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
@@ -172,6 +172,7 @@ Operator or schedule
         v
 check_update
   - compares current/VERSION and current/COMMIT_SHA with the selected target
+  - for LTS/latest, expects the platform to resolve the channel to a final tag
   - writes updates/last_check.json
   - reports the result to the platform
   - does not download, stage, activate, or restart anything
@@ -235,6 +236,16 @@ new.
 by the Python process that handled the command. That makes it useful when state
 files or platform metadata disagree with what the service is actually running.
 
+Update checks use the same version rule everywhere:
+
+- `custom` can point at any explicit tag or commit selected by an operator.
+- `lts` and `latest` only report `update_available=true` when the target is a
+  concrete final release tag (`vX.Y.Z`) newer than the installed final version.
+- A raw channel selector such as `channels/lts` is installable, but it is not a
+  version decision by itself. Protected channel branches can point at merge
+  commits that contain the release tag, so the platform should resolve the
+  channel to the final tag first and send that tag to `check_update`.
+
 The daily scheduled update check runs only the discovery part (`check_update`).
 It reports that an update is available, but it does not stage or activate a new
 version by itself.
@@ -291,6 +302,12 @@ Versions should be immutable Git tags shaped like `vX.Y.Z`.
 - `lts`: the `channels/lts` branch points at the conservative final release
   used by default Computer creation.
 - `custom`: an explicit tag or commit selected by an operator.
+
+Channel branches are installer selectors, not update-decision values. The
+platform resolves `channels/latest` or `channels/lts` to the concrete final tag
+they contain before asking a Computer whether an update is available. This keeps
+protected channel-branch merge commits from looking like newer runtime versions
+when the Computer is already running that final tag.
 
 For development, secondary test releases use prerelease tags shaped
 `vX.Y.Z-dev.YYYYMMDDTHHMMSSZ[.suffix]`, for example

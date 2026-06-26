@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make update decisions explicit when a channel selector is unresolved:
+  `channels/lts` or `channels/latest` alone no longer reports an update as
+  available unless the platform supplies a concrete final tag that is newer
+  than the installed final version.
+
 ## 0.0.7 - 2026-06-26
 
 - Add `install.sh --run-foreground` so local Docker machines can use the same

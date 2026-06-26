@@ -20,21 +20,32 @@ Update flow map:
 When to use it:
     Use this from Hat admin when you want an immediate answer instead of
     waiting for the once-a-day scheduled update check. LTS/latest checks should
-    point at the matching channel or final release tag. Dev and RC tags should
-    use the custom channel.
+    point at the concrete final release tag currently selected by that channel,
+    for example ``v0.0.7``. A raw selector like ``channels/lts`` is installable,
+    but the runtime will not report it as an available update because channel
+    branches can point at protected merge commits instead of release tag
+    commits. Dev and RC tags should use the custom channel.
 
 Example input:
-    {"kind": "check_update", "spec": {"channel": "lts", "target_ref": "v0.0.2"}}
+    {"kind": "check_update", "spec": {"channel": "lts", "target_ref": "v0.0.7"}}
 
 Example output:
     {
       "message": "update check complete",
       "channel": "lts",
-      "target_ref": "v0.0.2",
-      "current_version": "v0.0.1",
-      "update_available": true,
+      "target_ref": "v0.0.7",
+      "current_version": "v0.0.7",
+      "decision": "current_matches_target",
+      "current_matches_target": true,
+      "target_final_version_is_newer": false,
+      "update_available": false,
       "report_delivered": true
     }
+
+    If the platform accidentally sends ``channels/lts`` instead of the concrete
+    tag, the command returns
+    ``decision: "channel_selector_needs_concrete_release"`` and
+    ``update_available: false``.
 
 Side effects:
     Writes ``updates/last_check.json`` and best-effort posts the same result to

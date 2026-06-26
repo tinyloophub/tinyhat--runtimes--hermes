@@ -1,10 +1,15 @@
 """Scheduled update discovery for the Tinyhat Hermes runtime.
 
 The runtime checks the target that the platform or local config asks it to
-check. For channel checks, such as ``lts`` or ``latest``, it only treats a
-channel ref or final SemVer tag as a valid update target. Dev and RC tags are
-still supported, but they must be requested through the explicit ``custom``
-path so a newer prerelease is never reported as an available LTS update.
+check. For channel checks, such as ``lts`` or ``latest``, "update available" is
+based on a concrete final SemVer tag (``vX.Y.Z``) that is newer than the
+installed final version. Exact commit equality can only prove that the Computer
+already matches the target. A bare channel selector such as ``channels/lts`` is
+installable, but it is not enough evidence to report "a newer LTS is available"
+because protected channel branches may point at merge commits instead of the
+release tag commit. Dev and RC tags are still supported, but they must be
+requested through the explicit ``custom`` path so a newer prerelease is never
+reported as an available LTS update.
 """
 
 from __future__ import annotations
@@ -161,6 +166,20 @@ def _is_channel_eligible_target(*, channel: str, target_ref: str) -> bool:
     return _final_version_tuple(target_ref) is not None
 
 
+def _is_channel_selector(*, channel: str, target_ref: str) -> bool:
+    return channel in {"lts", "latest"} and target_ref == f"channels/{channel}"
+
+
+def _versions_match(left: str | None, right: str | None) -> bool:
+    clean_left = str(left or "").strip()
+    clean_right = str(right or "").strip()
+    if clean_left == clean_right and clean_left:
+        return True
+    left_final = _final_version_tuple(clean_left)
+    right_final = _final_version_tuple(clean_right)
+    return left_final is not None and left_final == right_final
+
+
 def _is_strictly_newer_final(
     *,
     current_version: str,
@@ -171,6 +190,64 @@ def _is_strictly_newer_final(
     if current is None or target is None:
         return None
     return target > current
+
+
+def _update_decision(
+    *,
+    resolved_ok: bool,
+    channel: str,
+    target_ref: str,
+    target_sha: str | None,
+    current_version: str,
+    current_sha: str | None,
+) -> dict[str, Any]:
+    channel_eligible = _is_channel_eligible_target(
+        channel=channel,
+        target_ref=target_ref,
+    )
+    final_version_is_newer = _is_strictly_newer_final(
+        current_version=current_version,
+        target_ref=target_ref,
+    )
+    current_matches_target = _versions_match(current_version, target_ref)
+    if not current_matches_target and target_sha and current_sha:
+        current_matches_target = target_sha == current_sha
+    elif not current_matches_target and target_sha:
+        current_matches_target = _versions_match(current_version, target_sha)
+
+    if not resolved_ok:
+        decision = "target_unavailable"
+        update_available = False
+    elif not channel_eligible:
+        decision = "target_not_allowed_for_channel"
+        update_available = False
+    elif current_matches_target:
+        decision = "current_matches_target"
+        update_available = False
+    elif _is_channel_selector(channel=channel, target_ref=target_ref):
+        decision = "channel_selector_needs_concrete_release"
+        update_available = False
+    elif channel in {"lts", "latest"}:
+        if final_version_is_newer is True:
+            decision = "newer_final_release"
+            update_available = True
+        elif final_version_is_newer is False:
+            decision = "target_final_not_newer"
+            update_available = False
+        else:
+            decision = "target_is_not_final_release"
+            update_available = False
+    else:
+        decision = "custom_target_differs"
+        update_available = True
+
+    return {
+        "channel_eligible": channel_eligible,
+        "target_final_version_is_newer": final_version_is_newer,
+        "current_matches_target": current_matches_target,
+        "decision": decision,
+        "update_available": update_available,
+    }
 
 
 async def run_update_check(
@@ -206,30 +283,13 @@ async def run_update_check(
         resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
     current_sha = (current_sha or "").strip() or None
-    current_matches_target = target_ref == current_version
-    if current_matches_target:
-        pass
-    elif target_sha and current_sha:
-        current_matches_target = target_sha == current_sha
-    elif target_sha:
-        current_matches_target = target_sha == current_version
-    channel_eligible = _is_channel_eligible_target(
+    decision = _update_decision(
+        resolved_ok=bool(resolved.get("ok")),
         channel=channel,
         target_ref=target_ref,
-    )
-    final_version_is_newer = _is_strictly_newer_final(
+        target_sha=target_sha,
         current_version=current_version,
-        target_ref=target_ref,
-    )
-    if final_version_is_newer is False:
-        version_gate_allows_update = False
-    else:
-        version_gate_allows_update = True
-    update_available = bool(
-        resolved.get("ok")
-        and channel_eligible
-        and version_gate_allows_update
-        and not current_matches_target
+        current_sha=current_sha,
     )
     result = {
         "schema": "tinyhat_hermes_update_check_v1",
@@ -242,9 +302,7 @@ async def run_update_check(
         "target_url": resolved.get("html_url"),
         "current_version": current_version,
         "current_sha": current_sha,
-        "channel_eligible": channel_eligible,
-        "target_final_version_is_newer": final_version_is_newer,
-        "update_available": update_available,
+        **decision,
         "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "schedule": {
             "time": config.local_time,
