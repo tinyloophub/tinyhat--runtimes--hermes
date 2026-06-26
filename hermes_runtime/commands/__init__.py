@@ -13,6 +13,8 @@ COMMAND_MODULES = {
     "running_version": "hermes_runtime.commands.running_version",
     "recent_commands": "hermes_runtime.commands.recent_commands",
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
+    "install_hermes": "hermes_runtime.commands.install_hermes",
+    "hermes_status": "hermes_runtime.commands.hermes_status",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
     "restart_runtime_service": "hermes_runtime.commands.restart_runtime_service",
