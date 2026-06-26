@@ -45,6 +45,7 @@ from typing import Any
 
 from hermes_runtime import __version__
 from hermes_runtime.update_check import read_last_result
+from hermes_runtime.update_artifacts import staged_package_dir
 
 
 def _read_staged_metadata(ctx: Any) -> dict[str, Any] | None:
@@ -66,11 +67,23 @@ def _activation_state(ctx: Any) -> str:
     return "requires_activate_update"
 
 
+def _read_activation_error(ctx: Any) -> dict[str, Any] | None:
+    activation_error_file = getattr(ctx, "activation_error_file", None)
+    if activation_error_file is None:
+        return None
+    try:
+        payload = json.loads(activation_error_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     staged_version = ctx.staged_version()
     staged_metadata = _read_staged_metadata(ctx)
     ready_updates = []
     if staged_version:
+        code_staged = staged_package_dir(ctx.state_dir).is_dir()
         ready_updates.append(
             {
                 "version": staged_version,
@@ -78,6 +91,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
                 "sha": (staged_metadata or {}).get("target_sha"),
                 "channel": (staged_metadata or {}).get("channel"),
                 "staged_at_unix": (staged_metadata or {}).get("staged_at_unix"),
+                "code_staged": code_staged,
                 "activation": _activation_state(ctx),
             }
         )
@@ -89,5 +103,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "current_commit_sha": ctx.current_commit_sha(),
         "staged_version": staged_version,
         "ready_updates": ready_updates,
+        "startup_activation_error": _read_activation_error(ctx),
         "last_update_check": read_last_result(ctx.state_dir),
     }

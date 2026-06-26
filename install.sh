@@ -25,14 +25,16 @@
 #    resolve a commit, install still continues without COMMIT_SHA.
 # 8. Creates the install directory, bin directory, state directory, and
 #    state/current directory if they do not already exist.
-# 9. Replaces only the installed hermes_runtime package under the install
-#    prefix. It does not delete the runtime state directory.
+# 9. Replaces only the installed hermes_runtime package and the small
+#    import-safe bootstrap file under the install prefix. It does not delete
+#    the runtime state directory.
 # 10. Writes audit files: INSTALL_REF under the install prefix, VERSION under
 #     state/current, and COMMIT_SHA under state/current when the commit is
 #     known.
 # 11. Writes an executable wrapper named tinyhat-hermes-runtime. The wrapper
-#     sets PYTHONPATH, points the runtime at the state directory, and runs
-#     python3 -m hermes_runtime.main.
+#     sets PYTHONPATH, records the install prefix, points the runtime at the
+#     state directory, and runs the import-safe bootstrap file. The bootstrap
+#     repairs interrupted package swaps before importing hermes_runtime.main.
 # 12. Writes a private env file at <prefix>/env/runtime.env with mode 0600.
 #     That file contains the runtime ref, state directory, optional platform
 #     URL/computer id, and the local-dev token only when --local-dev-token was
@@ -204,6 +206,10 @@ if [[ ! -d "$src/hermes_runtime" ]]; then
   echo "install.sh: hermes_runtime package not found in $src" >&2
   exit 1
 fi
+if [[ ! -f "$src/tinyhat_hermes_runtime_bootstrap.py" ]]; then
+  echo "install.sh: tinyhat_hermes_runtime_bootstrap.py not found in $src" >&2
+  exit 1
+fi
 
 runtime_sha=""
 if command -v git >/dev/null 2>&1 && git -C "$src" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -217,6 +223,8 @@ echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
 install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
+cp "$src/tinyhat_hermes_runtime_bootstrap.py" "$prefix/tinyhat_hermes_runtime_bootstrap.py"
+chmod 0644 "$prefix/tinyhat_hermes_runtime_bootstrap.py"
 printf '%s\n' "$runtime_ref" > "$prefix/INSTALL_REF"
 printf '%s\n' "$runtime_ref" > "$state_dir/current/VERSION"
 if [[ -n "$runtime_sha" ]]; then
@@ -229,8 +237,10 @@ cat > "$prefix/bin/tinyhat-hermes-runtime" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 export PYTHONPATH="$prefix:\${PYTHONPATH:-}"
+export TINYHAT_RUNTIME_PREFIX="\${TINYHAT_RUNTIME_PREFIX:-$prefix}"
 export TINYHAT_RUNTIME_STATE_DIR="\${TINYHAT_RUNTIME_STATE_DIR:-$state_dir}"
-exec python3 -m hermes_runtime.main
+export TINYHAT_RUNTIME_BOOTSTRAP="\${TINYHAT_RUNTIME_BOOTSTRAP:-$prefix/tinyhat_hermes_runtime_bootstrap.py}"
+exec python3 "\$TINYHAT_RUNTIME_BOOTSTRAP"
 EOF
 chmod 0755 "$prefix/bin/tinyhat-hermes-runtime"
 
@@ -240,6 +250,7 @@ env_file="$env_dir/runtime.env"
 umask 077
 {
   printf 'TINYHAT_RUNTIME_REF=%q\n' "$runtime_ref"
+  printf 'TINYHAT_RUNTIME_PREFIX=%q\n' "$prefix"
   printf 'TINYHAT_RUNTIME_STATE_DIR=%q\n' "$state_dir"
   if [[ -n "$platform_url" ]]; then
     printf 'TINYHAT_PLATFORM_URL=%q\n' "$platform_url"
