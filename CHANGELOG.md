@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.0.11 - 2026-06-26
+
+- Add `install_hermes`, an idempotent runtime command that installs upstream
+  Hermes Agent through the official public installer and reports whether the
+  command actually changed the machine.
+- Add `hermes_status`, a read-only runtime command that runs
+  `hermes --version`, `hermes status`, and `hermes status --all` through the
+  public Hermes CLI so Hat admin can verify the framework after setup.
+- Add shared Hermes CLI probing helpers with bounded output capture and
+  timeout cleanup, plus focused tests for install failure paths and timeout
+  child-process reaping.
+
 ## 0.0.10 - 2026-06-26
 
 - Tune heartbeat cadence from platform state: unassigned/provisioning Computers
