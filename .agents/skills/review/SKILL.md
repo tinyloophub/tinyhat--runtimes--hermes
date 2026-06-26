@@ -10,6 +10,9 @@ Apply the runtime-specific risk checklist below.
 
 ## Runtime Checklist
 
+- Release PRs and promotion requests are maintainer-reviewed only. If asked to
+  review one as an agent, report that it is reserved for the maintainer instead
+  of approving it.
 - Boot/install scripts remain public-safe and do not embed secrets, private URLs, device codes, or local-only paths.
 - Hermes integration uses documented installer, CLI, config, and runtime interfaces.
 - The repo does not vendor or fork upstream Hermes Agent unless a PR explicitly scopes that decision.

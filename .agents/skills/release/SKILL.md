@@ -58,13 +58,25 @@ This repo releases the Tinyhat Hermes runtime package itself.
    move `channels/latest` or `channels/lts`.
 2. Cut an RC once the dev loop is stable enough for promotion review.
 3. Cut a final `vX.Y.Z` tag after review.
-4. Move `channels/latest` to the final when it should be the fast-moving
-   default. Before moving the branch, run `gh release edit "$TAG" --latest
-   --prerelease=false --draft=false` so the GitHub marker matches the channel.
-5. Move `channels/lts` only when that final should be the conservative default.
+4. Move `channels/latest` to the final only through the maintainer-only
+   promotion helper. Agents must not open promotion PRs for channel branches.
+5. Move `channels/lts` only when that final should be the conservative default,
+   again through the maintainer-only promotion helper.
 6. For any other channel, use `channels/<name>` with a short lowercase
-   operator-facing name. Move it with the same `git checkout -B` and
-   `git push origin ... --force-with-lease` shape, and do not change the GitHub
-   Latest marker unless the same tag is also promoted to `channels/latest`.
+   operator-facing name and move it through the same helper.
+
+Promotion command:
+
+```bash
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag vX.Y.Z --channel latest,lts
+```
+
+Promotion from GitHub UI uses the `promote-release-channel` workflow. It is
+guarded to `farid-tinyloop` and requires the `MAINTAINER_PROMOTION_TOKEN`
+secret to be owned by `farid-tinyloop`.
+
+Release PRs and promotion requests are maintainer-reviewed only. Do not start
+cross-agent review for release or promotion PRs.
 
 Read `VERSIONING.md` before changing this flow.

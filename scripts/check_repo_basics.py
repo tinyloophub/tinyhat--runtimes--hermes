@@ -117,6 +117,7 @@ def main() -> None:
         "## Update channels",
         "vX.Y.Z-dev.YYYYMMDDTHHMMSSZ",
         "publish_dev_release.py",
+        "promote_release_channel.py",
         "channels/latest",
         "channels/lts",
     )
@@ -143,7 +144,9 @@ def main() -> None:
     for phrase in (
         "secondary development releases",
         "publish_dev_release.py",
+        "promote_release_channel.py",
         "README.md command whitelist",
+        "maintainer-only promotion",
         "channels/latest",
         "channels/lts",
     ):
@@ -159,6 +162,11 @@ def main() -> None:
     for phrase in ("workflow_dispatch", "publish_dev_release.py", "GH_TOKEN"):
         if phrase not in dev_release_workflow:
             fail(f".github/workflows/dev-release.yml missing phrase: {phrase}")
+
+    promote_workflow = read(root, ".github/workflows/promote-release-channel.yml")
+    for phrase in ("workflow_dispatch", "farid-tinyloop", "MAINTAINER_PROMOTION_TOKEN"):
+        if phrase not in promote_workflow:
+            fail(f".github/workflows/promote-release-channel.yml missing phrase: {phrase}")
 
     print("repo-basics: ok")
 

@@ -13,6 +13,10 @@ Apply this repo's target, checks, and release boundary below.
 - One related thread per PR.
 - Keep Hermes runtime behavior separate from monorepo provisioning changes and separate from upstream Hermes Agent changes.
 - If a PR depends on a Tinyloop monorepo or upstream Hermes PR, link it and mark the PR draft until the dependency is ready.
+- Release PRs and promotion requests are maintainer-reviewed only. Do not start
+  cross-agent review for them, and do not open channel-promotion PRs; use
+  `scripts/promote_release_channel.py` as `farid-tinyloop` after a final release
+  is published.
 
 ## Commands
 

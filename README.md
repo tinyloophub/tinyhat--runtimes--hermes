@@ -364,6 +364,12 @@ keeps a running agent from changing underneath active work.
 See [VERSIONING.md](VERSIONING.md) for the full dev -> candidate -> final ->
 latest/LTS lifecycle.
 
+Promoting a final release to `channels/latest`, `channels/lts`, or another
+channel is maintainer-only. Use `scripts/promote_release_channel.py` while `gh`
+is authenticated as `farid-tinyloop`, or run the `promote-release-channel`
+GitHub workflow with the maintainer-owned `MAINTAINER_PROMOTION_TOKEN` secret.
+Agents must not open channel-promotion PRs.
+
 ## Install path
 
 Tinyhat installs this runtime the same way Hermes Agent documents its own

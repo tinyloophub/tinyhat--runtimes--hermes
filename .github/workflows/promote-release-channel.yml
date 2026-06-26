@@ -1,0 +1,35 @@
+name: promote-release-channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Final release tag to promote, for example v0.0.10"
+        required: true
+      channels:
+        description: "Comma-separated channels to move, for example latest,lts"
+        required: true
+        default: "latest,lts"
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    if: github.actor == 'farid-tinyloop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Promote channel refs
+        env:
+          GH_TOKEN: ${{ secrets.MAINTAINER_PROMOTION_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN" || {
+            echo "MAINTAINER_PROMOTION_TOKEN must be a token for farid-tinyloop"
+            exit 1
+          }
+          python3 scripts/promote_release_channel.py \
+            --tag "${{ inputs.tag }}" \
+            --channel "${{ inputs.channels }}"

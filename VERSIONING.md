@@ -74,6 +74,19 @@ curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--herm
    short lowercase operator-facing name. Document why the channel exists before
    making it a Computer creation option.
 
+Promotion is maintainer-only. Agents must not open promotion PRs for
+`channels/latest` or `channels/lts`, and agents must not start cross-agent
+review for release or promotion PRs. To promote from the command line, switch
+`gh` to `farid-tinyloop` and run:
+
+```bash
+python3 scripts/promote_release_channel.py --tag vX.Y.Z --channel latest,lts
+```
+
+To promote from GitHub's UI, run the `promote-release-channel` workflow. The
+workflow only runs for `farid-tinyloop` and requires
+`MAINTAINER_PROMOTION_TOKEN`, a token owned by `farid-tinyloop`.
+
 ## Channel refs and update checks
 
 Channel branches are moving installer selectors. They are not, by themselves,
@@ -99,23 +112,11 @@ Channel branch update example:
 ```bash
 TAG=vX.Y.Z
 CHANNEL=latest
-git fetch origin main --tags
-gh release view "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --json tagName,name,isPrerelease,isDraft,isLatest
-git checkout -B "channels/$CHANNEL" "$TAG"
-git push origin "channels/$CHANNEL" --force-with-lease
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag "$TAG" --channel "$CHANNEL"
 ```
 
-For `channels/latest`, also mark the GitHub release as Latest:
-
-```bash
-gh release edit "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --latest \
-  --prerelease=false \
-  --draft=false
-```
-
-For `channels/lts` or any other channel, leave the GitHub Latest marker alone
-unless the same tag is also being promoted to `channels/latest`.
+The helper marks the GitHub release as Latest when `latest` is one of the
+requested channels. For `channels/lts` or any other channel, it leaves the
+GitHub Latest marker alone unless the same tag is also being promoted to
+`channels/latest`.

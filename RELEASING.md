@@ -45,10 +45,15 @@ when it asks for this channel?"
 - Dev releases and RCs are selectable by exact tag for testing. They must not
   become `latest`, `lts`, or any default Computer creation channel.
 
-Promotion is a two-part operation:
+Promotion is a maintainer-only operation:
 
 1. Set or verify the GitHub release marker for the immutable tag.
-2. Move the channel branch to the same immutable tag with `--force-with-lease`.
+2. Move the channel branch to the same immutable tag commit with
+   `scripts/promote_release_channel.py`.
+
+Agents must not open promotion PRs for `channels/latest` or `channels/lts`.
+Release PRs and promotion requests are maintainer-reviewed only; do not start
+cross-agent review on release or promotion PRs.
 
 ## Commands
 
@@ -97,29 +102,24 @@ Promote a final release to latest:
 
 ```bash
 TAG=vX.Y.Z
-git fetch origin main --tags
-gh release view "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --json tagName,name,isPrerelease,isDraft
-gh release edit "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --latest \
-  --prerelease=false \
-  --draft=false
-git checkout -B channels/latest "$TAG"
-git push origin channels/latest --force-with-lease
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag "$TAG" --channel latest
 ```
 
 Promote a final release to LTS:
 
 ```bash
 TAG=vX.Y.Z
-git fetch origin main --tags
-gh release view "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --json tagName,name,isPrerelease,isDraft,isLatest
-git checkout -B channels/lts "$TAG"
-git push origin channels/lts --force-with-lease
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag "$TAG" --channel lts
+```
+
+Promote the same final release to both default channels:
+
+```bash
+TAG=vX.Y.Z
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag "$TAG" --channel latest,lts
 ```
 
 Promote a final release to another channel:
@@ -127,16 +127,17 @@ Promote a final release to another channel:
 ```bash
 TAG=vX.Y.Z
 CHANNEL=beta
-git fetch origin main --tags
-gh release view "$TAG" \
-  --repo tinyloophub/tinyhat--runtimes--hermes \
-  --json tagName,name,isPrerelease,isDraft,isLatest
-git checkout -B "channels/$CHANNEL" "$TAG"
-git push origin "channels/$CHANNEL" --force-with-lease
+gh auth switch --user farid-tinyloop
+python3 scripts/promote_release_channel.py --tag "$TAG" --channel "$CHANNEL"
 ```
 
 For non-`latest` channels, do not change the GitHub Latest marker unless the
 same tag is also being promoted to `channels/latest`.
+
+To promote from GitHub's UI, run the `promote-release-channel` workflow. It is
+guarded to `farid-tinyloop` and requires the repository secret
+`MAINTAINER_PROMOTION_TOKEN`, a token owned by `farid-tinyloop`, so the channel
+write is still a maintainer-owned operation.
 
 ## Conformance check
 
@@ -158,8 +159,8 @@ Expected:
   and `false` for `vX.Y.Z`.
 - `isLatest` is `false` for candidates and secondary dev releases, and `true`
   for the final promotion cut.
-- `channels/latest` points at the promoted latest final release commit.
-- `channels/lts` points at the conservative LTS final release commit.
+- `channels/latest` points at the promoted latest final release tag commit.
+- `channels/lts` points at the conservative LTS final release tag commit.
 
 Then verify the channel branch points at the same commit as the tag:
 
