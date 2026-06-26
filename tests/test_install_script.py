@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import tempfile
 import time
@@ -82,7 +83,10 @@ class InstallScriptTests(TestCase):
         self.assertIn("--run-foreground", help_result.stdout)
         self.assertIn("local Docker", help_result.stdout)
 
-    def test_run_foreground_restarts_and_forwards_stop_signal(self) -> None:
+    def _run_foreground_until_signal(
+        self,
+        stop_signal: signal.Signals,
+    ) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             source = base / "source"
@@ -159,7 +163,7 @@ while True:
                     time.sleep(0.05)
                 self.assertTrue(counter.exists(), "runtime stub did not start")
                 self.assertGreaterEqual(int(counter.read_text()), 2)
-                proc.terminate()
+                proc.send_signal(stop_signal)
                 stdout, stderr = proc.communicate(timeout=5)
             finally:
                 if proc.poll() is None:
@@ -183,6 +187,21 @@ while True:
             )
             self.assertTrue(stopped.exists(), "foreground mode did not stop child")
             self.assertNotIn("systemd", stdout + stderr)
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "stopped": stopped.read_text(encoding="utf-8"),
+            }
+
+    def test_run_foreground_restarts_and_forwards_term_signal(self) -> None:
+        result = self._run_foreground_until_signal(signal.SIGTERM)
+
+        self.assertEqual(result["stopped"], f"stopped:{signal.SIGTERM.value}")
+
+    def test_run_foreground_forwards_int_signal_as_int(self) -> None:
+        result = self._run_foreground_until_signal(signal.SIGINT)
+
+        self.assertEqual(result["stopped"], f"stopped:{signal.SIGINT.value}")
 
 
 if __name__ == "__main__":
