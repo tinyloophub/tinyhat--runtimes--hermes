@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 - 2026-06-26
 
 - Add `running_version`, a read-only command that proves which runtime package
   version the running Python process imported.
+- Guard releases so `VERSION` and `hermes_runtime.__version__` stay aligned,
+  keeping the runtime's post-update proof honest.
 
 ## 0.0.3 - 2026-06-25
 
