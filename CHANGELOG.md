@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.6 - 2026-06-26
 
 - Treat legacy cached update-check results that do not record the checked
   runtime version or sha as stale, so `update_status` does not surface an
