@@ -49,11 +49,14 @@ fetches a Google-signed VM identity token from the metadata server when calling
 Tinyhat, and the platform verifies that the token belongs to the expected
 project, zone, and instance id before accepting the request.
 
-The current `v0.0.1` foundation is local-development only. A local Docker
-container does not have GCE metadata identity, so the Hat admin launch service
-mints a scoped `TINYHAT_LOCAL_DEV_TOKEN` for `/hapi/v1/computers/local-dev/*`.
-That local bearer secret is a dev harness substitute for attestation, not the
-production authentication model.
+Local Docker does not have GCE metadata identity, so the Hat admin launch
+service mints a scoped `TINYHAT_LOCAL_DEV_TOKEN` for
+`/hapi/v1/computers/local-dev/*`. That local bearer secret is only a dev harness
+substitute for attestation. On GCloud Computers the runtime does not need a
+Tinyhat platform token: when it calls the platform, it asks the Google metadata
+server for a short-lived VM identity token, reuses that token until it is close
+to expiry, and sends it to the existing `/hapi/v1/computers/me/*` platform APIs.
+The platform verifies the Google token before accepting the call.
 
 ## How a Computer is set up
 
@@ -101,7 +104,11 @@ sudo cat /var/lib/tinyhat-hermes-runtime/current/COMMIT_SHA
 The env files contain platform connection data, such as the platform URL and
 Computer id, so they are written with `0600` permissions. In the local Docker
 harness they also contain the dev-only `TINYHAT_LOCAL_DEV_TOKEN` described
-above. Do not paste env files into issues, logs, or support threads.
+above. GCloud Computers should not have a Tinyhat platform bearer token in these
+files; they use metadata-server identity tokens at request time. By default the
+identity-token audience is the platform URL; set `TINYHAT_COMPUTER_TOKEN_AUDIENCE`
+only when the platform verifier is configured for a different audience. Do not
+paste env files into issues, logs, or support threads.
 
 ## Heartbeat protection
 

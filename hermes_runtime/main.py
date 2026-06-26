@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime import __version__
-from hermes_runtime.client import PlatformClient, PlatformError
+from hermes_runtime.client import (
+    CachedGoogleIdentityToken,
+    PlatformClient,
+    PlatformError,
+)
 from hermes_runtime.commands import run_command
 from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
@@ -39,6 +43,7 @@ class RuntimeContext:
     state_dir: Path
     started_at: float
     computer_id: str = "local-dev"
+    platform_auth: str = "local_dev"
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
 
@@ -142,7 +147,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     )
     runtime = {
         "schema": STATE_SCHEMA,
-        "mode": "local_dev",
+        "mode": getattr(ctx, "platform_auth", "local_dev"),
         "status": status,
         "runtime_version": __version__,
         "current_version": ctx.current_version(),
@@ -378,10 +383,20 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
 
 
 async def run() -> int:
-    platform = PlatformClient(
-        base_url=_env("TINYHAT_PLATFORM_URL"),
-        token=_env("TINYHAT_LOCAL_DEV_TOKEN"),
-    )
+    platform_url = _env("TINYHAT_PLATFORM_URL")
+    local_dev_token = (os.getenv("TINYHAT_LOCAL_DEV_TOKEN") or "").strip()
+    if local_dev_token:
+        platform = PlatformClient(base_url=platform_url, token=local_dev_token)
+        platform_auth = "local_dev"
+    else:
+        audience = (
+            os.getenv("TINYHAT_COMPUTER_TOKEN_AUDIENCE") or ""
+        ).strip() or platform_url
+        platform = PlatformClient(
+            base_url=platform_url,
+            token_provider=CachedGoogleIdentityToken(audience=audience),
+        )
+        platform_auth = "gcloud"
     interval = float(os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "30")
     state_dir = Path(os.getenv("TINYHAT_RUNTIME_STATE_DIR") or DEFAULT_STATE_DIR)
     computer_id = (os.getenv("TINYHAT_COMPUTER_ID") or "local-dev").strip() or "local-dev"
@@ -390,6 +405,7 @@ async def run() -> int:
         state_dir=state_dir,
         started_at=time.monotonic(),
         computer_id=computer_id,
+        platform_auth=platform_auth,
     )
     activated = _safe_activate_staged_on_startup(ctx)
     if activated:

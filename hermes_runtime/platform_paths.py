@@ -6,11 +6,11 @@ from typing import Any
 
 
 def computer_api_path(computer_id: str, suffix: str) -> str:
-    """Return the local-dev runtime API path for this foundation release.
+    """Return the platform API path for this foundation release.
 
-    The local Docker foundation authenticates with ``TINYHAT_LOCAL_DEV_TOKEN``.
-    The platform resolves that token to the concrete Computer row, so the
-    runtime deliberately does not put the database id into the URL.
+    Local Docker authenticates with ``TINYHAT_LOCAL_DEV_TOKEN`` and keeps using
+    the scoped local-dev paths. GCloud Computers authenticate with a Google
+    identity token and use the existing ``/computers/me`` API surface.
     """
     _ = computer_id
     clean_suffix = suffix.lstrip("/")
@@ -18,4 +18,7 @@ def computer_api_path(computer_id: str, suffix: str) -> str:
 
 
 def context_computer_api_path(ctx: Any, suffix: str) -> str:
+    clean_suffix = suffix.lstrip("/")
+    if getattr(ctx, "platform_auth", "local_dev") == "gcloud":
+        return f"/hapi/v1/computers/me/{clean_suffix}"
     return computer_api_path(str(getattr(ctx, "computer_id", "local-dev")), suffix)

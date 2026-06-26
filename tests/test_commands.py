@@ -29,7 +29,10 @@ from hermes_runtime.main import (  # noqa: E402
     _run_one_command,
     _scheduled_update_check,
 )
-from hermes_runtime.platform_paths import computer_api_path  # noqa: E402
+from hermes_runtime.platform_paths import (  # noqa: E402
+    computer_api_path,
+    context_computer_api_path,
+)
 from hermes_runtime.update_artifacts import (  # noqa: E402
     _safe_extract_tarball,
     activate_staged_runtime_code,
@@ -71,9 +74,25 @@ class CommandTests(TestCase):
             "/hapi/v1/computers/local-dev/heartbeat",
         )
 
+    def test_platform_paths_use_gcloud_me_context(self) -> None:
+        ctx = SimpleNamespace(platform_auth="gcloud", computer_id="123")
+
+        self.assertEqual(
+            context_computer_api_path(ctx, "heartbeat"),
+            "/hapi/v1/computers/me/heartbeat",
+        )
+        self.assertEqual(
+            context_computer_api_path(ctx, "runtime-command/result"),
+            "/hapi/v1/computers/me/runtime-command/result",
+        )
+
     def test_whoami_uses_local_dev_attestation_path(self) -> None:
         platform = FakePlatform()
-        ctx = SimpleNamespace(platform=platform, computer_id="computer 123")
+        ctx = SimpleNamespace(
+            platform=platform,
+            computer_id="computer 123",
+            platform_auth="local_dev",
+        )
 
         result = asyncio.run(run_command(ctx, {"kind": "whoami"}))
 
@@ -85,6 +104,15 @@ class CommandTests(TestCase):
             result["attestation"]["path"],
             "/hapi/v1/computers/local-dev/whoami",
         )
+
+    def test_whoami_uses_gcloud_attestation_path(self) -> None:
+        platform = FakePlatform()
+        ctx = SimpleNamespace(platform=platform, computer_id="123", platform_auth="gcloud")
+
+        result = asyncio.run(run_command(ctx, {"kind": "whoami"}))
+
+        self.assertEqual(platform.gets, ["/hapi/v1/computers/me/whoami"])
+        self.assertEqual(result["attestation"]["path"], "/hapi/v1/computers/me/whoami")
 
     def test_update_is_staged_then_marked_for_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
