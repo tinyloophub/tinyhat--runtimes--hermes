@@ -74,6 +74,26 @@ curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--herm
    short lowercase operator-facing name. Document why the channel exists before
    making it a Computer creation option.
 
+## Channel refs and update checks
+
+Channel branches are moving installer selectors. They are not, by themselves,
+proof that a Computer should update. This matters when branch protection is on:
+`channels/lts` and `channels/latest` may point at merge commits that contain a
+final release tag instead of pointing at the tag commit exactly.
+
+The platform should resolve a channel to the concrete final tag it contains and
+send that tag to `check_update`, for example:
+
+```json
+{"channel": "lts", "target_ref": "v0.0.7"}
+```
+
+If a runtime receives only `{"channel": "lts", "target_ref": "channels/lts"}`,
+it may confirm the selector is eligible, but it must not report
+`update_available=true`. That keeps a Computer already running `v0.0.7` from
+treating the protected `channels/lts` merge commit as a newer version. The
+platform should send the concrete final tag when it wants a version decision.
+
 Channel branch update example:
 
 ```bash
