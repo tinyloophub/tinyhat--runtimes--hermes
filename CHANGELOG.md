@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.5 - 2026-06-26
 
 - Mark cached update-check results as stale in `update_status` when the runtime
   has changed since the check was computed, preventing old decisions from being
