@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.7 - 2026-06-26
+
 - Add `install.sh --run-foreground` so local Docker machines can use the same
   public installer surface as production machines while letting Docker supervise
   the long-running process; foreground mode now forwards TERM and INT cleanly to
