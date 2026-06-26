@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import sys
 import tarfile
 import tempfile
@@ -418,6 +419,82 @@ class CommandTests(TestCase):
                 status["ready_updates"][0]["activation"],
                 "after_runtime_restart",
             )
+
+    def test_update_status_marks_cached_check_stale_after_current_version_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "updates").mkdir()
+            (state_dir / "updates" / "last_check.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tinyhat_hermes_update_check_v1",
+                        "status": "dev_ref_check",
+                        "channel": "lts",
+                        "target_ref": "v0.0.3",
+                        "current_version": "v0.0.2",
+                        "current_sha": None,
+                        "update_available": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                activation_marker=state_dir / "ACTIVATE_ON_RESTART",
+                current_version=lambda: "v0.0.3",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: None,
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            last_check = status["last_update_check"]
+            self.assertEqual(status["current_version"], "v0.0.3")
+            self.assertTrue(last_check["stale"])
+            self.assertEqual(
+                last_check["stale_reason"],
+                "current_version_changed_since_check",
+            )
+            self.assertEqual(last_check["checked_current_version"], "v0.0.2")
+            self.assertEqual(last_check["live_current_version"], "v0.0.3")
+            self.assertTrue(last_check["previous_update_available"])
+            self.assertIsNone(last_check["update_available"])
+
+    def test_update_status_keeps_cached_check_when_final_versions_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "updates").mkdir()
+            (state_dir / "updates" / "last_check.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "tinyhat_hermes_update_check_v1",
+                        "status": "dev_ref_check",
+                        "channel": "lts",
+                        "target_ref": "v0.0.3",
+                        "current_version": "0.0.3",
+                        "current_sha": None,
+                        "update_available": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctx = SimpleNamespace(
+                state_dir=state_dir,
+                staged_metadata_file=state_dir / "staged" / "metadata.json",
+                activation_marker=state_dir / "ACTIVATE_ON_RESTART",
+                current_version=lambda: "v0.0.3",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: None,
+            )
+
+            status = asyncio.run(run_command(ctx, {"kind": "update_status"}))
+
+            last_check = status["last_update_check"]
+            self.assertNotIn("stale", last_check)
+            self.assertFalse(last_check["update_available"])
 
     def test_running_version_reads_imported_runtime_code(self) -> None:
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "running_version"}))
