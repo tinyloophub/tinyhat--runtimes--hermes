@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Mark cached update-check results as stale in `update_status` when the runtime
+  has changed since the check was computed, preventing old decisions from being
+  treated as actionable.
+
 ## 0.0.4 - 2026-06-26
 
 - Add `running_version`, a read-only command that proves which runtime package

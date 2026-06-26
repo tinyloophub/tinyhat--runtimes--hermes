@@ -41,11 +41,16 @@ Side effects:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from hermes_runtime import __version__
 from hermes_runtime.update_check import read_last_result
 from hermes_runtime.update_artifacts import staged_package_dir
+
+FINAL_RELEASE_RE = re.compile(
+    r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
 
 
 def _read_staged_metadata(ctx: Any) -> dict[str, Any] | None:
@@ -78,9 +83,75 @@ def _read_activation_error(ctx: Any) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _final_release_key(value: str | None) -> tuple[int, int, int] | None:
+    match = FINAL_RELEASE_RE.fullmatch(value or "")
+    if match is None:
+        return None
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+    )
+
+
+def _version_matches(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_final = _final_release_key(left)
+    right_final = _final_release_key(right)
+    return left_final is not None and left_final == right_final
+
+
+def _last_update_check_for_current_state(
+    *,
+    state_dir: Any,
+    current_version: str,
+    current_sha: str | None,
+) -> dict[str, Any] | None:
+    payload = read_last_result(state_dir)
+    if payload is None:
+        return None
+
+    checked_version = _clean_text(payload.get("current_version"))
+    checked_sha = _clean_text(payload.get("current_sha"))
+    live_sha = _clean_text(current_sha)
+    stale_reason = None
+    if checked_sha and live_sha and checked_sha != live_sha:
+        stale_reason = "current_sha_changed_since_check"
+    elif checked_version and not _version_matches(checked_version, current_version):
+        stale_reason = "current_version_changed_since_check"
+
+    if stale_reason is None:
+        return payload
+
+    stale_payload = dict(payload)
+    stale_payload["stale"] = True
+    stale_payload["stale_reason"] = stale_reason
+    stale_payload["checked_current_version"] = checked_version
+    stale_payload["checked_current_sha"] = checked_sha
+    stale_payload["live_current_version"] = current_version
+    stale_payload["live_current_sha"] = live_sha
+    stale_payload["previous_update_available"] = payload.get("update_available")
+    stale_payload["update_available"] = None
+    stale_payload["message"] = (
+        "Cached update check is stale because the installed runtime changed "
+        "after that check. Run check_update again for a current decision."
+    )
+    return stale_payload
+
+
 async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     staged_version = ctx.staged_version()
     staged_metadata = _read_staged_metadata(ctx)
+    current_version = ctx.current_version()
+    current_commit_sha = ctx.current_commit_sha()
     ready_updates = []
     if staged_version:
         code_staged = staged_package_dir(ctx.state_dir).is_dir()
@@ -99,10 +170,14 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "schema": "tinyhat_hermes_update_status_v1",
         "runtime_code_version": __version__,
         # The runtime release currently active on this Computer.
-        "current_version": ctx.current_version(),
-        "current_commit_sha": ctx.current_commit_sha(),
+        "current_version": current_version,
+        "current_commit_sha": current_commit_sha,
         "staged_version": staged_version,
         "ready_updates": ready_updates,
         "startup_activation_error": _read_activation_error(ctx),
-        "last_update_check": read_last_result(ctx.state_dir),
+        "last_update_check": _last_update_check_for_current_state(
+            state_dir=ctx.state_dir,
+            current_version=current_version,
+            current_sha=current_commit_sha,
+        ),
     }

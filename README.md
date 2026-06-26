@@ -214,9 +214,12 @@ surface that error from Hat admin.
 
 `update_status` is the read-only command to run before or after any step. It
 shows the currently installed runtime ref, any staged ref waiting for
-activation, and the latest update-check result. `restart_runtime_service` is the
-manual service restart command when you need the runtime process to start again
-without staging or activating anything new.
+activation, and the latest update-check result. If the runtime has changed since
+the last update check was computed, that cached result is marked stale and its
+`update_available` value is cleared so operators know to run `check_update`
+again. `restart_runtime_service` is the manual service restart command when you
+need the runtime process to start again without staging or activating anything
+new.
 
 `running_version` is the direct post-update proof command. It returns the
 `hermes_runtime.__version__` value and the file path from the package imported
