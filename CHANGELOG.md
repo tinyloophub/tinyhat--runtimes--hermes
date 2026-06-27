@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.13 - 2026-06-27
+
+- Add `configure_telegram`, a whitelisted runtime command that fetches the
+  platform-granted Telegram setup payload, writes Hermes Telegram/OpenRouter
+  configuration through public files and CLI commands, clears the bot webhook,
+  and starts the Hermes gateway without returning secrets in command results.
+- Warm Hermes messaging dependencies during `install_hermes`, and make the
+  dependency repair path work on hosts whose system `pip` does not support
+  `pip --python`.
+
 ## 0.0.12 - 2026-06-26
 
 - Keep heartbeat polling alive while any runtime command is running, so slow
