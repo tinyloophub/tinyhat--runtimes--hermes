@@ -346,8 +346,8 @@ def _compact_hermes_status(status: dict[str, Any]) -> dict[str, Any]:
 
 
 async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
-    path = context_computer_api_path(ctx, "hermes/telegram-setup/v1")
-    setup = await ctx.platform.post_json(path, {})
+    api_path = context_computer_api_path(ctx, "hermes/telegram-setup/v1")
+    setup = await ctx.platform.post_json(api_path, {})
 
     token = str(setup.get("telegram_bot_token") or "").strip()
     if not token:
@@ -369,7 +369,10 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         ),
         **_openrouter_env_values(setup),
     }
-    env_files = [_upsert_env_file(path, env_values) for path in _env_file_candidates()]
+    env_files = [
+        _upsert_env_file(env_path, env_values)
+        for env_path in _env_file_candidates()
+    ]
 
     hermes_bin = find_hermes_binary()
     if hermes_bin is None:

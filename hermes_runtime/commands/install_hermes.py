@@ -52,6 +52,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -120,12 +121,33 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
 
 
 def _pip_command_for_python(python_bin: Path) -> str:
+    if (python_bin.parent / "pip").is_file():
+        return f"{shlex.quote(str(python_bin))} -m pip"
+
     pip_bin = shutil.which("pip") or shutil.which("pip3")
-    if pip_bin:
+    # ``pip --python`` can install into a venv that does not have pip
+    # bootstrapped yet, but older distro pips do not support the flag. Prefer
+    # the Hermes venv's own pip when present, then fall back only when the
+    # system pip advertises the option.
+    if pip_bin and _pip_supports_python_option(pip_bin):
         return (
             f"{shlex.quote(pip_bin)} --python {shlex.quote(str(python_bin))}"
         )
     return f"{shlex.quote(str(python_bin))} -m pip"
+
+
+def _pip_supports_python_option(pip_bin: str) -> bool:
+    try:
+        result = subprocess.run(
+            [pip_bin, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "--python" in f"{result.stdout}\n{result.stderr}"
 
 
 async def _ensure_messaging_dependencies() -> dict[str, Any]:
