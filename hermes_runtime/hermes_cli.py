@@ -115,8 +115,15 @@ def hermes_install_script() -> str:
 
 
 async def maybe_install_debian_prerequisites() -> dict[str, Any]:
-    required = ["curl", "git", "xz"]
-    missing = [name for name in required if shutil.which(name) is None]
+    required = ["curl", "git", "xz", "pip"]
+    missing = [
+        name
+        for name in required
+        if (
+            shutil.which(name) is None
+            and not (name == "pip" and shutil.which("pip3") is not None)
+        )
+    ]
     result: dict[str, Any] = {
         "required": required,
         "missing_before": missing,
@@ -132,12 +139,19 @@ async def maybe_install_debian_prerequisites() -> dict[str, Any]:
     install = await run_shell(
         "export DEBIAN_FRONTEND=noninteractive\n"
         "apt-get update\n"
-        "apt-get install -y --no-install-recommends ca-certificates curl git xz-utils",
+        "apt-get install -y --no-install-recommends ca-certificates curl git python3-pip xz-utils",
         timeout_seconds=240,
     )
     result["attempted"] = True
     result["result"] = install
-    result["missing_after"] = [name for name in required if shutil.which(name) is None]
+    result["missing_after"] = [
+        name
+        for name in required
+        if (
+            shutil.which(name) is None
+            and not (name == "pip" and shutil.which("pip3") is not None)
+        )
+    ]
     return result
 
 
