@@ -75,7 +75,9 @@ def _gateway_status_is_stopped(status: dict[str, Any] | None) -> bool:
         "not running",
         "gateway is not running",
         "no gateway process",
-        "stopped",
+        "gateway stopped",
+        "status: stopped",
+        "state: stopped",
     )
     return any(needle in text for needle in stopped_needles)
 
@@ -220,12 +222,14 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             timeout_seconds=45,
         )
 
-    stopped = (
+    foreground_clear = all(bool(item.get("terminated")) for item in terminated)
+    gateway_stopped = (
         hermes_bin is None
         or bool(stop and stop.get("ok"))
         or _gateway_status_is_stopped(status_after)
-        or (bool(terminated) and all(bool(item.get("terminated")) for item in terminated))
+        or bool(terminated)
     )
+    stopped = foreground_clear and gateway_stopped
     return {
         "schema": "tinyhat_hermes_stop_v1",
         "stopped": bool(stopped),

@@ -96,3 +96,64 @@ def test_stop_hermes_terminates_foreground_gateway_process() -> None:
 
     terminate.assert_called_once_with(process)
     assert result == [{**process, "terminated": True}]
+
+
+def test_stop_hermes_gateway_process_matcher_is_narrow() -> None:
+    hermes_bin = Path("/usr/local/bin/hermes")
+
+    assert stop_hermes._is_gateway_process(
+        [str(hermes_bin), "gateway", "run", "--replace", "--force", "--accept-hooks"],
+        hermes_bin,
+    )
+    assert not stop_hermes._is_gateway_process(
+        ["python", "-m", "hermes_runtime.main"],
+        hermes_bin,
+    )
+    assert not stop_hermes._is_gateway_process(
+        ["/usr/bin/python", "-m", "hermes_runtime.commands.stop_hermes"],
+        hermes_bin,
+    )
+    assert not stop_hermes._is_gateway_process(
+        ["/usr/bin/foo", "gateway", "run"],
+        hermes_bin,
+    )
+
+
+def test_stop_hermes_reports_not_stopped_when_foreground_process_survives() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del args, timeout_seconds, env
+        return {
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 12,
+            "stdout": "ok\n",
+            "stderr": "",
+        }
+
+    with (
+        patch(
+            "hermes_runtime.commands.stop_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch("hermes_runtime.commands.stop_hermes.run_process", fake_run_process),
+        patch(
+            "hermes_runtime.commands.stop_hermes._terminate_gateway_processes",
+            return_value=[
+                {
+                    "pid": 123,
+                    "cmdline": ["/usr/local/bin/hermes", "gateway", "run"],
+                    "terminated": False,
+                    "still_running": True,
+                }
+            ],
+        ),
+    ):
+        result = asyncio.run(run_command(SimpleNamespace(), {"kind": "stop_hermes"}))
+
+    assert result["stopped"] is False
