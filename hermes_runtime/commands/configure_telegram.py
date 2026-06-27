@@ -7,14 +7,16 @@ What it does:
        GCloud. That endpoint only returns the Telegram setup payload when the
        Computer is already assigned to the agent and the agent has a short
        setup grant.
-    2. Writes Hermes Telegram environment variables into the normal Hermes
-       env files:
+    2. Writes Hermes Telegram environment variables and the platform-provided
+       OpenRouter key into the normal Hermes env files:
        - ``~/.hermes/.env``
        - ``/usr/local/lib/hermes-agent/.env`` when that project directory
          exists.
-    3. Clears Telegram's webhook for the bot so Hermes long-polling can own
+    3. Applies the platform-selected model/base URL through Hermes' public
+       ``hermes config set`` command.
+    4. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
-    4. Starts the Hermes gateway using the public ``hermes gateway`` command.
+    5. Starts the Hermes gateway using the public ``hermes gateway`` command.
 
 When to use it:
     Tinyhat queues this automatically after a Mini App user claims an
@@ -47,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
@@ -116,6 +119,48 @@ def _env_file_candidates() -> list[Path]:
     return unique
 
 
+def _openrouter_env_values(setup: dict[str, Any]) -> dict[str, str]:
+    api_key = str(setup.get("openrouter_api_key") or "").strip()
+    if not api_key:
+        raise RuntimeError("Platform did not return OpenRouter runtime config.")
+    values = {"OPENROUTER_API_KEY": api_key}
+    base_url = str(setup.get("openrouter_base_url") or "").strip()
+    if base_url:
+        values["OPENROUTER_BASE_URL"] = base_url
+    return values
+
+
+async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str, Any]:
+    commands: list[tuple[str, str]] = [("model.provider", "auto")]
+    default_model = str(setup.get("openrouter_default_model") or "").strip()
+    if default_model:
+        commands.append(("model.default", default_model))
+    base_url = str(setup.get("openrouter_base_url") or "").strip()
+    if base_url:
+        commands.append(("model.base_url", base_url))
+
+    results: list[dict[str, Any]] = []
+    for key, value in commands:
+        result = await run_process(
+            [str(hermes_bin), "config", "set", key, value],
+            timeout_seconds=45,
+        )
+        results.append(
+            {
+                "key": key,
+                "value": value,
+                "ok": bool(result.get("ok")),
+                "returncode": result.get("returncode"),
+                "duration_ms": result.get("duration_ms"),
+                "stdout": str(result.get("stdout") or "")[:500],
+                "stderr": str(result.get("stderr") or "")[:500],
+            }
+        )
+        if not result.get("ok"):
+            raise RuntimeError(f"Hermes config set failed for {key}.")
+    return {"ok": True, "commands": results}
+
+
 def _telegram_delete_webhook(token: str) -> dict[str, Any]:
     body = parse.urlencode({"drop_pending_updates": "false"}).encode("utf-8")
     req = request.Request(
@@ -167,6 +212,84 @@ def _compact_process(result: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _process_text(result: dict[str, Any] | None) -> str:
+    if not isinstance(result, dict):
+        return ""
+    return f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}".lower()
+
+
+def _gateway_status_is_healthy(status: dict[str, Any] | None) -> bool:
+    if not isinstance(status, dict) or not status.get("ok"):
+        return False
+    text = _process_text(status)
+    if "not running" in text or "gateway is not running" in text:
+        return False
+    return True
+
+
+def _gateway_needs_foreground_run(
+    *,
+    start: dict[str, Any],
+    status: dict[str, Any],
+) -> bool:
+    text = f"{_process_text(start)}\n{_process_text(status)}"
+    if "not applicable inside a docker container" in text:
+        return True
+    if "run the gateway directly" in text:
+        return True
+    return not _gateway_status_is_healthy(status)
+
+
+def _gateway_log_path() -> Path:
+    state_dir = Path(
+        (os.getenv("TINYHAT_RUNTIME_STATE_DIR") or "/var/lib/tinyhat-hermes-runtime")
+    )
+    return state_dir / "hermes-gateway.log"
+
+
+def _gateway_log_has_adapter_failure(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[-8000:].lower()
+    except OSError:
+        return False
+    needles = (
+        "platform 'telegram' requirements not met",
+        "adapter creation failed",
+        "no adapter available for telegram",
+    )
+    return any(needle in text for needle in needles)
+
+
+async def _start_gateway_foreground(hermes_bin: Path) -> dict[str, Any]:
+    log_path = _gateway_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb") as log_file:
+        process = await asyncio.create_subprocess_exec(
+            str(hermes_bin),
+            "gateway",
+            "run",
+            "--replace",
+            "--force",
+            "--accept-hooks",
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+    await asyncio.sleep(2)
+    if process.returncode is not None:
+        await process.wait()
+    return {
+        "mode": "foreground_detached",
+        "pid": process.pid,
+        "started": process.returncode is None,
+        "returncode": process.returncode,
+        "log_path": str(log_path),
+    }
+
+
 async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
     stop = await run_process(
         [str(hermes_bin), "gateway", "stop"],
@@ -180,12 +303,34 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
         [str(hermes_bin), "gateway", "status"],
         timeout_seconds=45,
     )
+    foreground: dict[str, Any] | None = None
+    if _gateway_needs_foreground_run(start=start, status=status):
+        foreground = await _start_gateway_foreground(hermes_bin)
+        status = await run_process(
+            [str(hermes_bin), "gateway", "status"],
+            timeout_seconds=45,
+        )
+    foreground_log = (
+        Path(str(foreground.get("log_path")))
+        if isinstance(foreground, dict) and foreground.get("log_path")
+        else None
+    )
+    adapter_failure = _gateway_log_has_adapter_failure(foreground_log)
+    healthy = _gateway_status_is_healthy(status) and not adapter_failure
     return {
         "stopped": bool(stop.get("ok")),
-        "started": bool(start.get("ok")),
-        "healthy": bool(status.get("ok")),
+        "started": bool(start.get("ok"))
+        or bool(foreground and foreground.get("started")),
+        "healthy": healthy,
+        "mode": (
+            str(foreground.get("mode"))
+            if isinstance(foreground, dict) and foreground.get("mode")
+            else "service"
+        ),
+        "adapter_ready": not adapter_failure,
         "stop": _compact_process(stop),
         "start": _compact_process(start),
+        "foreground": foreground,
         "status": _compact_process(status),
     }
 
@@ -222,8 +367,14 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "TELEGRAM_HOME_CHANNEL_NAME": str(
             setup.get("telegram_home_channel_name") or "Owner DM"
         ),
+        **_openrouter_env_values(setup),
     }
     env_files = [_upsert_env_file(path, env_values) for path in _env_file_candidates()]
+
+    hermes_bin = find_hermes_binary()
+    if hermes_bin is None:
+        raise RuntimeError("Hermes CLI was not found; install Hermes first.")
+    model_config = await _configure_model(hermes_bin, setup)
 
     webhook = await asyncio.to_thread(_telegram_delete_webhook, token)
     if not webhook.get("ok"):
@@ -232,9 +383,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             f"{webhook.get('description') or webhook.get('http_status')}"
         )
 
-    hermes_bin = find_hermes_binary()
-    if hermes_bin is None:
-        raise RuntimeError("Hermes CLI was not found; install Hermes first.")
     gateway = await _run_gateway(hermes_bin)
     if not gateway.get("healthy"):
         raise RuntimeError("Hermes gateway did not report a healthy status.")
@@ -252,6 +400,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "home_channel": env_values["TELEGRAM_HOME_CHANNEL"],
         "home_channel_name": env_values["TELEGRAM_HOME_CHANNEL_NAME"],
         "env_files": env_files,
+        "model_config": model_config,
         "webhook": webhook,
         "gateway": gateway,
         "hermes": _compact_hermes_status(hermes_status),
