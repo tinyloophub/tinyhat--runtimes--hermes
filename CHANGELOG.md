@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.0.14 - 2026-06-27
+
+- Document that `configure_telegram` revokes the platform setup grant after
+  Hermes has been configured, so Computers cannot keep fetching Telegram
+  credentials after assignment succeeds.
+
 ## 0.0.13 - 2026-06-27
 
 - Add `configure_telegram`, a whitelisted runtime command that fetches the
