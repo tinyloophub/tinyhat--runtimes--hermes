@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `stop_hermes`, a runtime command that stops Hermes Agent messaging before
+  Tinyhat parks or reassigns a Telegram bot.
+
 ## 0.0.14 - 2026-06-27
 
 - Document that `configure_telegram` revokes the platform setup grant after
