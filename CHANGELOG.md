@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.15 - 2026-06-27
+
 - Add `stop_hermes`, a runtime command that stops Hermes Agent messaging before
   Tinyhat parks or reassigns a Telegram bot.
 - Add `start_hermes`, a runtime command that starts the already-configured
