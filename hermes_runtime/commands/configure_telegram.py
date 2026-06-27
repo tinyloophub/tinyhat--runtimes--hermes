@@ -17,6 +17,11 @@ What it does:
     4. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
     5. Starts the Hermes gateway using the public ``hermes gateway`` command.
+    6. Returns a command result to the Tinyhat runtime loop. The loop posts
+       that result to ``/hapi/v1/computers/me/runtime-command/result``; on
+       success the platform marks the Computer/agent active and revokes the
+       short-lived Telegram setup grant so this Computer cannot fetch the bot
+       token again.
 
 When to use it:
     Tinyhat queues this automatically after a Mini App user claims an
