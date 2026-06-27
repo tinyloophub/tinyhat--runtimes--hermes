@@ -4,6 +4,8 @@
 
 - Add `stop_hermes`, a runtime command that stops Hermes Agent messaging before
   Tinyhat parks or reassigns a Telegram bot.
+- Add `start_hermes`, a runtime command that starts the already-configured
+  Hermes Agent gateway again without fetching credentials or changing webhooks.
 
 ## 0.0.14 - 2026-06-27
 
