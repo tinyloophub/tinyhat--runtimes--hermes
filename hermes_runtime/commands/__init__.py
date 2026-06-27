@@ -15,6 +15,7 @@ COMMAND_MODULES = {
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "install_hermes": "hermes_runtime.commands.install_hermes",
     "hermes_status": "hermes_runtime.commands.hermes_status",
+    "configure_telegram": "hermes_runtime.commands.configure_telegram",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
     "restart_runtime_service": "hermes_runtime.commands.restart_runtime_service",
