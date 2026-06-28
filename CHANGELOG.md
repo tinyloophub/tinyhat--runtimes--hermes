@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.16 - 2026-06-28
+
 - Add Telegram quick commands that start OpenAI Codex device-code auth from the
   Hermes chat, send the auth link/code back to Telegram, and restart the gateway
   after Hermes writes the local auth store.
