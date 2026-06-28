@@ -68,18 +68,24 @@ The foundation installer does this:
 
 1. Downloads this repo at the requested ref, unless `--source-dir` points at a
    local checkout.
-2. Copies the runtime Python package and import-safe bootstrap into
+2. Ensures the OpenAI Codex CLI is installed. If `codex` is already available,
+   it leaves it alone; otherwise it installs the public npm package
+   `@openai/codex`. On apt-based Linux machines without npm, it installs
+   `nodejs` and `npm` first. Tinyhat installs Codex CLI during provisioning
+   because Codex is the supported subscription-auth provider and
+   `/codex_limits` needs `codex app-server` after the user connects auth.
+3. Copies the runtime Python package and import-safe bootstrap into
    `/opt/tinyhat-hermes-runtime`.
-3. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.
-4. Writes runtime state under `/var/lib/tinyhat-hermes-runtime`.
-5. Records the installed ref in `current/VERSION` and, when it can resolve one,
+4. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.
+5. Writes runtime state under `/var/lib/tinyhat-hermes-runtime`.
+6. Records the installed ref in `current/VERSION` and, when it can resolve one,
    the installed commit in `current/COMMIT_SHA`.
-6. Writes a private env file at `/opt/tinyhat-hermes-runtime/env/runtime.env`.
+7. Writes a private env file at `/opt/tinyhat-hermes-runtime/env/runtime.env`.
    With systemd, the same env is copied to `/etc/tinyhat/hermes-runtime.env`.
-7. When `--run-foreground` is passed, runs the installed runtime in the
+8. When `--run-foreground` is passed, runs the installed runtime in the
    foreground with a small restart loop for local Docker or another external
    supervisor.
-8. When systemd is enabled, installs a service named
+9. When systemd is enabled, installs a service named
    `tinyhat-hermes-runtime.service`.
 
 This foundation does **not** create Unix users yet. In the current systemd path,
@@ -186,7 +192,7 @@ it.
 | `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and `TELEGRAM_HOME_CHANNEL` into Hermes env files, installs the Telegram quick commands documented below, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token is not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
 | `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Starts Hermes Agent messaging again on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start` with the same foreground fallback used by local/Docker setup. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
 | `stop_hermes` | `hermes_runtime/commands/stop_hermes.py` | Stops Hermes Agent messaging before Tinyhat parks or reassigns a Telegram bot. | Runs `hermes gateway stop`, checks gateway status, and terminates the foreground `hermes gateway run` process used by local/Docker fallback mode. It does not stop the Tinyhat runtime service, change Telegram webhooks, remove credentials, or unassign the Computer. |
-| `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, and returns a structured summary. It does not read or return OpenAI auth tokens and does not call the normal OpenAI REST API. |
+| `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts the Codex CLI installed during provisioning with `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, and returns a structured summary. It does not read or return OpenAI auth tokens and does not call the normal OpenAI REST API. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |

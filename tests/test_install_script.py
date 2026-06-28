@@ -14,12 +14,29 @@ from unittest import TestCase
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _env_with_fake_codex(bin_dir: Path) -> dict[str, str]:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    _write_executable(
+        bin_dir / "codex",
+        "#!/usr/bin/env bash\nprintf 'codex-cli test\\n'\n",
+    )
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    return env
+
+
 class InstallScriptTests(TestCase):
     def test_install_from_local_source_writes_launcher_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             prefix = base / "prefix"
             state_dir = base / "state"
+            env = _env_with_fake_codex(base / "fake-bin")
             ref = "v0.20.0-dev.20260625T173000Z.install-test"
 
             subprocess.run(
@@ -39,6 +56,7 @@ class InstallScriptTests(TestCase):
                 check=True,
                 text=True,
                 capture_output=True,
+                env=env,
             )
 
             self.assertEqual((prefix / "INSTALL_REF").read_text().strip(), ref)
@@ -50,6 +68,12 @@ class InstallScriptTests(TestCase):
             self.assertTrue((prefix / "bin" / "tinyhat-hermes-runtime").is_file())
             self.assertIn(
                 "tinyhat_hermes_runtime_bootstrap.py",
+                (prefix / "bin" / "tinyhat-hermes-runtime").read_text(
+                    encoding="utf-8"
+                ),
+            )
+            self.assertIn(
+                "/usr/local/bin:/usr/bin:/bin",
                 (prefix / "bin" / "tinyhat-hermes-runtime").read_text(
                     encoding="utf-8"
                 ),
@@ -66,12 +90,74 @@ class InstallScriptTests(TestCase):
                 expected_sha,
             )
 
+    def test_installer_installs_codex_cli_from_npm_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            state_dir = base / "state"
+            bin_dir = base / "fake-bin"
+            bin_dir.mkdir()
+            npm_args = base / "npm-args.txt"
+            fake_codex = bin_dir / "codex"
+            fake_npm = bin_dir / "npm"
+            _write_executable(
+                fake_npm,
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$@" > {npm_args}
+if [[ "$1" != "install" || "$2" != "-g" ]]; then
+  exit 22
+fi
+cat > {fake_codex} <<'CODEX'
+#!/usr/bin/env bash
+printf 'codex-cli installed-by-test\\n'
+CODEX
+chmod +x {fake_codex}
+""",
+            )
+            env = dict(os.environ)
+            env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin:/usr/sbin:/sbin"
+            env["TINYHAT_CODEX_NPM_PACKAGE"] = "@openai/codex"
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install.sh"),
+                    "--source-dir",
+                    str(ROOT),
+                    "--prefix",
+                    str(prefix),
+                    "--state-dir",
+                    str(state_dir),
+                    "--ref",
+                    "v0.20.0-dev.codex-cli-install-test",
+                    "--no-systemd",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+
+            self.assertTrue(fake_codex.is_file())
+            self.assertEqual(npm_args.read_text(encoding="utf-8").splitlines(), [
+                "install",
+                "-g",
+                "@openai/codex",
+            ])
+            self.assertIn(
+                "install.sh: installing Codex CLI from npm package @openai/codex",
+                result.stdout,
+            )
+            self.assertIn("codex-cli installed-by-test", result.stdout)
+
     def test_installer_documents_foreground_runtime_mode(self) -> None:
         script = (ROOT / "install.sh").read_text(encoding="utf-8")
 
         self.assertIn("--run-foreground", script)
         self.assertIn("run_runtime_foreground()", script)
         self.assertIn("tinyhat-hermes-runtime exited with status", script)
+        self.assertIn("@openai/codex", script)
 
         help_result = subprocess.run(
             ["bash", str(ROOT / "install.sh"), "--help"],
@@ -82,6 +168,7 @@ class InstallScriptTests(TestCase):
 
         self.assertIn("--run-foreground", help_result.stdout)
         self.assertIn("local Docker", help_result.stdout)
+        self.assertIn("Codex CLI", help_result.stdout)
 
     def _run_foreground_until_signal(
         self,
@@ -131,7 +218,7 @@ while True:
                 encoding="utf-8",
             )
             env = {
-                "PATH": os.environ["PATH"],
+                **_env_with_fake_codex(base / "fake-bin"),
                 "STUB_COUNTER": str(counter),
                 "STUB_STOPPED": str(stopped),
                 "STUB_PID": str(pid_file),
