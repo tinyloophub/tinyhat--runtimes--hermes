@@ -38,6 +38,7 @@ FALLBACK_PROVIDER = "codex-oauth"
 MODEL_PROVIDER = "openai-codex"
 MAX_LOG_CHARS = 16_000
 AUTH_TIMEOUT_SECONDS = 900
+MODEL_PICKER_TIMEOUT_SECONDS = 90
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 SECRET_VALUE_RE = re.compile(
     r"(?i)\b(access_token|refresh_token|id_token|api[_-]?key|authorization)\b"
@@ -377,26 +378,175 @@ def _send_auth_material(material: dict[str, str | None], provider: str) -> dict[
     return {"ok": ok, "deliveries": deliveries}
 
 
+def _terminal_text(text: str) -> str:
+    return ANSI_RE.sub("", text).replace("\r", "\n")
+
+
+def _provider_menu_delta(text: str) -> int | None:
+    section_start = text.rfind("Select provider:")
+    if section_start < 0:
+        return None
+    section = text[section_start:]
+    if "Select OpenAI provider:" in section:
+        return None
+
+    selected_index: int | None = None
+    openai_index: int | None = None
+    index = -1
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if "(○)" not in line and "(●)" not in line:
+            continue
+        index += 1
+        if "→" in line or "(●)" in line:
+            selected_index = index
+        if "OpenAI" in line and "Codex CLI" in line:
+            openai_index = index
+    if selected_index is None or openai_index is None:
+        return None
+    return openai_index - selected_index
+
+
+def _provider_menu_choice(text: str) -> str | None:
+    section_start = text.rfind("Select provider:")
+    if section_start < 0:
+        return None
+    section = text[section_start:]
+    if "Select OpenAI provider:" in section:
+        return None
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if "OpenAI" not in line or "Codex CLI" not in line:
+            continue
+        match = re.search(r"(?:^|\D)(\d+)\.\s+OpenAI\b", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _send_model_picker_key(master_fd: int, key: str) -> None:
+    os.write(master_fd, key.encode("utf-8"))
+
+
+def _send_enter(master_fd: int) -> None:
+    _send_model_picker_key(master_fd, "\n")
+
+
+def _send_arrows(master_fd: int, delta: int) -> None:
+    if delta > 0:
+        _send_model_picker_key(master_fd, "\x1b[B" * delta)
+    elif delta < 0:
+        _send_model_picker_key(master_fd, "\x1b[A" * abs(delta))
+
+
+def _extract_selected_model(text: str) -> str | None:
+    match = re.search(r"Default model set to:\s*([^\s(]+)", _terminal_text(text))
+    return match.group(1) if match else None
+
+
 def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
-    command = [str(hermes_bin), "config", "set", "model.provider", MODEL_PROVIDER]
     started = time.monotonic()
-    process = subprocess.run(
+    command = [str(hermes_bin), "model", "--no-browser"]
+    master_fd, slave_fd = pty.openpty()
+    process = subprocess.Popen(
         command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
         text=True,
-        timeout=45,
-        check=False,
+        close_fds=True,
+        start_new_session=True,
     )
+    os.close(slave_fd)
+
+    output = ""
+    sent_provider = False
+    sent_openai_provider = False
+    sent_credentials = False
+    sent_model = False
+    timed_out = False
+    try:
+        while True:
+            if time.monotonic() - started > MODEL_PICKER_TIMEOUT_SECONDS:
+                timed_out = True
+                process.terminate()
+                break
+
+            ready, _, _ = select.select([master_fd], [], [], 0.2)
+            if ready:
+                try:
+                    chunk = os.read(master_fd, 4096).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
+                if chunk:
+                    output = (output + chunk)[-24_000:]
+
+            clean = _terminal_text(output)
+            if not sent_provider and "Select provider:" in clean and "OpenAI" in clean:
+                choice = _provider_menu_choice(clean)
+                if choice is not None:
+                    _send_model_picker_key(master_fd, f"{choice}\n")
+                    sent_provider = True
+                else:
+                    delta = _provider_menu_delta(clean)
+                    if delta is None:
+                        continue
+                    _send_arrows(master_fd, delta)
+                    _send_enter(master_fd)
+                    sent_provider = True
+            elif not sent_openai_provider and "Select OpenAI provider:" in clean:
+                # OpenAI Codex is Hermes' first OpenAI provider option.
+                _send_enter(master_fd)
+                sent_openai_provider = True
+            elif not sent_credentials and "OpenAI Codex credentials:" in clean:
+                # The device-code command has just completed; keep Hermes'
+                # existing Codex credential and continue its formal picker.
+                _send_enter(master_fd)
+                sent_credentials = True
+            elif not sent_model and "Select default model:" in clean:
+                # Hermes places its recommended Codex model first.
+                _send_enter(master_fd)
+                sent_model = True
+
+            if process.poll() is not None:
+                break
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    if process.poll() is None:
+        try:
+            returncode = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            returncode = process.wait(timeout=10)
+            timed_out = True
+    else:
+        returncode = process.returncode
+    selected_model = _extract_selected_model(output)
     return {
-        "args": command,
+        "command": command,
+        "source": "hermes model",
         "model_provider": MODEL_PROVIDER,
-        "ok": process.returncode == 0,
-        "returncode": process.returncode,
+        "model_default": selected_model,
+        "ok": returncode == 0 and not timed_out and bool(selected_model),
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "selections": {
+            "provider": sent_provider,
+            "openai_provider": sent_openai_provider,
+            "credentials": sent_credentials,
+            "model": sent_model,
+        },
+        "output": _terminal_text(output)[-4000:],
         "duration_ms": int((time.monotonic() - started) * 1000),
-        "stdout": process.stdout[-1000:],
-        "stderr": process.stderr[-1000:],
     }
 
 

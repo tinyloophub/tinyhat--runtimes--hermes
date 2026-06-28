@@ -460,27 +460,28 @@ def _gateway_log_has_adapter_failure(path: Path | None) -> bool:
 async def _start_gateway_foreground(hermes_bin: Path) -> dict[str, Any]:
     log_path = _gateway_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("wb") as log_file:
-        process = await asyncio.create_subprocess_exec(
-            str(hermes_bin),
-            "gateway",
-            "run",
-            "--replace",
-            "--force",
-            "--accept-hooks",
+    with log_path.open("ab") as log_file:
+        process = subprocess.Popen(
+            [
+                str(hermes_bin),
+                "gateway",
+                "run",
+                "--replace",
+                "--force",
+                "--accept-hooks",
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
             start_new_session=True,
         )
     await asyncio.sleep(2)
-    if process.returncode is not None:
-        await process.wait()
+    returncode = process.poll()
     return {
         "mode": "foreground_detached",
         "pid": process.pid,
-        "started": process.returncode is None,
-        "returncode": process.returncode,
+        "started": returncode is None,
+        "returncode": returncode,
         "log_path": str(log_path),
     }
 

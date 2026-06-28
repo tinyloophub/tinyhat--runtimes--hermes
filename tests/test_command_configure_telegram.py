@@ -468,6 +468,48 @@ def test_run_gateway_rejects_foreground_adapter_failure() -> None:
     assert result["adapter_ready"] is False
 
 
+def test_start_gateway_foreground_uses_detached_popen() -> None:
+    popen_calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 1234
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProcess:
+        popen_calls.append({"args": args, "kwargs": kwargs})
+        return FakeProcess()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old_env = os.environ.copy()
+        os.environ.update({"TINYHAT_RUNTIME_STATE_DIR": tmp})
+        try:
+            with patch(
+                "hermes_runtime.commands.configure_telegram.subprocess.Popen",
+                fake_popen,
+            ):
+                result = asyncio.run(
+                    configure_telegram._start_gateway_foreground(
+                        Path("/usr/local/bin/hermes")
+                    )
+                )
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert result["started"] is True
+    assert result["pid"] == 1234
+    assert popen_calls
+    call = popen_calls[0]
+    assert call["args"][0][:3] == [
+        "/usr/local/bin/hermes",
+        "gateway",
+        "run",
+    ]
+    assert call["kwargs"]["start_new_session"] is True
+
+
 def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "config.yaml"

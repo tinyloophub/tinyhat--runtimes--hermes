@@ -107,6 +107,52 @@ def test_auth_command_uses_no_browser_device_flow_flags() -> None:
     ]
 
 
+def test_model_switch_uses_formal_hermes_model_picker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('Select provider:', flush=True)\n"
+            "print('  (○) Nous Portal', flush=True)\n"
+            "print('  → (●) OpenRouter (Pay-per-use API aggregator)  ← currently active', flush=True)\n"
+            "print('  (○) Mixture of Agents', flush=True)\n"
+            "print('  (○) NovitaAI', flush=True)\n"
+            "print('  (○) LM Studio', flush=True)\n"
+            "print('  (○) Anthropic', flush=True)\n"
+            "print('  (○) 7. OpenAI ▸ (Codex CLI or direct OpenAI API)', flush=True)\n"
+            "first = sys.stdin.buffer.readline()\n"
+            "print('Select OpenAI provider:', flush=True)\n"
+            "print('  → (●) OpenAI Codex', flush=True)\n"
+            "print('  (○) OpenAI API', flush=True)\n"
+            "second = sys.stdin.buffer.readline()\n"
+            "print('OpenAI Codex credentials:', flush=True)\n"
+            "print('  → (●) Use existing credentials', flush=True)\n"
+            "third = sys.stdin.buffer.readline()\n"
+            "print('Select default model:', flush=True)\n"
+            "print('  → (●) gpt-5.5', flush=True)\n"
+            "fourth = sys.stdin.buffer.readline()\n"
+            "assert first.strip() == b'7'\n"
+            "assert second and third and fourth\n"
+            "print('Default model set to: gpt-5.5 (via OpenAI Codex)', flush=True)\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        result = codex_auth._run_config_switch(hermes_bin)
+
+    assert result["ok"] is True
+    assert result["source"] == "hermes model"
+    assert result["model_provider"] == "openai-codex"
+    assert result["model_default"] == "gpt-5.5"
+    assert result["selections"] == {
+        "provider": True,
+        "openai_provider": True,
+        "credentials": True,
+        "model": True,
+    }
+
+
 def test_send_auth_material_uses_button_and_bare_code_message() -> None:
     sends: list[tuple[str, str | None, str | None]] = []
 
