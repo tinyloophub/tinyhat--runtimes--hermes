@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,20 @@ sys.path.insert(0, str(ROOT))
 
 import hermes_runtime.commands.configure_telegram as configure_telegram  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value))
+    return suite
 
 
 class FakePlatform:
@@ -172,6 +187,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert "codex-auth:" in config_text
         assert "codex_auth_status:" in config_text
         assert "codex_auth_log:" in config_text
+        assert "codex_limits:" in config_text
 
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
@@ -198,6 +214,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "codex_auth",
             "codex_auth_status",
             "codex_auth_log",
+            "codex_limits",
             "model",
         }.issubset(registered_commands)
     assert gateway_calls == [
@@ -231,11 +248,13 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "codex-auth",
         "codex_auth_status",
         "codex_auth_log",
+        "codex_limits",
     ]
     assert result["codex_auth"]["quick_commands"]["telegram_menu_commands"] == [
         "codex_auth",
         "codex_auth_status",
         "codex_auth_log",
+        "codex_limits",
     ]
     assert result["codex_auth"]["telegram_commands"]["ok"] is True
     assert result["codex_auth"]["telegram_commands"]["registered_scopes"] == [
@@ -566,7 +585,9 @@ def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
     assert "existing:" in text
     assert "codex_auth:" in text
     assert "codex-auth:" in text
+    assert "codex_limits:" in text
     assert "python3 -m hermes_runtime.telegram_codex_auth start" in text
+    assert "python3 -m hermes_runtime.codex_limits telegram" in text
 
 
 def test_telegram_merge_bot_commands_updates_private_and_owner_scopes() -> None:
@@ -608,6 +629,7 @@ def test_telegram_merge_bot_commands_updates_private_and_owner_scopes() -> None:
         assert "codex_auth" in commands
         assert "codex_auth_status" in commands
         assert "codex_auth_log" in commands
+        assert "codex_limits" in commands
 
 
 def test_telegram_merge_bot_commands_reports_scope_failures() -> None:

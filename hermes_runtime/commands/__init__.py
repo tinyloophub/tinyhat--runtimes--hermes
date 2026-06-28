@@ -18,6 +18,7 @@ COMMAND_MODULES = {
     "configure_telegram": "hermes_runtime.commands.configure_telegram",
     "start_hermes": "hermes_runtime.commands.start_hermes",
     "stop_hermes": "hermes_runtime.commands.stop_hermes",
+    "codex_limits": "hermes_runtime.commands.codex_limits",
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
     "restart_runtime_service": "hermes_runtime.commands.restart_runtime_service",

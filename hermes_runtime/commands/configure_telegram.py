@@ -16,7 +16,8 @@ What it does:
        ``hermes config set`` command.
     4. Installs Tinyhat-managed Hermes quick commands for OpenAI Codex
        device-code auth:
-       ``/codex_auth``, ``/codex_auth_status``, and ``/codex_auth_log``.
+       ``/codex_auth``, ``/codex_auth_status``, ``/codex_auth_log``, and
+       ``/codex_limits``.
        It also installs ``codex-auth`` as a best-effort Hermes quick-command
        alias for typed chat input, while Telegram's command menu uses
        underscores because Telegram clients and the Bot API do not reliably
@@ -85,6 +86,7 @@ TELEGRAM_CODEX_MENU_COMMANDS = {
     "codex_auth": "Connect OpenAI Codex auth",
     "codex_auth_status": "Check Codex auth status",
     "codex_auth_log": "Show recent Codex auth output",
+    "codex_limits": "Show OpenAI Codex usage limits",
 }
 
 
@@ -163,6 +165,13 @@ def _codex_auth_command(action: str) -> str:
     )
 
 
+def _codex_limits_command() -> str:
+    return (
+        'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
+        "python3 -m hermes_runtime.codex_limits telegram"
+    )
+
+
 def _codex_auth_quick_commands_block() -> str:
     commands = {
         "codex_auth": {
@@ -180,6 +189,10 @@ def _codex_auth_quick_commands_block() -> str:
         "codex_auth_log": {
             "description": "Show recent OpenAI Codex auth output",
             "command": _codex_auth_command("log"),
+        },
+        "codex_limits": {
+            "description": "Show OpenAI Codex usage limits",
+            "command": _codex_limits_command(),
         },
     }
     lines = [
@@ -243,11 +256,13 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
             "codex-auth",
             "codex_auth_status",
             "codex_auth_log",
+            "codex_limits",
         ],
         "telegram_menu_commands": [
             "codex_auth",
             "codex_auth_status",
             "codex_auth_log",
+            "codex_limits",
         ],
     }
 
