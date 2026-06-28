@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,20 @@ sys.path.insert(0, str(ROOT))
 
 import hermes_runtime.codex_limits as codex_limits  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value))
+    return suite
 
 
 def sample_limits_payload() -> dict[str, object]:
@@ -46,10 +61,10 @@ def test_summary_calculates_remaining_windows() -> None:
     assert codex["label"] == "Codex"
     assert codex["plan_type"] == "pro"
     assert codex["windows"][0]["text"].startswith(
-        "Primary, 80% remaining, about 4h left",
+        "Primary, 80% remaining, estimated quota left 4h",
     )
     assert codex["windows"][1]["text"].startswith(
-        "Weekly, 50% remaining, about 84h left",
+        "Weekly, 50% remaining, estimated quota left 84h",
     )
     assert summary["rate_limit_reset_credits"] == {"availableCount": 3}
 

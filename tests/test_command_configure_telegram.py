@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,20 @@ sys.path.insert(0, str(ROOT))
 
 import hermes_runtime.commands.configure_telegram as configure_telegram  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value))
+    return suite
 
 
 class FakePlatform:

@@ -242,7 +242,9 @@ def _window_summary(name: str, window: dict[str, Any], *, now: float) -> str:
         remaining = max(0.0, 100.0 - used)
         parts.append(f"{remaining:.0f}% remaining")
         if duration is not None:
-            parts.append(f"about {_format_duration(duration * remaining / 100)} left")
+            parts.append(
+                f"estimated quota left {_format_duration(duration * remaining / 100)}"
+            )
     else:
         parts.append("usage unknown")
     if resets_at:

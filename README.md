@@ -222,6 +222,10 @@ result and is not shown in Hat admin. The final OpenAI credential is written by
 Hermes on the Computer; the Tinyhat platform never receives that token.
 `/codex_limits` uses that local Codex/Hermes auth indirectly through the Codex
 app-server process. It returns usage windows and credit counts, not auth tokens.
+The Codex app-server API is currently an experimental Codex CLI surface, so the
+runtime treats it as best-effort: if the upstream shape changes, the command
+returns a readable unavailable/error payload instead of exposing credentials or
+crashing the runtime loop.
 
 ## How runtime updates work
 
