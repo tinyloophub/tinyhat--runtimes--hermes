@@ -2,9 +2,9 @@
 
 This module is invoked by Hermes quick commands that Tinyhat installs into
 ``~/.hermes/config.yaml`` when a Computer is connected to Telegram. It starts
-Hermes' device-code auth flow in the background, sends the authorization link
-and device code to the configured Telegram home channel, and sends a completion
-message when Hermes finishes writing its auth store.
+the official Codex CLI device-code auth flow, sends the authorization link and
+device code to the configured Telegram home channel, then asks Hermes through
+its formal model picker to import/switch to OpenAI Codex.
 
 The OpenAI device code and final auth token stay on the Computer. The platform
 only installs the quick command; it is not in the OpenAI auth path.
@@ -27,6 +27,7 @@ import time
 from typing import Any
 from urllib import error, parse, request
 
+from hermes_runtime.codex_limits import find_codex_binary
 from hermes_runtime.hermes_cli import find_hermes_binary
 
 STATE_SCHEMA = "tinyhat_hermes_codex_auth_v1"
@@ -466,6 +467,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
     sent_provider = False
     sent_openai_provider = False
     sent_credentials = False
+    sent_cli_import = False
     sent_model = False
     timed_out = False
     try:
@@ -508,6 +510,21 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
                 # OpenAI Codex is Hermes' first OpenAI provider option.
                 _send_enter(master_fd)
                 sent_openai_provider = True
+            elif (
+                not sent_cli_import
+                and "Found existing Codex CLI credentials" in clean
+                and "Import these credentials?" in clean
+            ):
+                _send_model_picker_key(master_fd, "y\n")
+                sent_cli_import = True
+                sent_credentials = True
+            elif (
+                not sent_credentials
+                and "Existing Codex credentials found in Hermes auth store." in clean
+                and "Use existing credentials?" in clean
+            ):
+                _send_enter(master_fd)
+                sent_credentials = True
             elif not sent_credentials and "OpenAI Codex credentials:" in clean:
                 # The device-code command has just completed; keep Hermes'
                 # existing Codex credential and continue its formal picker.
@@ -548,6 +565,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
             "provider": sent_provider,
             "openai_provider": sent_openai_provider,
             "credentials": sent_credentials,
+            "cli_import": sent_cli_import,
             "model": sent_model,
         },
         "output": _redact_sensitive_text(_terminal_text(output)[-4000:]),
@@ -582,6 +600,29 @@ def _auth_status(hermes_bin: Path) -> dict[str, Any]:
     return {"ok": False, "provider": providers[-1], "output": text[-2000:]}
 
 
+def _codex_cli_status(codex_bin: Path) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        process = subprocess.run(
+            [str(codex_bin), "login", "status"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "message": str(exc)}
+    text = f"{process.stdout}\n{process.stderr}".strip()
+    return {
+        "ok": process.returncode == 0,
+        "returncode": process.returncode,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "output": _redact_sensitive_text(text[-2000:]),
+    }
+
+
 def _auth_command(hermes_bin: Path, provider: str) -> list[str]:
     return [
         str(hermes_bin),
@@ -592,6 +633,10 @@ def _auth_command(hermes_bin: Path, provider: str) -> list[str]:
         "--timeout",
         str(AUTH_TIMEOUT_SECONDS),
     ]
+
+
+def _codex_cli_login_command(codex_bin: Path) -> list[str]:
+    return [str(codex_bin), "login", "--device-auth"]
 
 
 def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
@@ -718,6 +763,98 @@ def _run_auth_once(hermes_bin: Path, provider: str) -> tuple[int, bool]:
     return returncode, saw_material
 
 
+def _run_codex_cli_login_once(codex_bin: Path) -> tuple[int, bool]:
+    """Run Codex CLI device auth so ``codex app-server`` can read limits."""
+
+    _append_log(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] starting codex cli login\n")
+    master_fd, slave_fd = pty.openpty()
+    process = subprocess.Popen(
+        _codex_cli_login_command(codex_bin),
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        text=True,
+        close_fds=True,
+        start_new_session=True,
+    )
+    os.close(slave_fd)
+    saw_material = False
+    buffer = ""
+    _write_status(
+        {
+            "state": "waiting_for_user",
+            "provider": "codex-cli",
+            "auth_pid": process.pid,
+            "message": "Waiting for the user to complete the Codex CLI device-code flow.",
+        }
+    )
+    try:
+        while True:
+            ready, _, _ = select.select([master_fd], [], [], 0.5)
+            if ready:
+                try:
+                    chunk = os.read(master_fd, 4096).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.EIO:
+                        break
+                    raise
+                if chunk:
+                    _append_log(chunk)
+                    buffer = (buffer + chunk)[-8000:]
+                    if not saw_material:
+                        material = _extract_auth_material(buffer)
+                        if material.get("url") or material.get("code"):
+                            saw_material = True
+                            _write_status(
+                                {
+                                    "state": "device_code_sent",
+                                    "provider": "codex-cli",
+                                    "auth_pid": process.pid,
+                                    "has_url": bool(material.get("url")),
+                                    "has_code": bool(material.get("code")),
+                                }
+                            )
+                            delivery = _send_auth_material(material, "Codex CLI")
+                            if not delivery.get("ok"):
+                                _write_status(
+                                    {
+                                        "state": "delivery_failed",
+                                        "provider": "codex-cli",
+                                        "auth_pid": process.pid,
+                                        "has_url": bool(material.get("url")),
+                                        "has_code": bool(material.get("code")),
+                                        "message": "The Codex CLI auth code was found, but Telegram delivery failed.",
+                                        "telegram_delivery": delivery,
+                                    }
+                                )
+                else:
+                    break
+            if process.poll() is not None:
+                if not ready:
+                    break
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+    returncode = process.wait()
+    _append_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] codex cli exited {returncode}\n")
+    return returncode, saw_material
+
+
+def _ensure_codex_cli_auth(codex_bin: Path) -> tuple[int, bool, dict[str, Any]]:
+    """Ensure the official Codex CLI is logged in before Hermes switches."""
+
+    status = _codex_cli_status(codex_bin)
+    if status.get("ok"):
+        return 0, False, status
+    returncode, saw_material = _run_codex_cli_login_once(codex_bin)
+    return returncode, saw_material, _codex_cli_status(codex_bin)
+
+
 def worker() -> int:
     _ensure_state_dir()
     _pid_path().write_text(f"{os.getpid()}\n", encoding="utf-8")
@@ -733,6 +870,59 @@ def worker() -> int:
         _telegram_send("I could not start OpenAI Codex auth because Hermes CLI is not installed.")
         return 1
 
+    codex_bin = find_codex_binary()
+    if codex_bin is None:
+        _write_status({"state": "failed", "message": "Codex CLI was not found."})
+        _telegram_send(
+            "I could not start OpenAI Codex auth because Codex CLI is not installed on this computer."
+        )
+        return 1
+
+    try:
+        codex_returncode, codex_saw_material, codex_status = _ensure_codex_cli_auth(codex_bin)
+    except Exception as exc:  # noqa: BLE001 - worker must report to Telegram.
+        _append_log(f"codex cli login failed: {exc}\n")
+        codex_returncode = 1
+        codex_saw_material = False
+        codex_status = {"ok": False, "message": str(exc)}
+
+    if codex_returncode != 0 or not codex_status.get("ok"):
+        _write_status(
+            {
+                "state": "failed",
+                "provider": "codex-cli",
+                "returncode": codex_returncode,
+                "codex_cli_status": codex_status,
+                "message": "Codex CLI auth did not complete.",
+            }
+        )
+        suffix = " Send /codex_auth_log to see the latest auth output." if codex_saw_material else ""
+        _telegram_send(
+            "OpenAI Codex CLI auth did not complete."
+            f"{suffix} Run /codex_auth to try again."
+        )
+        return codex_returncode or 1
+
+    switch = _run_config_switch(hermes_bin)
+    if switch.get("ok"):
+        gateway = _restart_gateway_after_auth(hermes_bin)
+        status = _auth_status(hermes_bin)
+        codex_status = _codex_cli_status(codex_bin)
+        _write_status(
+            {
+                "state": "connected",
+                "provider": PRIMARY_PROVIDER,
+                "model_provider": MODEL_PROVIDER,
+                "codex_cli_status": codex_status,
+                "config_switch": switch,
+                "gateway_restart": gateway,
+                "auth_status": status,
+                "message": "OpenAI Codex auth connected.",
+            }
+        )
+        _telegram_send(_completion_message(switch=switch, gateway=gateway))
+        return 0
+
     last_returncode = 1
     for provider in (PRIMARY_PROVIDER, FALLBACK_PROVIDER):
         try:
@@ -745,11 +935,13 @@ def worker() -> int:
             switch = _run_config_switch(hermes_bin)
             gateway = _restart_gateway_after_auth(hermes_bin)
             status = _auth_status(hermes_bin)
+            codex_status = _codex_cli_status(codex_bin)
             _write_status(
                 {
                     "state": "connected",
                     "provider": provider,
                     "model_provider": MODEL_PROVIDER,
+                    "codex_cli_status": codex_status,
                     "config_switch": switch,
                     "gateway_restart": gateway,
                     "auth_status": status,
@@ -815,6 +1007,8 @@ def status() -> str:
     running_pid = _running_worker_pid()
     hermes_bin = find_hermes_binary()
     auth_status = _auth_status(hermes_bin) if hermes_bin else None
+    codex_bin = find_codex_binary()
+    codex_status = _codex_cli_status(codex_bin) if codex_bin else None
     lines = ["OpenAI Codex auth status"]
     if running_pid:
         lines.append(f"Worker: running (pid {running_pid})")
@@ -828,6 +1022,10 @@ def status() -> str:
         lines.append(f"Hermes auth: {'ok' if auth_status.get('ok') else 'not connected'}")
         if auth_status.get("provider"):
             lines.append(f"Provider checked: {auth_status['provider']}")
+    if codex_status:
+        lines.append(f"Codex CLI auth: {'ok' if codex_status.get('ok') else 'not connected'}")
+    elif not codex_bin:
+        lines.append("Codex CLI auth: codex command not found")
     return "\n".join(lines)
 
 
