@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let Hermes own Telegram command-menu registration by configuring Hermes'
+  documented `platforms.telegram.extra.command_menu` priority instead of
+  overwriting Telegram BotCommands from the Tinyhat runtime.
+
 ## 0.0.18 - 2026-06-28
 
 - Install the Codex CLI during runtime provisioning, including a supported

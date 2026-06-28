@@ -23,14 +23,14 @@ What it does:
        underscores because Telegram clients and the Bot API do not reliably
        handle hyphenated slash commands. These commands run only after Telegram
        is configured because they need a Telegram channel for the device code.
-    5. Merges those commands into Telegram's bot command menu on a
-       best-effort basis, preserving any existing bot commands. The merge
-       updates Telegram's default command scope, all private chats, and the
-       assigned owner chat so mobile/desktop autocomplete can show
-       ``/codex_auth`` when the user types ``/c``.
+    5. Configures Hermes' own Telegram command-menu priority so the Codex
+       quick commands stay visible in Telegram's slash-command picker while
+       Hermes still owns the full menu registration.
     6. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
     7. Starts the Hermes gateway using the public ``hermes gateway`` command.
+       Hermes auto-registers the Telegram command menu from its central slash
+       command registry, plugin/skill commands, and the priority list above.
     8. Returns a command result to the Tinyhat runtime loop. The loop posts
        that result to ``/hapi/v1/computers/me/runtime-command/result``; on
        success the platform marks the Computer/agent active and revokes the
@@ -88,6 +88,10 @@ TELEGRAM_CODEX_MENU_COMMANDS = {
     "codex_auth_log": "Show recent Codex auth output",
     "codex_limits": "Show OpenAI Codex usage limits",
 }
+TELEGRAM_MENU_PRIORITY_MODE = "prepend"
+TELEGRAM_MENU_MAX_COMMANDS = 60
+TELEGRAM_MENU_START_MARKER = "# tinyhat managed telegram command menu start"
+TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
 
 
 def _quote_env(value: str) -> str:
@@ -267,6 +271,278 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
     }
 
 
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _is_yaml_key(line: str, *, indent: int, key: str) -> bool:
+    stripped = line.strip()
+    return _line_indent(line) == indent and (
+        stripped == f"{key}:" or stripped.startswith(f"{key}: ")
+    )
+
+
+def _find_key(
+    lines: list[str],
+    key: str,
+    *,
+    indent: int,
+    start: int = 0,
+    end: int | None = None,
+) -> int | None:
+    end = len(lines) if end is None else end
+    for index in range(start, end):
+        if _is_yaml_key(lines[index], indent=indent, key=key):
+            return index
+    return None
+
+
+def _block_end(lines: list[str], start: int, *, indent: int) -> int:
+    index = start + 1
+    while index < len(lines):
+        line = lines[index]
+        if line.strip() and _line_indent(line) <= indent:
+            break
+        index += 1
+    return index
+
+
+def _parse_telegram_menu_values(
+    lines: list[str],
+    *,
+    start: int,
+    end: int,
+    key_indent: int,
+) -> tuple[int | None, list[str]]:
+    max_commands: int | None = None
+    priority: list[str] = []
+    index = start
+    while index < end:
+        line = lines[index]
+        stripped = line.strip()
+        if _line_indent(line) == key_indent and stripped.startswith("max_commands:"):
+            raw_value = stripped.partition(":")[2].strip()
+            try:
+                parsed = int(raw_value)
+                max_commands = max(1, min(100, parsed))
+            except ValueError:
+                max_commands = None
+        if _line_indent(line) == key_indent and stripped == "priority:":
+            item_index = index + 1
+            while item_index < end:
+                item_line = lines[item_index]
+                if item_line.strip() and _line_indent(item_line) <= key_indent:
+                    break
+                item = item_line.strip()
+                if item.startswith("- "):
+                    command = item[2:].strip().strip("'\"")
+                    if command:
+                        priority.append(command)
+                item_index += 1
+            index = item_index
+            continue
+        index += 1
+    return max_commands, priority
+
+
+def _remove_tinyhat_telegram_menu_block(
+    lines: list[str],
+) -> tuple[list[str], int | None, list[str]]:
+    next_lines: list[str] = []
+    managed_lines: list[str] = []
+    skipping = False
+    for line in lines:
+        if line.strip() == TELEGRAM_MENU_START_MARKER:
+            skipping = True
+            continue
+        if skipping and line.strip() == TELEGRAM_MENU_END_MARKER:
+            skipping = False
+            continue
+        if skipping:
+            managed_lines.append(line)
+        else:
+            next_lines.append(line)
+    max_commands, priority = _parse_telegram_menu_values(
+        managed_lines,
+        start=0,
+        end=len(managed_lines),
+        key_indent=8,
+    )
+    return next_lines, max_commands, priority
+
+
+def _parse_existing_priority(
+    lines: list[str],
+    command_menu_index: int,
+) -> tuple[int | None, list[str]]:
+    end = _block_end(lines, command_menu_index, indent=6)
+    return _parse_telegram_menu_values(
+        lines,
+        start=command_menu_index + 1,
+        end=end,
+        key_indent=8,
+    )
+
+
+def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list[str]:
+    end = _block_end(lines, command_menu_index, indent=6)
+    next_lines = lines[: command_menu_index + 1]
+    index = command_menu_index + 1
+    while index < end:
+        line = lines[index]
+        stripped = line.strip()
+        if _line_indent(line) == 8 and (
+            stripped.startswith("max_commands:")
+            or stripped.startswith("priority_mode:")
+            or stripped == "priority:"
+        ):
+            child_end = index + 1
+            while child_end < end:
+                child = lines[child_end]
+                if child.strip() and _line_indent(child) <= 8:
+                    break
+                child_end += 1
+            index = child_end
+            continue
+        next_lines.append(line)
+        index += 1
+    next_lines.extend(lines[end:])
+    return next_lines
+
+
+def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> list[str]:
+    priority = list(TELEGRAM_CODEX_MENU_COMMANDS)
+    for command in existing_priority:
+        if command not in priority:
+            priority.append(command)
+    lines = [
+        f"        {TELEGRAM_MENU_START_MARKER}",
+        f"        max_commands: {max_commands}",
+        f"        priority_mode: {TELEGRAM_MENU_PRIORITY_MODE}",
+        "        priority:",
+    ]
+    lines.extend(f"          - {command}" for command in priority)
+    lines.append(f"        {TELEGRAM_MENU_END_MARKER}")
+    return lines
+
+
+def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], int]:
+    lines, managed_max_commands, managed_priority = _remove_tinyhat_telegram_menu_block(lines)
+    fallback_max_commands = managed_max_commands or TELEGRAM_MENU_MAX_COMMANDS
+
+    platforms_index = _find_key(lines, "platforms", indent=0)
+    if platforms_index is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(
+            [
+                "platforms:",
+                "  telegram:",
+                "    extra:",
+                "      command_menu:",
+                *_telegram_menu_block(
+                    max_commands=fallback_max_commands,
+                    existing_priority=managed_priority,
+                ),
+            ]
+        )
+        return lines, fallback_max_commands
+
+    platforms_end = _block_end(lines, platforms_index, indent=0)
+    telegram_index = _find_key(
+        lines,
+        "telegram",
+        indent=2,
+        start=platforms_index + 1,
+        end=platforms_end,
+    )
+    if telegram_index is None:
+        lines[platforms_end:platforms_end] = [
+            "  telegram:",
+            "    extra:",
+            "      command_menu:",
+            *_telegram_menu_block(
+                max_commands=fallback_max_commands,
+                existing_priority=managed_priority,
+            ),
+        ]
+        return lines, fallback_max_commands
+
+    telegram_end = _block_end(lines, telegram_index, indent=2)
+    extra_index = _find_key(
+        lines,
+        "extra",
+        indent=4,
+        start=telegram_index + 1,
+        end=telegram_end,
+    )
+    if extra_index is None:
+        lines[telegram_end:telegram_end] = [
+            "    extra:",
+            "      command_menu:",
+            *_telegram_menu_block(
+                max_commands=fallback_max_commands,
+                existing_priority=managed_priority,
+            ),
+        ]
+        return lines, fallback_max_commands
+
+    extra_end = _block_end(lines, extra_index, indent=4)
+    command_menu_index = _find_key(
+        lines,
+        "command_menu",
+        indent=6,
+        start=extra_index + 1,
+        end=extra_end,
+    )
+    if command_menu_index is None:
+        lines[extra_end:extra_end] = [
+            "      command_menu:",
+            *_telegram_menu_block(
+                max_commands=fallback_max_commands,
+                existing_priority=managed_priority,
+            ),
+        ]
+        return lines, fallback_max_commands
+
+    existing_max_commands, existing_priority = _parse_existing_priority(
+        lines,
+        command_menu_index,
+    )
+    max_commands = existing_max_commands or fallback_max_commands
+    combined_priority = [*managed_priority, *existing_priority]
+    lines = _remove_command_menu_keys(lines, command_menu_index)
+    command_menu_index = _find_key(lines, "command_menu", indent=6) or command_menu_index
+    lines[command_menu_index + 1:command_menu_index + 1] = _telegram_menu_block(
+        max_commands=max_commands,
+        existing_priority=combined_priority,
+    )
+    return lines, max_commands
+
+
+def _install_telegram_command_menu_priority(
+    config_file: Path | None = None,
+) -> dict[str, Any]:
+    config_file = config_file or _hermes_config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    next_lines, max_commands = _ensure_telegram_command_menu_config(text.splitlines())
+    config_file.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+    try:
+        config_file.chmod(0o600)
+    except OSError:
+        pass
+    return {
+        "config_file": str(config_file),
+        "installed": True,
+        "mechanism": "hermes_config",
+        "path": "platforms.telegram.extra.command_menu",
+        "priority_mode": TELEGRAM_MENU_PRIORITY_MODE,
+        "max_commands": max_commands,
+        "commands": list(TELEGRAM_CODEX_MENU_COMMANDS),
+    }
+
+
 def _openrouter_env_values(setup: dict[str, Any]) -> dict[str, str]:
     api_key = str(setup.get("openrouter_api_key") or "").strip()
     if not api_key:
@@ -344,135 +620,6 @@ def _telegram_delete_webhook(token: str) -> dict[str, Any]:
     return {
         "ok": bool(payload.get("ok")),
         "description": str(payload.get("description") or "")[:500] or None,
-    }
-
-
-def _telegram_api_json(
-    token: str,
-    method: str,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    encoded_payload = {}
-    for key, value in (payload or {}).items():
-        encoded_payload[key] = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-    body = parse.urlencode(encoded_payload).encode("utf-8")
-    req = request.Request(
-        f"https://api.telegram.org/bot{token}/{method}",
-        data=body,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "tinyhat-hermes-runtime/0.0.1",
-        },
-        method="POST",
-    )
-    try:
-        with request.urlopen(req, timeout=20) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        return {
-            "ok": False,
-            "http_status": exc.code,
-            "description": detail[:500],
-        }
-    except error.URLError as exc:
-        return {"ok": False, "description": str(exc.reason)[:500]}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "description": "Telegram returned invalid JSON."}
-    return parsed if isinstance(parsed, dict) else {"ok": False}
-
-
-def _telegram_commands_by_name(payload: dict[str, Any]) -> dict[str, str]:
-    commands_by_name: dict[str, str] = {}
-    result = payload.get("result")
-    if isinstance(result, list):
-        for item in result:
-            if not isinstance(item, dict):
-                continue
-            command = str(item.get("command") or "").strip()
-            description = str(item.get("description") or "").strip()
-            if command and command not in TELEGRAM_CODEX_MENU_COMMANDS:
-                commands_by_name[command] = description[:256]
-    return commands_by_name
-
-
-def _telegram_command_scope_payloads(chat_id: str | None) -> list[tuple[str, dict[str, str] | None]]:
-    scopes: list[tuple[str, dict[str, str] | None]] = [
-        ("default", None),
-        ("all_private_chats", {"type": "all_private_chats"}),
-    ]
-    clean_chat_id = str(chat_id or "").strip()
-    if clean_chat_id:
-        scopes.append(("owner_chat", {"type": "chat", "chat_id": clean_chat_id}))
-    return scopes
-
-
-def _telegram_merge_bot_commands(
-    token: str,
-    *,
-    chat_id: str | None = None,
-) -> dict[str, Any]:
-    scope_results: list[dict[str, Any]] = []
-    default_commands: dict[str, str] = {}
-    for scope_name, scope in _telegram_command_scope_payloads(chat_id):
-        get_payload = {"scope": scope} if scope else None
-        existing = _telegram_api_json(token, "getMyCommands", get_payload)
-        if not existing.get("ok"):
-            scope_results.append(
-                {
-                    "scope": scope_name,
-                    "ok": False,
-                    "stage": "getMyCommands",
-                    "detail": existing,
-                }
-            )
-            continue
-
-        commands_by_name = _telegram_commands_by_name(existing)
-        if scope_name == "default":
-            default_commands = dict(commands_by_name)
-        elif not commands_by_name and default_commands:
-            # Telegram clients may prefer private-chat or chat-specific command
-            # scopes over the default scope. If a narrower scope is empty, copy
-            # the default visible menu first so adding Codex commands does not
-            # hide the rest of the bot's slash-command menu for this user.
-            commands_by_name = dict(default_commands)
-
-        preserved_count = len(commands_by_name)
-        commands_by_name.update(TELEGRAM_CODEX_MENU_COMMANDS)
-        commands = [
-            {"command": command, "description": description}
-            for command, description in sorted(commands_by_name.items())
-        ]
-        set_payload: dict[str, Any] = {"commands": commands}
-        if scope:
-            set_payload["scope"] = scope
-        updated = _telegram_api_json(token, "setMyCommands", set_payload)
-        scope_results.append(
-            {
-                "scope": scope_name,
-                "ok": bool(updated.get("ok")),
-                "stage": "setMyCommands",
-                "command_count": len(commands),
-                "preserved_count": preserved_count,
-                "detail": None if updated.get("ok") else updated,
-            }
-        )
-
-    failed_scopes = [item for item in scope_results if not item.get("ok")]
-    registered_scopes = [item["scope"] for item in scope_results if item.get("ok")]
-    return {
-        "ok": not failed_scopes and bool(scope_results),
-        "registered": bool(registered_scopes),
-        "best_effort": True,
-        "stage": "setMyCommands",
-        "commands": sorted(TELEGRAM_CODEX_MENU_COMMANDS),
-        "scopes": scope_results,
-        "registered_scopes": registered_scopes,
-        "detail": None if not failed_scopes else {"failed_scopes": failed_scopes},
     }
 
 
@@ -655,10 +802,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     ]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
-        "telegram_commands": _telegram_merge_bot_commands(
-            token,
-            chat_id=env_values["TELEGRAM_HOME_CHANNEL"],
-        ),
+        "telegram_command_menu": _install_telegram_command_menu_priority(),
     }
 
     hermes_bin = find_hermes_binary()

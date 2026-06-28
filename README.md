@@ -203,12 +203,12 @@ it.
 ## Telegram Codex auth quick commands
 
 `configure_telegram` also prepares Hermes quick commands in
-`~/.hermes/config.yaml` and merges them into Telegram's bot command menu.
-The menu merge updates Telegram's default scope, all private chats, and the
-assigned owner chat, preserving existing commands such as `/model`. That makes
-the Codex commands visible in Telegram clients when the owner types `/c`, while
-still keeping the actual bot-token work inside the public runtime command that
-the installer ships.
+`~/.hermes/config.yaml`. Hermes owns Telegram BotCommand registration: when the
+gateway starts, Hermes builds the menu from its central slash-command registry
+plus eligible plugin/skill commands. Tinyhat does not call Telegram
+`setMyCommands` for this. Instead, it writes Hermes' documented
+`platforms.telegram.extra.command_menu` config so the Codex quick commands are
+prioritized while Hermes still includes its default commands.
 
 | Telegram command | What it does |
 | --- | --- |
