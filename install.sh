@@ -59,6 +59,12 @@
 # 17. This installer installs only the Tinyhat Hermes runtime process. It does
 #     not install upstream Hermes Agent yet, create a Tinyhat Computer row, or
 #     assign a Computer to an Agent.
+# 18. The installed runtime code contains the later Telegram provisioning step:
+#     after the platform assigns an agent and grants this Computer temporary
+#     access to the bot token, the runtime command configure_telegram writes the
+#     Hermes Telegram config and registers Tinyhat's Codex slash commands in the
+#     Telegram bot command menu. This installer itself cannot call Telegram
+#     because the bot token is intentionally unavailable before assignment.
 set -euo pipefail
 
 REPO_SLUG="tinyloophub/tinyhat--runtimes--hermes"

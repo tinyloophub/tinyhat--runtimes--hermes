@@ -44,6 +44,30 @@ class FakePlatform:
         }
 
 
+def _fake_telegram_menu_api(
+    calls: list[tuple[str, str, dict | None]],
+    *,
+    default_commands: list[dict[str, str]] | None = None,
+    scoped_commands: list[dict[str, str]] | None = None,
+):
+    def fake(
+        token: str,
+        method: str,
+        payload: dict | None = None,
+    ) -> dict[str, object]:
+        calls.append((token, method, payload))
+        if method == "getMyCommands":
+            return {
+                "ok": True,
+                "result": default_commands if payload is None else scoped_commands or [],
+            }
+        if method == "setMyCommands":
+            return {"ok": True, "result": True}
+        raise AssertionError(f"unexpected Telegram API method: {method}")
+
+    return fake
+
+
 def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     async def fake_run_process(
         args: list[str],
@@ -74,6 +98,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
 
     platform = FakePlatform()
     gateway_calls: list[list[str]] = []
+    telegram_calls: list[tuple[str, str, dict | None]] = []
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
         project = Path(tmp) / "project"
@@ -106,19 +131,16 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
                 ),
                 patch(
                     "hermes_runtime.commands.configure_telegram._telegram_api_json",
-                    side_effect=[
-                        {
-                            "ok": True,
-                            "result": [
-                                {
-                                    "command": "model",
-                                    "description": "Change model",
-                                }
-                            ],
-                        },
-                        {"ok": True, "result": True},
-                    ],
-                ) as telegram_api,
+                    side_effect=_fake_telegram_menu_api(
+                        telegram_calls,
+                        default_commands=[
+                            {
+                                "command": "model",
+                                "description": "Change model",
+                            }
+                        ],
+                    ),
+                ),
             ):
                 result = asyncio.run(
                     run_command(
@@ -154,21 +176,30 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
     ]
-    assert telegram_api.call_args_list[0].args == ("123456:secret-token", "getMyCommands")
-    assert telegram_api.call_args_list[1].args[0:2] == (
-        "123456:secret-token",
-        "setMyCommands",
-    )
-    registered_commands = {
-        item["command"]
-        for item in telegram_api.call_args_list[1].args[2]["commands"]
-    }
-    assert {
-        "codex_auth",
-        "codex_auth_status",
-        "codex_auth_log",
-        "model",
-    }.issubset(registered_commands)
+    assert telegram_calls[0:6:2] == [
+        ("123456:secret-token", "getMyCommands", None),
+        (
+            "123456:secret-token",
+            "getMyCommands",
+            {"scope": {"type": "all_private_chats"}},
+        ),
+        (
+            "123456:secret-token",
+            "getMyCommands",
+            {"scope": {"type": "chat", "chat_id": "555111"}},
+        ),
+    ]
+    set_calls = [call for call in telegram_calls if call[1] == "setMyCommands"]
+    assert len(set_calls) == 3
+    for _token, _method, payload in set_calls:
+        assert payload is not None
+        registered_commands = {item["command"] for item in payload["commands"]}
+        assert {
+            "codex_auth",
+            "codex_auth_status",
+            "codex_auth_log",
+            "model",
+        }.issubset(registered_commands)
     assert gateway_calls == [
         ["/usr/local/bin/hermes", "config", "set", "model.provider", "auto"],
         [
@@ -207,12 +238,18 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "codex_auth_log",
     ]
     assert result["codex_auth"]["telegram_commands"]["ok"] is True
+    assert result["codex_auth"]["telegram_commands"]["registered_scopes"] == [
+        "default",
+        "all_private_chats",
+        "owner_chat",
+    ]
     assert result["gateway"]["healthy"] is True
     assert result["gateway"]["mode"] == "service"
 
 
 def test_configure_telegram_uses_gcloud_me_path() -> None:
     platform = FakePlatform()
+    telegram_calls: list[tuple[str, str, dict | None]] = []
 
     async def fake_run_process(
         args: list[str],
@@ -257,7 +294,7 @@ def test_configure_telegram_uses_gcloud_me_path() -> None:
         ),
         patch(
             "hermes_runtime.commands.configure_telegram._telegram_api_json",
-            side_effect=[{"ok": True, "result": []}, {"ok": True, "result": True}],
+            side_effect=_fake_telegram_menu_api(telegram_calls),
         ),
         tempfile.TemporaryDirectory() as tmp,
     ):
@@ -335,6 +372,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
     platform = FakePlatform()
     gateway_calls: list[list[str]] = []
     foreground_calls: list[str] = []
+    telegram_calls: list[tuple[str, str, dict | None]] = []
     with tempfile.TemporaryDirectory() as tmp:
         log_path = Path(tmp) / "gateway.log"
         old_env = os.environ.copy()
@@ -363,10 +401,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
                 ),
                 patch(
                     "hermes_runtime.commands.configure_telegram._telegram_api_json",
-                    side_effect=[
-                        {"ok": True, "result": []},
-                        {"ok": True, "result": True},
-                    ],
+                    side_effect=_fake_telegram_menu_api(telegram_calls),
                 ),
             ):
                 result = asyncio.run(
@@ -532,3 +567,77 @@ def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
     assert "codex_auth:" in text
     assert "codex-auth:" in text
     assert "python3 -m hermes_runtime.telegram_codex_auth start" in text
+
+
+def test_telegram_merge_bot_commands_updates_private_and_owner_scopes() -> None:
+    telegram_calls: list[tuple[str, str, dict | None]] = []
+    with patch(
+        "hermes_runtime.commands.configure_telegram._telegram_api_json",
+        side_effect=_fake_telegram_menu_api(
+            telegram_calls,
+            default_commands=[
+                {
+                    "command": "model",
+                    "description": "Change model",
+                }
+            ],
+            scoped_commands=[],
+        ),
+    ):
+        result = configure_telegram._telegram_merge_bot_commands(
+            "123456:secret-token",
+            chat_id="555111",
+        )
+
+    assert result["ok"] is True
+    assert result["registered_scopes"] == [
+        "default",
+        "all_private_chats",
+        "owner_chat",
+    ]
+    set_calls = [call for call in telegram_calls if call[1] == "setMyCommands"]
+    assert [call[2].get("scope") if call[2] else None for call in set_calls] == [
+        None,
+        {"type": "all_private_chats"},
+        {"type": "chat", "chat_id": "555111"},
+    ]
+    for _token, _method, payload in set_calls:
+        assert payload is not None
+        commands = {item["command"] for item in payload["commands"]}
+        assert "model" in commands
+        assert "codex_auth" in commands
+        assert "codex_auth_status" in commands
+        assert "codex_auth_log" in commands
+
+
+def test_telegram_merge_bot_commands_reports_scope_failures() -> None:
+    def fake_api(
+        token: str,
+        method: str,
+        payload: dict | None = None,
+    ) -> dict[str, object]:
+        del token
+        if method == "getMyCommands":
+            return {"ok": True, "result": []}
+        if method == "setMyCommands" and payload and payload.get("scope") == {
+            "type": "chat",
+            "chat_id": "555111",
+        }:
+            return {"ok": False, "description": "chat scope rejected"}
+        if method == "setMyCommands":
+            return {"ok": True, "result": True}
+        raise AssertionError(f"unexpected Telegram API method: {method}")
+
+    with patch(
+        "hermes_runtime.commands.configure_telegram._telegram_api_json",
+        side_effect=fake_api,
+    ):
+        result = configure_telegram._telegram_merge_bot_commands(
+            "123456:secret-token",
+            chat_id="555111",
+        )
+
+    assert result["ok"] is False
+    assert result["registered"] is True
+    assert result["registered_scopes"] == ["default", "all_private_chats"]
+    assert result["detail"]["failed_scopes"][0]["scope"] == "owner_chat"
