@@ -1,0 +1,457 @@
+"""Telegram quick-command helper for Hermes OpenAI Codex auth.
+
+This module is invoked by Hermes quick commands that Tinyhat installs into
+``~/.hermes/config.yaml`` when a Computer is connected to Telegram. It starts
+Hermes' device-code auth flow in the background, sends the authorization link
+and device code to the configured Telegram home channel, and sends a completion
+message when Hermes finishes writing its auth store.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+import time
+from typing import Any
+from urllib import error, parse, request
+
+from hermes_runtime.hermes_cli import find_hermes_binary
+
+STATE_SCHEMA = "tinyhat_hermes_codex_auth_v1"
+PRIMARY_PROVIDER = "codex-oauth"
+FALLBACK_PROVIDER = "openai-codex"
+SUCCESS_PROVIDER = "openai-codex"
+MAX_LOG_CHARS = 16_000
+
+
+def _state_dir() -> Path:
+    raw = (os.getenv("TINYHAT_CODEX_AUTH_STATE_DIR") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".hermes" / "tinyhat-codex-auth"
+
+
+def _log_path() -> Path:
+    return _state_dir() / "auth.log"
+
+
+def _pid_path() -> Path:
+    return _state_dir() / "worker.pid"
+
+
+def _status_path() -> Path:
+    return _state_dir() / "status.json"
+
+
+def _ensure_state_dir() -> None:
+    _state_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        _state_dir().chmod(0o700)
+    except OSError:
+        pass
+
+
+def _write_status(payload: dict[str, Any]) -> None:
+    _ensure_state_dir()
+    payload = {
+        "schema": STATE_SCHEMA,
+        "updated_at": int(time.time()),
+        **payload,
+    }
+    _status_path().write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        _status_path().chmod(0o600)
+    except OSError:
+        pass
+
+
+def _read_status() -> dict[str, Any] | None:
+    try:
+        payload = json.loads(_status_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _append_log(text: str) -> None:
+    _ensure_state_dir()
+    with _log_path().open("a", encoding="utf-8") as handle:
+        handle.write(text)
+    try:
+        _log_path().chmod(0o600)
+    except OSError:
+        pass
+    try:
+        current = _log_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    if len(current) > MAX_LOG_CHARS:
+        _log_path().write_text(current[-MAX_LOG_CHARS:], encoding="utf-8")
+
+
+def _read_log(limit: int = 120) -> str:
+    try:
+        text = _log_path().read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return "No Codex auth log yet."
+    lines = text.splitlines()
+    if limit > 0:
+        lines = lines[-limit:]
+    return "\n".join(lines).strip() or "Codex auth log is empty."
+
+
+def _pid_is_running(pid: int | None) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _running_worker_pid() -> int | None:
+    try:
+        pid = int(_pid_path().read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    return pid if _pid_is_running(pid) else None
+
+
+def _telegram_credentials() -> tuple[str, str]:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (
+        os.getenv("TELEGRAM_HOME_CHANNEL")
+        or os.getenv("TELEGRAM_ALLOWED_USERS")
+        or ""
+    ).strip()
+    if not token or not chat_id:
+        raise RuntimeError("Telegram is not configured for this Hermes instance yet.")
+    return token, chat_id
+
+
+def _telegram_send(
+    text: str,
+    *,
+    button_text: str | None = None,
+    button_url: str | None = None,
+) -> dict[str, Any]:
+    token, chat_id = _telegram_credentials()
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text[:3900],
+        "disable_web_page_preview": True,
+    }
+    if button_text and button_url:
+        payload["reply_markup"] = {
+            "inline_keyboard": [[{"text": button_text, "url": button_url}]]
+        }
+    body = parse.urlencode(
+        {
+            key: json.dumps(value) if isinstance(value, dict) else str(value)
+            for key, value in payload.items()
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "tinyhat-hermes-runtime/telegram-codex-auth",
+        },
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {"ok": False, "http_status": exc.code, "description": detail[:500]}
+    except error.URLError as exc:
+        return {"ok": False, "description": str(exc.reason)[:500]}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "description": "Telegram returned invalid JSON."}
+    return payload if isinstance(payload, dict) else {"ok": False}
+
+
+def _extract_auth_material(text: str) -> dict[str, str | None]:
+    urls = re.findall(r"https?://[^\s)>\]\"']+", text)
+    url = None
+    for candidate in urls:
+        clean = candidate.rstrip(".,;:")
+        lowered = clean.lower()
+        if any(
+            marker in lowered
+            for marker in ("openai", "device", "microsoft", "login", "auth")
+        ):
+            url = clean
+            break
+    if url is None and urls:
+        url = urls[0].rstrip(".,;:")
+
+    code = None
+    code_patterns = (
+        r"\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b",
+        r"\b[A-Z0-9]{8,12}\b",
+    )
+    for pattern in code_patterns:
+        match = re.search(pattern, text.upper())
+        if match:
+            candidate = match.group(0)
+            if candidate not in {"HTTPS", "HTTP", "OPENAI", "CODEX"}:
+                code = candidate
+                break
+    return {"url": url, "code": code}
+
+
+def _send_auth_material(material: dict[str, str | None], provider: str) -> None:
+    url = material.get("url")
+    code = material.get("code")
+    if url:
+        _telegram_send(
+            "OpenAI Codex auth is ready. Open the authorization page, then paste the code from the next message.",
+            button_text="Open OpenAI auth",
+            button_url=url,
+        )
+    if code:
+        _telegram_send(str(code))
+    if not url and not code:
+        _telegram_send(
+            f"I started Hermes Codex auth with `{provider}`, but I have not seen the device code yet. Send /codex_auth_log in a few seconds."
+        )
+
+
+def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
+    command = [str(hermes_bin), "config", "set", "model.provider", SUCCESS_PROVIDER]
+    started = time.monotonic()
+    process = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    return {
+        "args": command,
+        "ok": process.returncode == 0,
+        "returncode": process.returncode,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "stdout": process.stdout[-1000:],
+        "stderr": process.stderr[-1000:],
+    }
+
+
+def _auth_status(hermes_bin: Path) -> dict[str, Any]:
+    providers = (PRIMARY_PROVIDER, FALLBACK_PROVIDER)
+    for provider in providers:
+        started = time.monotonic()
+        try:
+            process = subprocess.run(
+                [str(hermes_bin), "auth", "status", provider],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "provider": provider, "message": str(exc)}
+        text = f"{process.stdout}\n{process.stderr}".strip()
+        if process.returncode == 0:
+            return {
+                "ok": True,
+                "provider": provider,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "output": text[-2000:],
+            }
+    return {"ok": False, "provider": providers[-1], "output": text[-2000:]}
+
+
+def _run_auth_once(hermes_bin: Path, provider: str) -> tuple[int, bool]:
+    """Run one provider auth flow.
+
+    Returns ``(returncode, saw_device_material)``.
+    """
+
+    _append_log(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] starting {provider}\n")
+    process = subprocess.Popen(
+        [str(hermes_bin), "auth", "add", provider],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    saw_material = False
+    buffer = ""
+    _write_status(
+        {
+            "state": "waiting_for_user",
+            "provider": provider,
+            "auth_pid": process.pid,
+            "message": "Waiting for the user to complete the device-code flow.",
+        }
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        _append_log(line)
+        buffer = (buffer + line)[-8000:]
+        if not saw_material:
+            material = _extract_auth_material(buffer)
+            if material.get("url") or material.get("code"):
+                saw_material = True
+                _write_status(
+                    {
+                        "state": "device_code_sent",
+                        "provider": provider,
+                        "auth_pid": process.pid,
+                        "has_url": bool(material.get("url")),
+                        "has_code": bool(material.get("code")),
+                    }
+                )
+                _send_auth_material(material, provider)
+    returncode = process.wait()
+    _append_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {provider} exited {returncode}\n")
+    return returncode, saw_material
+
+
+def worker() -> int:
+    _ensure_state_dir()
+    _pid_path().write_text(f"{os.getpid()}\n", encoding="utf-8")
+    try:
+        _pid_path().chmod(0o600)
+    except OSError:
+        pass
+
+    hermes_bin = find_hermes_binary()
+    if hermes_bin is None:
+        _write_status({"state": "failed", "message": "Hermes CLI was not found."})
+        _telegram_send("I could not start OpenAI Codex auth because Hermes CLI is not installed.")
+        return 1
+
+    last_returncode = 1
+    for provider in (PRIMARY_PROVIDER, FALLBACK_PROVIDER):
+        try:
+            last_returncode, saw_material = _run_auth_once(hermes_bin, provider)
+        except Exception as exc:  # noqa: BLE001 - worker must report to Telegram.
+            _append_log(f"{provider} failed: {exc}\n")
+            last_returncode = 1
+            saw_material = False
+        if last_returncode == 0:
+            switch = _run_config_switch(hermes_bin)
+            status = _auth_status(hermes_bin)
+            _write_status(
+                {
+                    "state": "connected",
+                    "provider": provider,
+                    "model_provider": SUCCESS_PROVIDER,
+                    "config_switch": switch,
+                    "auth_status": status,
+                    "message": "OpenAI Codex auth connected.",
+                }
+            )
+            _telegram_send(
+                "OpenAI Codex auth is connected ✅\n\nI switched Hermes to OpenAI Codex for future replies. Send /model to confirm, or just send me a message."
+            )
+            return 0
+        if saw_material:
+            break
+
+    _write_status(
+        {
+            "state": "failed",
+            "provider": provider,
+            "returncode": last_returncode,
+            "message": "OpenAI Codex auth did not complete.",
+        }
+    )
+    _telegram_send(
+        "OpenAI Codex auth did not complete. Send /codex_auth_log to see the latest auth output, then run /codex_auth_start to try again."
+    )
+    return last_returncode or 1
+
+
+def start() -> str:
+    _ensure_state_dir()
+    running_pid = _running_worker_pid()
+    if running_pid:
+        return (
+            "OpenAI Codex auth is already running. I will send the auth link and completion message here."
+        )
+
+    script = (
+        "PYTHONPATH=\"${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}\" "
+        "python3 -m hermes_runtime.telegram_codex_auth worker"
+    )
+    log_file = _log_path().open("a", encoding="utf-8")
+    subprocess.Popen(
+        ["bash", "-lc", script],
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+    return (
+        "I am starting OpenAI Codex auth now. I will send the authorization link and code here in a moment."
+    )
+
+
+def status() -> str:
+    payload = _read_status()
+    running_pid = _running_worker_pid()
+    hermes_bin = find_hermes_binary()
+    auth_status = _auth_status(hermes_bin) if hermes_bin else None
+    lines = ["OpenAI Codex auth status"]
+    if running_pid:
+        lines.append(f"Worker: running (pid {running_pid})")
+    else:
+        lines.append("Worker: not running")
+    if payload:
+        lines.append(f"State: {payload.get('state') or 'unknown'}")
+        if payload.get("message"):
+            lines.append(f"Message: {payload['message']}")
+    if auth_status:
+        lines.append(f"Hermes auth: {'ok' if auth_status.get('ok') else 'not connected'}")
+        if auth_status.get("provider"):
+            lines.append(f"Provider checked: {auth_status['provider']}")
+    return "\n".join(lines)
+
+
+def log() -> str:
+    return _read_log()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("start", "status", "log", "worker"))
+    args = parser.parse_args(argv)
+    if args.action == "worker":
+        return worker()
+    if args.action == "start":
+        print(start())
+        return 0
+    if args.action == "status":
+        print(status())
+        return 0
+    if args.action == "log":
+        print(log())
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -14,10 +14,17 @@ What it does:
          exists.
     3. Applies the platform-selected model/base URL through Hermes' public
        ``hermes config set`` command.
-    4. Clears Telegram's webhook for the bot so Hermes long-polling can own
+    4. Installs Tinyhat-managed Hermes quick commands for OpenAI Codex
+       device-code auth:
+       ``/codex_auth_start``, ``/codex_auth_status``, and
+       ``/codex_auth_log``. These commands run only after Telegram is
+       configured because they need a Telegram channel for the device code.
+    5. Merges those commands into Telegram's bot command menu on a
+       best-effort basis, preserving any existing bot commands.
+    6. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
-    5. Starts the Hermes gateway using the public ``hermes gateway`` command.
-    6. Returns a command result to the Tinyhat runtime loop. The loop posts
+    7. Starts the Hermes gateway using the public ``hermes gateway`` command.
+    8. Returns a command result to the Tinyhat runtime loop. The loop posts
        that result to ``/hapi/v1/computers/me/runtime-command/result``; on
        success the platform marks the Computer/agent active and revokes the
        short-lived Telegram setup grant so this Computer cannot fetch the bot
@@ -56,6 +63,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import shlex
 from typing import Any
 from urllib import error, parse, request
 
@@ -122,6 +130,103 @@ def _env_file_candidates() -> list[Path]:
             unique.append(path)
             seen.add(key)
     return unique
+
+
+def _hermes_config_file() -> Path:
+    explicit = (os.getenv("HERMES_CONFIG_FILE") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".hermes" / "config.yaml"
+
+
+def _yaml_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _codex_auth_command(action: str) -> str:
+    return (
+        'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
+        f"python3 -m hermes_runtime.telegram_codex_auth {shlex.quote(action)}"
+    )
+
+
+def _codex_auth_quick_commands_block() -> str:
+    commands = {
+        "codex_auth_start": {
+            "description": "Start OpenAI Codex device auth",
+            "command": _codex_auth_command("start"),
+        },
+        "codex_auth_status": {
+            "description": "Check OpenAI Codex auth status",
+            "command": _codex_auth_command("status"),
+        },
+        "codex_auth_log": {
+            "description": "Show recent OpenAI Codex auth output",
+            "command": _codex_auth_command("log"),
+        },
+    }
+    lines = [
+        "  # tinyhat managed codex auth commands start",
+    ]
+    for name, spec in commands.items():
+        lines.extend(
+            [
+                f"  {name}:",
+                "    type: exec",
+                f"    description: {_yaml_single_quote(spec['description'])}",
+                f"    command: {_yaml_single_quote(spec['command'])}",
+            ]
+        )
+    lines.append("  # tinyhat managed codex auth commands end")
+    return "\n".join(lines)
+
+
+def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[str, Any]:
+    config_file = config_file or _hermes_config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    block = _codex_auth_quick_commands_block()
+    start_marker = "  # tinyhat managed codex auth commands start"
+    end_marker = "  # tinyhat managed codex auth commands end"
+
+    if start_marker in text and end_marker in text:
+        prefix, rest = text.split(start_marker, 1)
+        _old_block, suffix = rest.split(end_marker, 1)
+        next_text = f"{prefix}{block}{suffix}"
+    else:
+        lines = text.splitlines()
+        quick_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.strip() == "quick_commands:" and not line.startswith((" ", "\t"))
+            ),
+            None,
+        )
+        if quick_index is None:
+            next_text = text.rstrip()
+            if next_text:
+                next_text += "\n\n"
+            next_text += "quick_commands:\n" + block + "\n"
+        else:
+            insert_at = quick_index + 1
+            lines[insert_at:insert_at] = block.splitlines()
+            next_text = "\n".join(lines).rstrip() + "\n"
+
+    config_file.write_text(next_text.rstrip() + "\n", encoding="utf-8")
+    try:
+        config_file.chmod(0o600)
+    except OSError:
+        pass
+    return {
+        "config_file": str(config_file),
+        "installed": True,
+        "commands": [
+            "codex_auth_start",
+            "codex_auth_status",
+            "codex_auth_log",
+        ],
+    }
 
 
 def _openrouter_env_values(setup: dict[str, Any]) -> dict[str, str]:
@@ -199,6 +304,78 @@ def _telegram_delete_webhook(token: str) -> dict[str, Any]:
     return {
         "ok": bool(payload.get("ok")),
         "description": str(payload.get("description") or "")[:500] or None,
+    }
+
+
+def _telegram_api_json(
+    token: str,
+    method: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    encoded_payload = {}
+    for key, value in (payload or {}).items():
+        encoded_payload[key] = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+    body = parse.urlencode(encoded_payload).encode("utf-8")
+    req = request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "tinyhat-hermes-runtime/0.0.1",
+        },
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "description": detail[:500],
+        }
+    except error.URLError as exc:
+        return {"ok": False, "description": str(exc.reason)[:500]}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "description": "Telegram returned invalid JSON."}
+    return parsed if isinstance(parsed, dict) else {"ok": False}
+
+
+def _telegram_merge_bot_commands(token: str) -> dict[str, Any]:
+    managed_commands = {
+        "codex_auth_start": "Connect OpenAI Codex auth",
+        "codex_auth_status": "Check Codex auth status",
+        "codex_auth_log": "Show recent Codex auth output",
+    }
+    existing = _telegram_api_json(token, "getMyCommands")
+    if not existing.get("ok"):
+        return {"ok": False, "stage": "getMyCommands", "detail": existing}
+    commands_by_name: dict[str, str] = {}
+    result = existing.get("result")
+    if isinstance(result, list):
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            command = str(item.get("command") or "").strip()
+            description = str(item.get("description") or "").strip()
+            if command and command not in managed_commands:
+                commands_by_name[command] = description[:256]
+    commands_by_name.update(managed_commands)
+    commands = [
+        {"command": command, "description": description}
+        for command, description in sorted(commands_by_name.items())
+    ]
+    updated = _telegram_api_json(token, "setMyCommands", {"commands": commands})
+    return {
+        "ok": bool(updated.get("ok")),
+        "stage": "setMyCommands",
+        "commands": sorted(managed_commands),
+        "preserved_count": max(0, len(commands) - len(managed_commands)),
+        "detail": None if updated.get("ok") else updated,
     }
 
 
@@ -378,6 +555,10 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         _upsert_env_file(env_path, env_values)
         for env_path in _env_file_candidates()
     ]
+    codex_auth = {
+        "quick_commands": _install_codex_auth_quick_commands(),
+        "telegram_commands": _telegram_merge_bot_commands(token),
+    }
 
     hermes_bin = find_hermes_binary()
     if hermes_bin is None:
@@ -408,6 +589,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "home_channel": env_values["TELEGRAM_HOME_CHANNEL"],
         "home_channel_name": env_values["TELEGRAM_HOME_CHANNEL_NAME"],
         "env_files": env_files,
+        "codex_auth": codex_auth,
         "model_config": model_config,
         "webhook": webhook,
         "gateway": gateway,
