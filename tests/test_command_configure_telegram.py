@@ -104,6 +104,21 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
                     "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
                     return_value={"ok": True, "description": "Webhook was deleted"},
                 ),
+                patch(
+                    "hermes_runtime.commands.configure_telegram._telegram_api_json",
+                    side_effect=[
+                        {
+                            "ok": True,
+                            "result": [
+                                {
+                                    "command": "model",
+                                    "description": "Change model",
+                                }
+                            ],
+                        },
+                        {"ok": True, "result": True},
+                    ],
+                ) as telegram_api,
             ):
                 result = asyncio.run(
                     run_command(
@@ -127,10 +142,33 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         project_env_text = project_env.read_text(encoding="utf-8")
         assert "TELEGRAM_ALLOWED_USERS=\"555111\"" in project_env_text
         assert "OPENROUTER_API_KEY=\"sk-or-v1-test-runtime-key\"" in project_env_text
+        config_text = (home / ".hermes" / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+        assert "quick_commands:" in config_text
+        assert "codex_auth:" in config_text
+        assert "codex-auth:" in config_text
+        assert "codex_auth_status:" in config_text
+        assert "codex_auth_log:" in config_text
 
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
     ]
+    assert telegram_api.call_args_list[0].args == ("123456:secret-token", "getMyCommands")
+    assert telegram_api.call_args_list[1].args[0:2] == (
+        "123456:secret-token",
+        "setMyCommands",
+    )
+    registered_commands = {
+        item["command"]
+        for item in telegram_api.call_args_list[1].args[2]["commands"]
+    }
+    assert {
+        "codex_auth",
+        "codex_auth_status",
+        "codex_auth_log",
+        "model",
+    }.issubset(registered_commands)
     assert gateway_calls == [
         ["/usr/local/bin/hermes", "config", "set", "model.provider", "auto"],
         [
@@ -157,6 +195,18 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     assert "123456:secret-token" not in str(result)
     assert "sk-or-v1-test-runtime-key" not in str(result)
     assert result["model_config"]["ok"] is True
+    assert result["codex_auth"]["quick_commands"]["commands"] == [
+        "codex_auth",
+        "codex-auth",
+        "codex_auth_status",
+        "codex_auth_log",
+    ]
+    assert result["codex_auth"]["quick_commands"]["telegram_menu_commands"] == [
+        "codex_auth",
+        "codex_auth_status",
+        "codex_auth_log",
+    ]
+    assert result["codex_auth"]["telegram_commands"]["ok"] is True
     assert result["gateway"]["healthy"] is True
     assert result["gateway"]["mode"] == "service"
 
@@ -204,6 +254,10 @@ def test_configure_telegram_uses_gcloud_me_path() -> None:
         patch(
             "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
             return_value={"ok": True},
+        ),
+        patch(
+            "hermes_runtime.commands.configure_telegram._telegram_api_json",
+            side_effect=[{"ok": True, "result": []}, {"ok": True, "result": True}],
         ),
         tempfile.TemporaryDirectory() as tmp,
     ):
@@ -307,6 +361,13 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
                     "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
                     return_value={"ok": True},
                 ),
+                patch(
+                    "hermes_runtime.commands.configure_telegram._telegram_api_json",
+                    side_effect=[
+                        {"ok": True, "result": []},
+                        {"ok": True, "result": True},
+                    ],
+                ),
             ):
                 result = asyncio.run(
                     run_command(
@@ -405,3 +466,27 @@ def test_run_gateway_rejects_foreground_adapter_failure() -> None:
     assert result["started"] is True
     assert result["healthy"] is False
     assert result["adapter_ready"] is False
+
+
+def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        config.write_text(
+            "model:\n"
+            "  provider: auto\n"
+            "quick_commands:\n"
+            "  existing:\n"
+            "    type: exec\n"
+            "    command: 'echo existing'\n",
+            encoding="utf-8",
+        )
+
+        result = configure_telegram._install_codex_auth_quick_commands(config)
+        text = config.read_text(encoding="utf-8")
+
+    assert result["installed"] is True
+    assert "model:\n  provider: auto" in text
+    assert "existing:" in text
+    assert "codex_auth:" in text
+    assert "codex-auth:" in text
+    assert "python3 -m hermes_runtime.telegram_codex_auth start" in text
