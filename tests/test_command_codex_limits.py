@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,9 +85,42 @@ def test_telegram_summary_is_copyable() -> None:
 
     assert "OpenAI Codex usage limits" in text
     assert "Codex, plan pro" in text
-    assert "Credits: 42.5" in text
-    assert "Primary, 80% remaining" in text
+    assert "Credits remaining: 42.5" in text
+    assert "Primary\n[████████░░] 80% remaining" in text
+    assert "Estimated time left: 4h" in text
+    assert "Weekly\n[█████░░░░░] 50% remaining" in text
     assert "Reset credits available: 3" in text
+
+
+def test_structured_snapshot_is_written_without_terminal_logs() -> None:
+    result = {
+        "ok": True,
+        "source": "codex app-server",
+        "method": codex_limits.APP_SERVER_METHOD,
+        "duration_ms": 123,
+        "limits": sample_limits_payload(),
+        "summary": codex_limits.summarize_rate_limits(
+            sample_limits_payload(),
+            now=1_799_990_000,
+        ),
+        "stderr_tail": "not persisted",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        old_env = os.environ.copy()
+        os.environ.update({"TINYHAT_RUNTIME_STATE_DIR": tmp})
+        try:
+            path = codex_limits.persist_limits_snapshot(result)
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+        assert path is not None
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        assert payload["source"] == "codex app-server"
+        assert payload["method"] == codex_limits.APP_SERVER_METHOD
+        assert payload["limits"] == sample_limits_payload()
+        assert "stderr_tail" not in payload
 
 
 def test_runtime_command_returns_codex_limits() -> None:

@@ -26,6 +26,7 @@ SCHEMA = "tinyhat_hermes_codex_limits_v1"
 APP_SERVER_METHOD = "account/rateLimits/read"
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_STDERR_CHARS = 2000
+DEFAULT_STATE_DIR = "/var/lib/tinyhat-hermes-runtime"
 
 
 class CodexAppServerError(RuntimeError):
@@ -52,6 +53,51 @@ def find_codex_binary() -> Path | None:
         if path.is_file() and os.access(path, os.X_OK):
             return path
     return None
+
+
+def _state_dir() -> Path:
+    return Path(os.getenv("TINYHAT_RUNTIME_STATE_DIR") or DEFAULT_STATE_DIR)
+
+
+def last_limits_snapshot_path(state_dir: Path | None = None) -> Path:
+    return (state_dir or _state_dir()) / "codex" / "last_limits.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
+
+
+def persist_limits_snapshot(result: dict[str, Any]) -> str | None:
+    """Persist the structured Codex response for local inspection.
+
+    The snapshot is deliberately based on Codex app-server JSON, not terminal
+    output. It contains plan/usage data and command metadata, never OpenAI auth
+    tokens.
+    """
+
+    try:
+        path = last_limits_snapshot_path()
+        _write_json_atomic(
+            path,
+            {
+                "schema": SCHEMA,
+                "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "source": result.get("source"),
+                "method": result.get("method"),
+                "duration_ms": result.get("duration_ms"),
+                "limits": result.get("limits"),
+                "summary": result.get("summary"),
+            },
+        )
+        return str(path)
+    except Exception:
+        return None
 
 
 async def _read_stderr_tail(
@@ -173,7 +219,7 @@ async def request_codex_rate_limits(
         except asyncio.CancelledError:
             pass
 
-    return {
+    result = {
         "schema": SCHEMA,
         "ok": True,
         "source": "codex app-server",
@@ -185,6 +231,10 @@ async def request_codex_rate_limits(
         "summary": summarize_rate_limits(limits),
         "stderr_tail": "".join(stderr_tail)[-MAX_STDERR_CHARS:],
     }
+    snapshot_path = persist_limits_snapshot(result)
+    if snapshot_path:
+        result["snapshot_path"] = snapshot_path
+    return result
 
 
 def _is_record(value: Any) -> bool:
@@ -213,6 +263,42 @@ def _format_duration(minutes: float) -> str:
     if mins == 0:
         return f"{hours}h"
     return f"{hours}h {mins}m"
+
+
+def _format_amount(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return f"{float(value):,.2f}".rstrip("0").rstrip(".")
+    if isinstance(value, str):
+        try:
+            return f"{float(value):,.2f}".rstrip("0").rstrip(".")
+        except ValueError:
+            return value.strip()
+    return str(value)
+
+
+def _format_reset_short(seconds: float, *, now: float) -> str:
+    delta = max(1, int(seconds - now))
+    minutes = (delta + 59) // 60
+    if minutes < 60:
+        return f"in {minutes}m"
+    hours = (minutes + 59) // 60
+    if hours < 24:
+        return f"in {hours}h"
+    return f"in {(hours + 23) // 24}d"
+
+
+def _format_reset_utc(seconds: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(seconds))
+
+
+def _progress_bar(remaining_percent: float | None, *, width: int = 10) -> str:
+    if remaining_percent is None:
+        return "[??????????]"
+    safe = max(0.0, min(100.0, remaining_percent))
+    filled = int(round(safe / 100.0 * width))
+    return "[" + ("█" * filled) + ("░" * (width - filled)) + "]"
 
 
 def _format_reset(seconds: float, *, now: float) -> str:
@@ -299,16 +385,40 @@ def summarize_rate_limits(payload: dict[str, Any], *, now: float | None = None) 
         for key, label in (("primary", "Primary"), ("secondary", "Weekly")):
             window = snapshot.get(key)
             if isinstance(window, dict):
+                used_percent = _read_number(window, "usedPercent")
+                window_duration_mins = _read_number(window, "windowDurationMins")
+                remaining_percent = (
+                    max(0.0, min(100.0, 100.0 - used_percent))
+                    if used_percent is not None
+                    else None
+                )
+                estimated_quota_left_mins = (
+                    window_duration_mins * remaining_percent / 100.0
+                    if window_duration_mins is not None
+                    and remaining_percent is not None
+                    else None
+                )
+                resets_at = _read_number(window, "resetsAt")
                 windows.append(
                     {
                         "name": key,
+                        "label": label,
                         "text": _window_summary(label, window, now=now),
-                        "used_percent": _read_number(window, "usedPercent"),
-                        "window_duration_mins": _read_number(
-                            window,
-                            "windowDurationMins",
+                        "used_percent": used_percent,
+                        "remaining_percent": remaining_percent,
+                        "window_duration_mins": window_duration_mins,
+                        "estimated_quota_left_mins": estimated_quota_left_mins,
+                        "resets_at": resets_at,
+                        "resets_in": (
+                            _format_reset_short(resets_at, now=now)
+                            if resets_at is not None
+                            else None
                         ),
-                        "resets_at": _read_number(window, "resetsAt"),
+                        "resets_at_utc": (
+                            _format_reset_utc(resets_at)
+                            if resets_at is not None
+                            else None
+                        ),
                     }
                 )
         summaries.append(
@@ -339,21 +449,45 @@ def format_telegram_summary(result: dict[str, Any]) -> str:
     for item in limits[:4]:
         if not isinstance(item, dict):
             continue
-        header_parts = [str(item.get("label") or "Codex")]
+        label = str(item.get("label") or "Codex")
+        header_parts = [label]
         if item.get("plan_type"):
-            header_parts.append(f"plan {item['plan_type']}")
+            header_parts.append(f"plan {str(item['plan_type']).lower()}")
         if item.get("rate_limit_reached_type"):
             header_parts.append(f"limit reached: {item['rate_limit_reached_type']}")
         lines.append(f"\n{', '.join(header_parts)}")
         credits = item.get("credits")
         if isinstance(credits, dict):
             if credits.get("unlimited"):
-                lines.append("- Credits: unlimited")
+                lines.append("Credits: unlimited")
             elif credits.get("balance") is not None:
-                lines.append(f"- Credits: {credits['balance']}")
+                lines.append(f"Credits remaining: {_format_amount(credits['balance'])}")
         for window in item.get("windows") or []:
-            if isinstance(window, dict) and window.get("text"):
-                lines.append(f"- {window['text']}")
+            if not isinstance(window, dict):
+                continue
+            window_label = str(window.get("label") or window.get("name") or "Window")
+            remaining = (
+                float(window["remaining_percent"])
+                if isinstance(window.get("remaining_percent"), (int, float))
+                else None
+            )
+            lines.append("")
+            lines.append(window_label)
+            lines.append(
+                f"{_progress_bar(remaining)} "
+                f"{remaining:.0f}% remaining"
+                if remaining is not None
+                else f"{_progress_bar(None)} remaining unknown"
+            )
+            estimated = window.get("estimated_quota_left_mins")
+            if isinstance(estimated, (int, float)):
+                lines.append(f"Estimated time left: {_format_duration(estimated)}")
+            resets_in = window.get("resets_in")
+            resets_at_utc = window.get("resets_at_utc")
+            if resets_in and resets_at_utc:
+                lines.append(f"Resets: {resets_in} ({resets_at_utc})")
+            elif resets_in:
+                lines.append(f"Resets: {resets_in}")
     reset_credits = summary.get("rate_limit_reset_credits")
     if isinstance(reset_credits, dict) and reset_credits.get("availableCount") is not None:
         lines.append(f"\nReset credits available: {reset_credits['availableCount']}")

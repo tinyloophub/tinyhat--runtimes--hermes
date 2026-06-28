@@ -115,6 +115,12 @@ def test_auth_command_uses_no_browser_device_flow_flags() -> None:
     ]
 
 
+def test_codex_cli_login_command_uses_device_auth() -> None:
+    command = codex_auth._codex_cli_login_command(Path("/usr/local/bin/codex"))
+
+    assert command == ["/usr/local/bin/codex", "login", "--device-auth"]
+
+
 def test_model_switch_uses_formal_hermes_model_picker() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         hermes_bin = Path(tmp) / "hermes"
@@ -157,8 +163,40 @@ def test_model_switch_uses_formal_hermes_model_picker() -> None:
         "provider": True,
         "openai_provider": True,
         "credentials": True,
+        "cli_import": False,
         "model": True,
     }
+
+
+def test_model_switch_imports_existing_codex_cli_credentials() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('Select provider:', flush=True)\n"
+            "print('  1. OpenAI ▸ (Codex CLI or direct OpenAI API)', flush=True)\n"
+            "first = sys.stdin.buffer.readline()\n"
+            "print('Select OpenAI provider:', flush=True)\n"
+            "print('  → (●) OpenAI Codex', flush=True)\n"
+            "second = sys.stdin.buffer.readline()\n"
+            "print('Found existing Codex CLI credentials at ~/.codex/auth.json', flush=True)\n"
+            "print('Import these credentials? (a separate login is recommended) [y/N]: ', flush=True)\n"
+            "third = sys.stdin.buffer.readline()\n"
+            "print('Select default model:', flush=True)\n"
+            "fourth = sys.stdin.buffer.readline()\n"
+            "assert first.strip() == b'1'\n"
+            "assert second and third.strip() == b'y' and fourth\n"
+            "print('Default model set to: gpt-5.5', flush=True)\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        result = codex_auth._run_config_switch(hermes_bin)
+
+    assert result["ok"] is True
+    assert result["selections"]["cli_import"] is True
+    assert result["selections"]["credentials"] is True
 
 
 def test_model_switch_uses_arrow_fallback_for_unnumbered_provider_menu() -> None:
@@ -343,6 +381,14 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                     return_value=Path("/usr/local/bin/hermes"),
                 ),
                 patch(
+                    "hermes_runtime.telegram_codex_auth.find_codex_binary",
+                    return_value=Path("/usr/local/bin/codex"),
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth._ensure_codex_cli_auth",
+                    return_value=(0, False, {"ok": True}),
+                ),
+                patch(
                     "hermes_runtime.telegram_codex_auth._run_auth_once",
                     return_value=(0, True),
                 ),
@@ -357,6 +403,10 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                 patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
                     return_value={"ok": True, "provider": "codex-oauth"},
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth._codex_cli_status",
+                    return_value={"ok": True},
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._telegram_send",
@@ -375,6 +425,7 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     assert status["state"] == "connected"
     assert status["provider"] == "openai-codex"
     assert status["model_provider"] == "openai-codex"
+    assert status["codex_cli_status"]["ok"] is True
     assert status["gateway_restart"]["healthy"] is True
     assert any("restarted my Telegram gateway" in text for text in sent)
 
@@ -389,6 +440,8 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
 
     def fake_switch(hermes_bin: Path) -> dict[str, object]:
         switch_calls.append(hermes_bin)
+        if len(switch_calls) == 1:
+            return {"ok": False, "model_provider": "openai-codex"}
         return {"ok": True, "model_provider": "openai-codex"}
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -399,6 +452,14 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
                 patch(
                     "hermes_runtime.telegram_codex_auth.find_hermes_binary",
                     return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth.find_codex_binary",
+                    return_value=Path("/usr/local/bin/codex"),
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth._ensure_codex_cli_auth",
+                    return_value=(0, False, {"ok": True}),
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._run_auth_once",
@@ -428,7 +489,7 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
             os.environ.update(old_env)
 
     assert exit_code == 0
-    assert switch_calls == [Path("/usr/local/bin/hermes")]
+    assert switch_calls == [Path("/usr/local/bin/hermes"), Path("/usr/local/bin/hermes")]
     assert status is not None
     assert status["provider"] == "codex-oauth"
     assert status["model_provider"] == "openai-codex"
@@ -451,8 +512,16 @@ def test_status_reports_connected_state_without_exposing_tokens() -> None:
                     return_value=Path("/usr/local/bin/hermes"),
                 ),
                 patch(
+                    "hermes_runtime.telegram_codex_auth.find_codex_binary",
+                    return_value=Path("/usr/local/bin/codex"),
+                ),
+                patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
                     return_value={"ok": True, "provider": "codex-oauth"},
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth._codex_cli_status",
+                    return_value={"ok": True},
                 ),
             ):
                 output = codex_auth.status()
@@ -462,6 +531,7 @@ def test_status_reports_connected_state_without_exposing_tokens() -> None:
 
     assert "State: connected" in output
     assert "Hermes auth: ok" in output
+    assert "Codex CLI auth: ok" in output
     assert "token" not in output.lower()
 
 
