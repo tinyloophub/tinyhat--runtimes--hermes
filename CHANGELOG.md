@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.19 - 2026-06-28
+
 - Let Hermes own Telegram command-menu registration by configuring Hermes'
   documented `platforms.telegram.extra.command_menu` priority instead of
   overwriting Telegram BotCommands from the Tinyhat runtime.
