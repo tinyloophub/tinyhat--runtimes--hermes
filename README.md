@@ -193,7 +193,12 @@ it.
 ## Telegram Codex auth quick commands
 
 `configure_telegram` also prepares three Hermes quick commands in
-`~/.hermes/config.yaml` and merges them into Telegram's bot command menu:
+`~/.hermes/config.yaml` and merges them into Telegram's bot command menu.
+The menu merge updates Telegram's default scope, all private chats, and the
+assigned owner chat, preserving existing commands such as `/model`. That makes
+the Codex commands visible in Telegram clients when the owner types `/c`, while
+still keeping the actual bot-token work inside the public runtime command that
+the installer ships.
 
 | Telegram command | What it does |
 | --- | --- |

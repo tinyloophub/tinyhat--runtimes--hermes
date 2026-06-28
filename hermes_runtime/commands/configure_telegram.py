@@ -23,7 +23,10 @@ What it does:
        handle hyphenated slash commands. These commands run only after Telegram
        is configured because they need a Telegram channel for the device code.
     5. Merges those commands into Telegram's bot command menu on a
-       best-effort basis, preserving any existing bot commands.
+       best-effort basis, preserving any existing bot commands. The merge
+       updates Telegram's default command scope, all private chats, and the
+       assigned owner chat so mobile/desktop autocomplete can show
+       ``/codex_auth`` when the user types ``/c``.
     6. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
     7. Starts the Hermes gateway using the public ``hermes gateway`` command.
@@ -76,6 +79,13 @@ from hermes_runtime.hermes_cli import (
     run_process,
 )
 from hermes_runtime.platform_paths import context_computer_api_path
+
+
+TELEGRAM_CODEX_MENU_COMMANDS = {
+    "codex_auth": "Connect OpenAI Codex auth",
+    "codex_auth_status": "Check Codex auth status",
+    "codex_auth_log": "Show recent Codex auth output",
+}
 
 
 def _quote_env(value: str) -> str:
@@ -360,37 +370,94 @@ def _telegram_api_json(
     return parsed if isinstance(parsed, dict) else {"ok": False}
 
 
-def _telegram_merge_bot_commands(token: str) -> dict[str, Any]:
-    managed_commands = {
-        "codex_auth": "Connect OpenAI Codex auth",
-        "codex_auth_status": "Check Codex auth status",
-        "codex_auth_log": "Show recent Codex auth output",
-    }
-    existing = _telegram_api_json(token, "getMyCommands")
-    if not existing.get("ok"):
-        return {"ok": False, "stage": "getMyCommands", "detail": existing}
+def _telegram_commands_by_name(payload: dict[str, Any]) -> dict[str, str]:
     commands_by_name: dict[str, str] = {}
-    result = existing.get("result")
+    result = payload.get("result")
     if isinstance(result, list):
         for item in result:
             if not isinstance(item, dict):
                 continue
             command = str(item.get("command") or "").strip()
             description = str(item.get("description") or "").strip()
-            if command and command not in managed_commands:
+            if command and command not in TELEGRAM_CODEX_MENU_COMMANDS:
                 commands_by_name[command] = description[:256]
-    commands_by_name.update(managed_commands)
-    commands = [
-        {"command": command, "description": description}
-        for command, description in sorted(commands_by_name.items())
+    return commands_by_name
+
+
+def _telegram_command_scope_payloads(chat_id: str | None) -> list[tuple[str, dict[str, str] | None]]:
+    scopes: list[tuple[str, dict[str, str] | None]] = [
+        ("default", None),
+        ("all_private_chats", {"type": "all_private_chats"}),
     ]
-    updated = _telegram_api_json(token, "setMyCommands", {"commands": commands})
+    clean_chat_id = str(chat_id or "").strip()
+    if clean_chat_id:
+        scopes.append(("owner_chat", {"type": "chat", "chat_id": clean_chat_id}))
+    return scopes
+
+
+def _telegram_merge_bot_commands(
+    token: str,
+    *,
+    chat_id: str | None = None,
+) -> dict[str, Any]:
+    scope_results: list[dict[str, Any]] = []
+    default_commands: dict[str, str] = {}
+    for scope_name, scope in _telegram_command_scope_payloads(chat_id):
+        get_payload = {"scope": scope} if scope else None
+        existing = _telegram_api_json(token, "getMyCommands", get_payload)
+        if not existing.get("ok"):
+            scope_results.append(
+                {
+                    "scope": scope_name,
+                    "ok": False,
+                    "stage": "getMyCommands",
+                    "detail": existing,
+                }
+            )
+            continue
+
+        commands_by_name = _telegram_commands_by_name(existing)
+        if scope_name == "default":
+            default_commands = dict(commands_by_name)
+        elif not commands_by_name and default_commands:
+            # Telegram clients may prefer private-chat or chat-specific command
+            # scopes over the default scope. If a narrower scope is empty, copy
+            # the default visible menu first so adding Codex commands does not
+            # hide the rest of the bot's slash-command menu for this user.
+            commands_by_name = dict(default_commands)
+
+        preserved_count = len(commands_by_name)
+        commands_by_name.update(TELEGRAM_CODEX_MENU_COMMANDS)
+        commands = [
+            {"command": command, "description": description}
+            for command, description in sorted(commands_by_name.items())
+        ]
+        set_payload: dict[str, Any] = {"commands": commands}
+        if scope:
+            set_payload["scope"] = scope
+        updated = _telegram_api_json(token, "setMyCommands", set_payload)
+        scope_results.append(
+            {
+                "scope": scope_name,
+                "ok": bool(updated.get("ok")),
+                "stage": "setMyCommands",
+                "command_count": len(commands),
+                "preserved_count": preserved_count,
+                "detail": None if updated.get("ok") else updated,
+            }
+        )
+
+    failed_scopes = [item for item in scope_results if not item.get("ok")]
+    registered_scopes = [item["scope"] for item in scope_results if item.get("ok")]
     return {
-        "ok": bool(updated.get("ok")),
+        "ok": not failed_scopes and bool(scope_results),
+        "registered": bool(registered_scopes),
+        "best_effort": True,
         "stage": "setMyCommands",
-        "commands": sorted(managed_commands),
-        "preserved_count": max(0, len(commands) - len(managed_commands)),
-        "detail": None if updated.get("ok") else updated,
+        "commands": sorted(TELEGRAM_CODEX_MENU_COMMANDS),
+        "scopes": scope_results,
+        "registered_scopes": registered_scopes,
+        "detail": None if not failed_scopes else {"failed_scopes": failed_scopes},
     }
 
 
@@ -573,7 +640,10 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     ]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
-        "telegram_commands": _telegram_merge_bot_commands(token),
+        "telegram_commands": _telegram_merge_bot_commands(
+            token,
+            chat_id=env_values["TELEGRAM_HOME_CHANNEL"],
+        ),
     }
 
     hermes_bin = find_hermes_binary()
