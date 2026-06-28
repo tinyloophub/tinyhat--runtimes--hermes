@@ -26,9 +26,12 @@ Example output:
     }
 
 Side effects:
-    None in Tinyhat state. Codex may refresh its own local auth/session state
-    while serving the request. The command does not read or return OpenAI auth
-    tokens and does not call the normal OpenAI REST API.
+    None in Tinyhat platform state. Codex may refresh its own local
+    auth/session state while serving the request. The command writes the last
+    structured app-server response to ``codex/last_limits.json`` under the
+    runtime state directory so operators can debug from JSON instead of
+    terminal logs. The command does not read or return OpenAI auth tokens and
+    does not call the normal OpenAI REST API.
 """
 
 from __future__ import annotations

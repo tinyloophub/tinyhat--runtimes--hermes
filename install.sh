@@ -56,10 +56,20 @@
 # 16. The systemd service restarts automatically, starts after the network is
 #     online, runs with Nice=-5, and uses OOMScoreAdjust=-900 so the OS strongly
 #     prefers keeping the heartbeat/runtime process alive.
-# 17. This installer installs only the Tinyhat Hermes runtime process. It does
-#     not install upstream Hermes Agent yet, create a Tinyhat Computer row, or
-#     assign a Computer to an Agent.
-# 18. The installed runtime code contains the later Telegram provisioning step:
+# 17. Installs the OpenAI Codex CLI from the public npm package
+#     @openai/codex when `codex` is not already available. Tinyhat uses Codex
+#     as the supported subscription auth provider, and the Telegram
+#     /codex_limits quick command needs `codex app-server` to read usage
+#     limits after the user connects auth. On apt-based Linux machines without
+#     a recent node/npm pair, the installer installs Node.js from the public
+#     NodeSource setup for the configured major version. For unusual local dev
+#     hosts that intentionally do not need Codex auth, set
+#     TINYHAT_SKIP_CODEX_CLI=1 to skip this dependency.
+# 18. This installer installs the Tinyhat Hermes runtime process and the Codex
+#     CLI dependency it needs for Codex auth support. It does not install
+#     upstream Hermes Agent yet, create a Tinyhat Computer row, or assign a
+#     Computer to an Agent.
+# 19. The installed runtime code contains the later Telegram provisioning step:
 #     after the platform assigns an agent and grants this Computer temporary
 #     access to the bot token, the runtime command configure_telegram writes the
 #     Hermes Telegram config and registers Tinyhat's Codex slash commands in the
@@ -71,6 +81,9 @@ REPO_SLUG="tinyloophub/tinyhat--runtimes--hermes"
 DEFAULT_REF="channels/lts"
 DEFAULT_PREFIX="/opt/tinyhat-hermes-runtime"
 DEFAULT_STATE_DIR="/var/lib/tinyhat-hermes-runtime"
+DEFAULT_CODEX_NPM_PACKAGE="@openai/codex"
+DEFAULT_CODEX_NODE_MAJOR="22"
+DEFAULT_CODEX_NODE_MIN_MAJOR="20"
 
 runtime_ref="${TINYHAT_RUNTIME_REF:-$DEFAULT_REF}"
 prefix="${TINYHAT_RUNTIME_PREFIX:-$DEFAULT_PREFIX}"
@@ -79,6 +92,10 @@ source_dir="${TINYHAT_RUNTIME_SOURCE_DIR:-}"
 platform_url="${TINYHAT_PLATFORM_URL:-}"
 computer_id="${TINYHAT_COMPUTER_ID:-}"
 local_dev_token="${TINYHAT_LOCAL_DEV_TOKEN:-}"
+codex_npm_package="${TINYHAT_CODEX_NPM_PACKAGE:-$DEFAULT_CODEX_NPM_PACKAGE}"
+codex_npm_version="${TINYHAT_CODEX_NPM_VERSION:-}"
+codex_node_major="${TINYHAT_CODEX_NODE_MAJOR:-$DEFAULT_CODEX_NODE_MAJOR}"
+skip_codex_cli="${TINYHAT_SKIP_CODEX_CLI:-0}"
 install_systemd=1
 run_foreground=0
 
@@ -104,8 +121,16 @@ Options:
                             local Docker or another external supervisor.
   -h, --help                Show this help.
 
-The installer installs only the Tinyhat runtime process. It does not install
-upstream Hermes Agent yet.
+Environment:
+  TINYHAT_SKIP_CODEX_CLI=1  Skip Codex CLI provisioning. Intended only for
+                            unusual local development hosts that do not need
+                            Codex auth or /codex_limits.
+  TINYHAT_CODEX_NODE_MAJOR  NodeSource major version to install on apt Linux
+                            when node/npm is missing or too old. Defaults to 22.
+
+The installer installs the Tinyhat runtime process and the Codex CLI dependency
+used by Tinyhat's Codex auth support. It does not install upstream Hermes Agent
+yet.
 USAGE
 }
 
@@ -178,8 +203,99 @@ need_cmd() {
   }
 }
 
+is_truthy() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+node_major_version() {
+  if ! command -v node >/dev/null 2>&1; then
+    return 1
+  fi
+  local raw
+  raw="$(node --version 2>/dev/null || true)"
+  raw="${raw#v}"
+  raw="${raw%%.*}"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  return 1
+}
+
+nodejs_npm_ready() {
+  if ! command -v npm >/dev/null 2>&1; then
+    return 1
+  fi
+  local major
+  if ! major="$(node_major_version)"; then
+    return 1
+  fi
+  [[ "$major" =~ ^[0-9]+$ ]] && (( major >= DEFAULT_CODEX_NODE_MIN_MAJOR ))
+}
+
 need_cmd python3
 need_cmd install
+
+install_nodejs_npm_if_needed() {
+  if nodejs_npm_ready; then
+    return 0
+  fi
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    echo "install.sh: recent node/npm is required to install Codex CLI and could not be found" >&2
+    echo "install.sh: install node/npm first, install codex first, or set TINYHAT_SKIP_CODEX_CLI=1 for local development only" >&2
+    exit 1
+  fi
+  if [[ "$(id -u)" != "0" ]]; then
+    echo "install.sh: installing node/npm with apt-get requires root; install node/npm first, install codex first, or rerun as root" >&2
+    exit 1
+  fi
+
+  if ! [[ "$codex_node_major" =~ ^[0-9]+$ ]]; then
+    echo "install.sh: TINYHAT_CODEX_NODE_MAJOR must be a numeric Node.js major version" >&2
+    exit 2
+  fi
+
+  echo "install.sh: installing Node.js ${codex_node_major}.x for Codex CLI"
+  export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+  apt-get update
+  apt-get install -y ca-certificates curl gnupg
+  curl -fsSL "https://deb.nodesource.com/setup_${codex_node_major}.x" | bash -
+  apt-get install -y nodejs
+  if ! nodejs_npm_ready; then
+    echo "install.sh: Node.js install finished, but recent node/npm is still unavailable" >&2
+    exit 1
+  fi
+}
+
+install_codex_cli() {
+  if is_truthy "$skip_codex_cli"; then
+    echo "install.sh: skipping Codex CLI install because TINYHAT_SKIP_CODEX_CLI is set"
+    return 0
+  fi
+  if command -v codex >/dev/null 2>&1; then
+    echo "install.sh: Codex CLI already installed: $(codex --version 2>/dev/null || printf 'version unavailable')"
+    return 0
+  fi
+
+  install_nodejs_npm_if_needed
+  need_cmd npm
+
+  local package_spec="$codex_npm_package"
+  if [[ -n "$codex_npm_version" ]]; then
+    package_spec="${codex_npm_package}@${codex_npm_version}"
+  fi
+
+  echo "install.sh: installing Codex CLI from npm package $package_spec"
+  npm install -g "$package_spec"
+  if ! command -v codex >/dev/null 2>&1; then
+    echo "install.sh: Codex CLI install finished, but codex was not found on PATH" >&2
+    exit 1
+  fi
+  echo "install.sh: installed Codex CLI: $(codex --version 2>/dev/null || printf 'version unavailable')"
+}
 
 resolve_ref_sha() {
   local ref="$1"
@@ -242,6 +358,7 @@ if [[ -z "$runtime_sha" && -z "$source_dir" ]]; then
 fi
 
 echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
+install_codex_cli
 install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
@@ -258,6 +375,7 @@ fi
 cat > "$prefix/bin/tinyhat-hermes-runtime" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+export PATH="/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
 export PYTHONPATH="$prefix:\${PYTHONPATH:-}"
 export TINYHAT_RUNTIME_PREFIX="\${TINYHAT_RUNTIME_PREFIX:-$prefix}"
 export TINYHAT_RUNTIME_STATE_DIR="\${TINYHAT_RUNTIME_STATE_DIR:-$state_dir}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,20 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value))
+    return suite
 
 
 def test_hermes_status_reports_missing_cli() -> None:
