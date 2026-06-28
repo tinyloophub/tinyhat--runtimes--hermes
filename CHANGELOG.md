@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `codex_limits`, a read-only runtime command and Telegram quick command
+  that asks `codex app-server --listen stdio://` for OpenAI Codex subscription
+  windows and credits without reading or returning auth tokens.
+
 ## 0.0.16 - 2026-06-28
 
 - Add Telegram quick commands that start OpenAI Codex device-code auth from the
