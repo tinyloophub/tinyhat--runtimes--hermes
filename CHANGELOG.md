@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.18 - 2026-06-28
+
+- Install the Codex CLI during runtime provisioning, including a supported
+  Node.js toolchain on apt-based Linux hosts, so Codex auth and usage commands
+  are ready on warm Computers before Telegram assignment.
+- Render OpenAI Codex usage limits as Telegram-friendly progress bars while
+  storing the structured Codex app-server response in runtime state instead of
+  scraping CLI logs.
+
 ## 0.0.17 - 2026-06-28
 
 - Add `codex_limits`, a read-only runtime command and Telegram quick command
