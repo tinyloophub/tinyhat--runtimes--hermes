@@ -5,6 +5,9 @@ This module is invoked by Hermes quick commands that Tinyhat installs into
 Hermes' device-code auth flow in the background, sends the authorization link
 and device code to the configured Telegram home channel, and sends a completion
 message when Hermes finishes writing its auth store.
+
+The OpenAI device code and final auth token stay on the Computer. The platform
+only installs the quick command; it is not in the OpenAI auth path.
 """
 
 from __future__ import annotations

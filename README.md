@@ -211,7 +211,8 @@ installed only when Telegram is connected because the device-code flow needs a
 private channel where the link and code can be delivered. The active device
 code is treated as sensitive: it is sent to the configured
 `TELEGRAM_HOME_CHANNEL`, but it is not returned in the Tinyhat runtime command
-result and is not shown in Hat admin.
+result and is not shown in Hat admin. The final OpenAI credential is written by
+Hermes on the Computer; the Tinyhat platform never receives that token.
 
 ## How runtime updates work
 
