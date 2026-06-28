@@ -6,6 +6,7 @@ import base64
 import json
 import sys
 import time
+import unittest
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,20 @@ sys.path.insert(0, str(ROOT))
 
 from hermes_runtime import client as client_module  # noqa: E402
 from hermes_runtime.client import CachedGoogleIdentityToken  # noqa: E402
+
+
+def load_tests(
+    loader: unittest.TestLoader,
+    tests: unittest.TestSuite,
+    pattern: str | None,
+) -> unittest.TestSuite:
+    del loader, tests, pattern
+    suite = unittest.TestSuite()
+    module = sys.modules[__name__]
+    for name, value in sorted(vars(module).items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value))
+    return suite
 
 
 class _FakeResponse:
@@ -40,9 +55,7 @@ def _jwt_with_exp(exp: int) -> str:
     return f"{header}.{payload}.signature"
 
 
-def test_cached_google_identity_token_fetches_metadata_token_once(
-    monkeypatch,
-) -> None:
+def test_cached_google_identity_token_fetches_metadata_token_once() -> None:
     """Production auth is a Google VM identity token with a tiny local cache."""
     calls: list[tuple[str, int | float | None, dict[str, str]]] = []
     token = _jwt_with_exp(int(time.time()) + 600)
@@ -51,15 +64,19 @@ def test_cached_google_identity_token_fetches_metadata_token_once(
         calls.append((req.full_url, timeout, dict(req.header_items())))
         return _FakeResponse(token)
 
-    monkeypatch.setattr(client_module.request, "urlopen", fake_urlopen)
+    original_urlopen = client_module.request.urlopen
+    client_module.request.urlopen = fake_urlopen  # type: ignore[assignment]
+    try:
+        provider = CachedGoogleIdentityToken(
+            audience="https://platform.example/",
+            timeout_seconds=3,
+        )
 
-    provider = CachedGoogleIdentityToken(
-        audience="https://platform.example/",
-        timeout_seconds=3,
-    )
+        assert provider() == token
+        assert provider() == token
+    finally:
+        client_module.request.urlopen = original_urlopen  # type: ignore[assignment]
 
-    assert provider() == token
-    assert provider() == token
     assert len(calls) == 1
     url, timeout, headers = calls[0]
     assert timeout == 3
