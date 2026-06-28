@@ -201,9 +201,10 @@ it.
 | `/codex_auth_status` | Shows whether the helper is still running and asks Hermes for Codex auth status. |
 | `/codex_auth_log` | Shows the recent bounded auth log if the device-code output needs to be resent or debugged. |
 
-The Telegram command menu uses underscores because Telegram does not accept
-hyphens in registered bot command names. The runtime also installs
-`/codex-auth` as a typed alias for the starter command.
+The Telegram command menu uses underscores because Telegram clients and the Bot
+API do not reliably handle hyphenated slash commands. The runtime also installs
+`codex-auth` as a best-effort Hermes quick-command alias for typed chat input,
+but `/codex_auth` is the reliable command.
 
 These are quick commands, not built-in Hermes slash commands. They are
 installed only when Telegram is connected because the device-code flow needs a

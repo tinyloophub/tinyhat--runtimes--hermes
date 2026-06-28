@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add Telegram quick commands that start OpenAI Codex device-code auth from the
+  Hermes chat, send the auth link/code back to Telegram, and restart the gateway
+  after Hermes writes the local auth store.
+
 ## 0.0.15 - 2026-06-27
 
 - Add `stop_hermes`, a runtime command that stops Hermes Agent messaging before

@@ -17,11 +17,11 @@ What it does:
     4. Installs Tinyhat-managed Hermes quick commands for OpenAI Codex
        device-code auth:
        ``/codex_auth``, ``/codex_auth_status``, and ``/codex_auth_log``.
-       It also installs ``/codex-auth`` as a typed alias for the starter
-       command, while Telegram's command menu uses underscores because the
-       Bot API does not accept hyphenated command names. These commands run
-       only after Telegram is configured because they need a Telegram channel
-       for the device code.
+       It also installs ``codex-auth`` as a best-effort Hermes quick-command
+       alias for typed chat input, while Telegram's command menu uses
+       underscores because Telegram clients and the Bot API do not reliably
+       handle hyphenated slash commands. These commands run only after Telegram
+       is configured because they need a Telegram channel for the device code.
     5. Merges those commands into Telegram's bot command menu on a
        best-effort basis, preserving any existing bot commands.
     6. Clears Telegram's webhook for the bot so Hermes long-polling can own
