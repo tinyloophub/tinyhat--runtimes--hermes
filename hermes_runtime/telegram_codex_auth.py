@@ -307,9 +307,12 @@ def _is_likely_device_url(candidate: str) -> bool:
     if not host:
         return False
     host_ok = (
-        host.endswith("openai.com")
-        or host.endswith("microsoft.com")
-        or host.endswith("microsoftonline.com")
+        host == "openai.com"
+        or host.endswith(".openai.com")
+        or host == "microsoft.com"
+        or host.endswith(".microsoft.com")
+        or host == "microsoftonline.com"
+        or host.endswith(".microsoftonline.com")
     )
     if not host_ok:
         return False
@@ -485,6 +488,8 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
                     raise
                 if chunk:
                     output = (output + chunk)[-24_000:]
+                else:
+                    break
 
             clean = _terminal_text(output)
             if not sent_provider and "Select provider:" in clean and "OpenAI" in clean:
@@ -545,7 +550,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
             "credentials": sent_credentials,
             "model": sent_model,
         },
-        "output": _terminal_text(output)[-4000:],
+        "output": _redact_sensitive_text(_terminal_text(output)[-4000:]),
         "duration_ms": int((time.monotonic() - started) * 1000),
     }
 

@@ -39,6 +39,14 @@ def test_extract_auth_material_ignores_non_device_auth_urls_and_url_tokens() -> 
     assert material == {"url": None, "code": None}
 
 
+def test_extract_auth_material_rejects_lookalike_device_hosts() -> None:
+    material = codex_auth._extract_auth_material(
+        "Open https://evilopenai.com/device and enter code ABCD-EFGH"
+    )
+
+    assert material == {"url": None, "code": "ABCD-EFGH"}
+
+
 def test_extract_auth_material_accepts_bare_code_line_after_url() -> None:
     material = codex_auth._extract_auth_material(
         "Open https://auth.openai.com/codex/device\n\nABCD-EFGH\n"
@@ -151,6 +159,67 @@ def test_model_switch_uses_formal_hermes_model_picker() -> None:
         "credentials": True,
         "model": True,
     }
+
+
+def test_model_switch_uses_arrow_fallback_for_unnumbered_provider_menu() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('Select provider:', flush=True)\n"
+            "print('  (○) Nous Portal', flush=True)\n"
+            "print('  → (●) OpenRouter (Pay-per-use API aggregator)  ← currently active', flush=True)\n"
+            "print('  (○) Anthropic', flush=True)\n"
+            "print('  (○) OpenAI ▸ (Codex CLI or direct OpenAI API)', flush=True)\n"
+            "first = sys.stdin.buffer.readline()\n"
+            "print('Select OpenAI provider:', flush=True)\n"
+            "print('  → (●) OpenAI Codex', flush=True)\n"
+            "second = sys.stdin.buffer.readline()\n"
+            "print('OpenAI Codex credentials:', flush=True)\n"
+            "third = sys.stdin.buffer.readline()\n"
+            "print('Select default model:', flush=True)\n"
+            "fourth = sys.stdin.buffer.readline()\n"
+            "assert first == b'\\x1b[B\\x1b[B\\n'\n"
+            "assert second and third and fourth\n"
+            "print('Default model set to: gpt-5.5', flush=True)\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        result = codex_auth._run_config_switch(hermes_bin)
+
+    assert result["ok"] is True
+    assert result["model_default"] == "gpt-5.5"
+    assert result["selections"]["provider"] is True
+
+
+def test_model_switch_redacts_picker_output_before_status_storage() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "print('Select provider:', flush=True)\n"
+            "print('  1. OpenAI ▸ (Codex CLI or direct OpenAI API)', flush=True)\n"
+            "sys.stdin.buffer.readline()\n"
+            "print('Select OpenAI provider:', flush=True)\n"
+            "sys.stdin.buffer.readline()\n"
+            "print('OpenAI Codex credentials:', flush=True)\n"
+            "sys.stdin.buffer.readline()\n"
+            "print('Select default model:', flush=True)\n"
+            "sys.stdin.buffer.readline()\n"
+            "print('access_token=sk-secretvalue1234567890abcdef', flush=True)\n"
+            "print('Default model set to: gpt-5.5', flush=True)\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        result = codex_auth._run_config_switch(hermes_bin)
+
+    assert result["ok"] is True
+    assert "sk-secretvalue" not in result["output"]
+    assert "[redacted]" in result["output"]
 
 
 def test_send_auth_material_uses_button_and_bare_code_message() -> None:

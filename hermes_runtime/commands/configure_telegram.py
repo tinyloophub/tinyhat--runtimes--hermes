@@ -254,6 +254,8 @@ def _openrouter_env_values(setup: dict[str, Any]) -> dict[str, str]:
 
 
 async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str, Any]:
+    # OpenRouter setup is deterministic provisioning, so use Hermes' public
+    # config CLI instead of private Hermes modules or on-disk internals.
     commands: list[tuple[str, str]] = [("model.provider", "auto")]
     default_model = str(setup.get("openrouter_default_model") or "").strip()
     if default_model:

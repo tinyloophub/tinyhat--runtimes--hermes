@@ -5,6 +5,9 @@
 - Add Telegram quick commands that start OpenAI Codex device-code auth from the
   Hermes chat, send the auth link/code back to Telegram, and restart the gateway
   after Hermes writes the local auth store.
+- Drive Codex model selection through Hermes' formal `hermes model --no-browser`
+  picker, including the unnumbered-menu fallback, and redact picker output
+  before it is stored in local status.
 
 ## 0.0.15 - 2026-06-27
 
