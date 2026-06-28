@@ -68,18 +68,27 @@ The foundation installer does this:
 
 1. Downloads this repo at the requested ref, unless `--source-dir` points at a
    local checkout.
-2. Copies the runtime Python package and import-safe bootstrap into
+2. Ensures the OpenAI Codex CLI is installed. If `codex` is already available,
+   it leaves it alone; otherwise it installs the public npm package
+   `@openai/codex`. On apt-based Linux machines without a recent node/npm
+   pair, it installs Node.js from NodeSource's configured major line first
+   (`TINYHAT_CODEX_NODE_MAJOR`, default `22`). Tinyhat installs Codex CLI
+   during provisioning because Codex is the supported subscription-auth
+   provider and `/codex_limits` needs `codex app-server` after the user
+   connects auth. Unusual local development hosts that do not need Codex auth
+   can set `TINYHAT_SKIP_CODEX_CLI=1` to skip this dependency.
+3. Copies the runtime Python package and import-safe bootstrap into
    `/opt/tinyhat-hermes-runtime`.
-3. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.
-4. Writes runtime state under `/var/lib/tinyhat-hermes-runtime`.
-5. Records the installed ref in `current/VERSION` and, when it can resolve one,
+4. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.
+5. Writes runtime state under `/var/lib/tinyhat-hermes-runtime`.
+6. Records the installed ref in `current/VERSION` and, when it can resolve one,
    the installed commit in `current/COMMIT_SHA`.
-6. Writes a private env file at `/opt/tinyhat-hermes-runtime/env/runtime.env`.
+7. Writes a private env file at `/opt/tinyhat-hermes-runtime/env/runtime.env`.
    With systemd, the same env is copied to `/etc/tinyhat/hermes-runtime.env`.
-7. When `--run-foreground` is passed, runs the installed runtime in the
+8. When `--run-foreground` is passed, runs the installed runtime in the
    foreground with a small restart loop for local Docker or another external
    supervisor.
-8. When systemd is enabled, installs a service named
+9. When systemd is enabled, installs a service named
    `tinyhat-hermes-runtime.service`.
 
 This foundation does **not** create Unix users yet. In the current systemd path,
@@ -186,7 +195,7 @@ it.
 | `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and `TELEGRAM_HOME_CHANNEL` into Hermes env files, installs the Telegram quick commands documented below, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token is not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
 | `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Starts Hermes Agent messaging again on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start` with the same foreground fallback used by local/Docker setup. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
 | `stop_hermes` | `hermes_runtime/commands/stop_hermes.py` | Stops Hermes Agent messaging before Tinyhat parks or reassigns a Telegram bot. | Runs `hermes gateway stop`, checks gateway status, and terminates the foreground `hermes gateway run` process used by local/Docker fallback mode. It does not stop the Tinyhat runtime service, change Telegram webhooks, remove credentials, or unassign the Computer. |
-| `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, and returns a structured summary. It does not read or return OpenAI auth tokens and does not call the normal OpenAI REST API. |
+| `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts the Codex CLI installed during provisioning with `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, writes the last structured JSON response to `codex/last_limits.json` under the runtime state directory, and returns a readable summary. It does not read or return OpenAI auth tokens, parse terminal logs, or call the normal OpenAI REST API. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
@@ -203,10 +212,10 @@ the installer ships.
 
 | Telegram command | What it does |
 | --- | --- |
-| `/codex_auth` | Starts Hermes' OpenAI Codex device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, switches Hermes to Codex auth, and restarts the Telegram gateway so the next reply uses the new credential. |
-| `/codex_auth_status` | Shows whether the helper is still running and asks Hermes for Codex auth status. |
+| `/codex_auth` | Starts the official Codex CLI device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, asks Hermes through its formal model picker to import/switch to OpenAI Codex, and restarts the Telegram gateway so the next reply uses the new credential. |
+| `/codex_auth_status` | Shows whether the helper is still running and checks both Hermes Codex auth and Codex CLI auth status. |
 | `/codex_auth_log` | Shows the recent bounded auth log if the device-code output needs to be resent or debugged. |
-| `/codex_limits` | Reads the current OpenAI Codex account limits through `codex app-server --listen stdio://` and shows the remaining primary and weekly windows, reset times, plan type, credits, and reset-credit count when Codex returns them. |
+| `/codex_limits` | Reads the current OpenAI Codex account limits through `codex app-server --listen stdio://` and shows the remaining primary and weekly windows as progress bars, reset times, plan type, credits, and reset-credit count when Codex returns them. |
 
 The Telegram command menu uses underscores because Telegram clients and the Bot
 API do not reliably handle hyphenated slash commands. The runtime also installs
@@ -218,10 +227,13 @@ installed only when Telegram is connected because the device-code flow needs a
 private channel where the link and code can be delivered. The active device
 code is treated as sensitive: it is sent to the configured
 `TELEGRAM_HOME_CHANNEL`, but it is not returned in the Tinyhat runtime command
-result and is not shown in Hat admin. The final OpenAI credential is written by
-Hermes on the Computer; the Tinyhat platform never receives that token.
-`/codex_limits` uses that local Codex/Hermes auth indirectly through the Codex
-app-server process. It returns usage windows and credit counts, not auth tokens.
+result and is not shown in Hat admin. The final OpenAI credentials are written
+locally by Codex CLI and Hermes on the Computer; the Tinyhat platform never
+receives those tokens. `/codex_limits` uses the Codex CLI auth indirectly
+through the Codex app-server process. It returns usage windows and credit
+counts, not auth tokens. The command writes the last structured app-server
+response to `codex/last_limits.json` under the runtime state directory so
+operators can inspect the API result without scraping CLI logs.
 The Codex app-server API is currently an experimental Codex CLI surface, so the
 runtime treats it as best-effort: if the upstream shape changes, the command
 returns a readable unavailable/error payload instead of exposing credentials or
