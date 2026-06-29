@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -591,6 +593,36 @@ def test_install_codex_auth_plugin_commands_enables_menu_plugin() -> None:
     assert "codex_auth" in plugin_source
     assert "hermes_runtime.telegram_codex_auth" in plugin_source
     assert "hermes_runtime.codex_limits" in plugin_source
+
+
+def test_install_codex_auth_plugin_commands_normalizes_flow_plugin_lists() -> None:
+    cases = [
+        ("plugins:\n  enabled: []\n", []),
+        (
+            "plugins:\n"
+            "  enabled: [existing-plugin]\n"
+            "  disabled: [tinyhat-codex, other-plugin]\n",
+            ["existing-plugin"],
+        ),
+    ]
+
+    for config_text, existing_enabled in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / ".hermes" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(config_text, encoding="utf-8")
+
+            result = configure_telegram._install_codex_auth_plugin_commands(config)
+            text = config.read_text(encoding="utf-8")
+            parsed = yaml.safe_load(text)
+
+        enabled = parsed["plugins"]["enabled"]
+        disabled = parsed["plugins"].get("disabled") or []
+        assert result["installed"] is True
+        assert enabled.count("tinyhat-codex") == 1
+        for plugin in existing_enabled:
+            assert plugin in enabled
+        assert "tinyhat-codex" not in disabled
 
 
 def test_install_telegram_command_menu_priority_uses_hermes_config_shape() -> None:

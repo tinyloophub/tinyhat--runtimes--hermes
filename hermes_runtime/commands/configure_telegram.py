@@ -374,6 +374,39 @@ def _codex_auth_plugin_manifest() -> str:
     )
 
 
+def _simple_flow_list_items(value: str) -> list[str] | None:
+    clean = value.split("#", 1)[0].strip()
+    if not clean.startswith("[") or not clean.endswith("]"):
+        return None
+    inner = clean[1:-1].strip()
+    if not inner:
+        return []
+    items: list[str] = []
+    for raw_item in inner.split(","):
+        item = raw_item.strip().strip("'\"")
+        if item:
+            items.append(item)
+    return items
+
+
+def _normalize_plugin_list_key(
+    lines: list[str],
+    key_index: int,
+) -> tuple[list[str], int]:
+    line = lines[key_index]
+    _prefix, _separator, value = line.partition(":")
+    items = _simple_flow_list_items(value)
+    if items is None:
+        return lines, key_index
+
+    next_lines = lines[:]
+    indent = _line_indent(line)
+    replacement = [f"{' ' * indent}{line.strip().split(':', 1)[0]}:"]
+    replacement.extend(f"{' ' * (indent + 2)}- {item}" for item in items)
+    next_lines[key_index : key_index + 1] = replacement
+    return next_lines, key_index
+
+
 def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> list[str]:
     plugins_end = _block_end(lines, plugins_index, indent=0)
     disabled_index = _find_key(
@@ -385,6 +418,7 @@ def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> lis
     )
     if disabled_index is None:
         return lines
+    lines, disabled_index = _normalize_plugin_list_key(lines, disabled_index)
     disabled_end = _block_end(lines, disabled_index, indent=2)
     next_lines = lines[: disabled_index + 1]
     for line in lines[disabled_index + 1: disabled_end]:
@@ -424,6 +458,7 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
         ]
         return lines
 
+    lines, enabled_index = _normalize_plugin_list_key(lines, enabled_index)
     enabled_end = _block_end(lines, enabled_index, indent=2)
     for line in lines[enabled_index + 1: enabled_end]:
         if line.strip() == f"- {CODEX_PLUGIN_NAME}":
