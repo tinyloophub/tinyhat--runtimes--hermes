@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Register the Tinyhat Codex Telegram commands through a small Hermes user
+  plugin so Hermes can include them in the Telegram command menu. The quick
+  commands still own the zero-token behavior; the plugin only exposes the same
+  commands to Hermes' slash-command registry.
+
 ## 0.0.19 - 2026-06-28
 
 - Let Hermes own Telegram command-menu registration by configuring Hermes'

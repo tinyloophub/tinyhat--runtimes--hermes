@@ -14,17 +14,20 @@ What it does:
          exists.
     3. Applies the platform-selected model/base URL through Hermes' public
        ``hermes config set`` command.
-    4. Installs Tinyhat-managed Hermes quick commands for OpenAI Codex
-       device-code auth:
+    4. Installs Tinyhat-managed Hermes quick commands and a tiny Hermes plugin
+       for OpenAI Codex device-code auth:
        ``/codex_auth``, ``/codex_auth_status``, ``/codex_auth_log``, and
        ``/codex_limits``.
        It also installs ``codex-auth`` as a best-effort Hermes quick-command
        alias for typed chat input, while Telegram's command menu uses
        underscores because Telegram clients and the Bot API do not reliably
-       handle hyphenated slash commands. These commands run only after Telegram
-       is configured because they need a Telegram channel for the device code.
+       handle hyphenated slash commands. The plugin registers the same
+       underscore command names through Hermes' documented
+       ``ctx.register_command`` interface so Hermes' own Telegram BotCommand
+       menu can discover them. These commands run only after Telegram is
+       configured because they need a Telegram channel for the device code.
     5. Configures Hermes' own Telegram command-menu priority so the Codex
-       quick commands stay visible in Telegram's slash-command picker while
+       plugin commands stay visible in Telegram's slash-command picker while
        Hermes still owns the full menu registration.
     6. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
@@ -92,6 +95,8 @@ TELEGRAM_MENU_PRIORITY_MODE = "prepend"
 TELEGRAM_MENU_MAX_COMMANDS = 60
 TELEGRAM_MENU_START_MARKER = "# tinyhat managed telegram command menu start"
 TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
+CODEX_PLUGIN_NAME = "tinyhat-codex"
+CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
 
 
 def _quote_env(value: str) -> str:
@@ -268,6 +273,197 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
             "codex_auth_log",
             "codex_limits",
         ],
+    }
+
+
+def _codex_auth_plugin_source() -> str:
+    return '''"""Tinyhat Codex slash-command bridge for Hermes.
+
+The runtime keeps the actual command behavior in Hermes quick_commands because
+those are zero-token and run before plugin slash commands. This plugin exists so
+Hermes' documented plugin command registry can include the Tinyhat Codex
+commands in gateway slash-command surfaces such as Telegram BotCommands.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+
+
+_COMMANDS = {
+    "codex_auth": {
+        "description": "Connect OpenAI Codex auth",
+        "module": "hermes_runtime.telegram_codex_auth",
+        "args": ["start"],
+        "timeout": 45,
+    },
+    "codex_auth_status": {
+        "description": "Check Codex auth status",
+        "module": "hermes_runtime.telegram_codex_auth",
+        "args": ["status"],
+        "timeout": 30,
+    },
+    "codex_auth_log": {
+        "description": "Show recent Codex auth output",
+        "module": "hermes_runtime.telegram_codex_auth",
+        "args": ["log"],
+        "timeout": 30,
+    },
+    "codex_limits": {
+        "description": "Show OpenAI Codex usage limits",
+        "module": "hermes_runtime.codex_limits",
+        "args": ["telegram"],
+        "timeout": 60,
+    },
+}
+
+
+def _runtime_pythonpath(env: dict[str, str]) -> str:
+    prefix = env.get("TINYHAT_RUNTIME_PREFIX") or "/opt/tinyhat-hermes-runtime"
+    existing = env.get("PYTHONPATH") or ""
+    return prefix if not existing else prefix + os.pathsep + existing
+
+
+def _run_runtime_module(module: str, args: list[str], timeout: int) -> str:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _runtime_pythonpath(env)
+    result = subprocess.run(
+        ["python3", "-m", module, *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=env,
+    )
+    output = "\\n".join(
+        part.strip() for part in (result.stdout, result.stderr) if part.strip()
+    )
+    if result.returncode != 0:
+        return output or f"{module} failed with exit code {result.returncode}."
+    return output or "Done."
+
+
+def _handler(module: str, args: list[str], timeout: int):
+    def run(_raw_args: str = "") -> str:
+        return _run_runtime_module(module, args, timeout)
+
+    return run
+
+
+def register(ctx):
+    for name, spec in _COMMANDS.items():
+        ctx.register_command(
+            name,
+            _handler(spec["module"], list(spec["args"]), int(spec["timeout"])),
+            description=str(spec["description"]),
+        )
+'''
+
+
+def _codex_auth_plugin_manifest() -> str:
+    return "\n".join(
+        [
+            "name: tinyhat-codex",
+            "version: 1.0.0",
+            "description: Tinyhat Codex Telegram slash-command menu entries.",
+            "author: Tinyhat",
+            "kind: standalone",
+            "",
+        ]
+    )
+
+
+def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> list[str]:
+    plugins_end = _block_end(lines, plugins_index, indent=0)
+    disabled_index = _find_key(
+        lines,
+        "disabled",
+        indent=2,
+        start=plugins_index + 1,
+        end=plugins_end,
+    )
+    if disabled_index is None:
+        return lines
+    disabled_end = _block_end(lines, disabled_index, indent=2)
+    next_lines = lines[: disabled_index + 1]
+    for line in lines[disabled_index + 1: disabled_end]:
+        if line.strip() == f"- {CODEX_PLUGIN_NAME}":
+            continue
+        next_lines.append(line)
+    next_lines.extend(lines[disabled_end:])
+    return next_lines
+
+
+def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
+    plugins_index = _find_key(lines, "plugins", indent=0)
+    if plugins_index is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(
+            [
+                "plugins:",
+                "  enabled:",
+                f"    - {CODEX_PLUGIN_NAME}",
+            ]
+        )
+        return lines
+
+    plugins_end = _block_end(lines, plugins_index, indent=0)
+    enabled_index = _find_key(
+        lines,
+        "enabled",
+        indent=2,
+        start=plugins_index + 1,
+        end=plugins_end,
+    )
+    if enabled_index is None:
+        lines[plugins_index + 1: plugins_index + 1] = [
+            "  enabled:",
+            f"    - {CODEX_PLUGIN_NAME}",
+        ]
+        return lines
+
+    enabled_end = _block_end(lines, enabled_index, indent=2)
+    for line in lines[enabled_index + 1: enabled_end]:
+        if line.strip() == f"- {CODEX_PLUGIN_NAME}":
+            return lines
+    lines[enabled_index + 1: enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
+    return lines
+
+
+def _install_codex_auth_plugin_commands(
+    config_file: Path | None = None,
+) -> dict[str, Any]:
+    config_file = config_file or _hermes_config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    plugin_dir = config_file.parent / "plugins" / CODEX_PLUGIN_DIR_NAME
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    manifest_file = plugin_dir / "plugin.yaml"
+    init_file = plugin_dir / "__init__.py"
+    manifest_file.write_text(_codex_auth_plugin_manifest(), encoding="utf-8")
+    init_file.write_text(_codex_auth_plugin_source(), encoding="utf-8")
+
+    text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
+    lines = text.splitlines()
+    lines = _ensure_plugin_enabled_config(lines)
+    plugins_index = _find_key(lines, "plugins", indent=0)
+    if plugins_index is not None:
+        lines = _remove_plugin_from_disabled(lines, plugins_index=plugins_index)
+    config_file.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    try:
+        config_file.chmod(0o600)
+    except OSError:
+        pass
+    return {
+        "config_file": str(config_file),
+        "plugin_dir": str(plugin_dir),
+        "installed": True,
+        "enabled": True,
+        "plugin": CODEX_PLUGIN_NAME,
+        "mechanism": "hermes_plugin_register_command",
+        "commands": list(TELEGRAM_CODEX_MENU_COMMANDS),
     }
 
 
@@ -802,6 +998,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     ]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
+        "plugin_commands": _install_codex_auth_plugin_commands(),
         "telegram_command_menu": _install_telegram_command_menu_priority(),
     }
 

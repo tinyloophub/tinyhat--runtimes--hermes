@@ -148,6 +148,9 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             encoding="utf-8"
         )
         assert "quick_commands:" in config_text
+        assert "plugins:" in config_text
+        assert "enabled:" in config_text
+        assert "tinyhat-codex" in config_text
         assert "codex_auth:" in config_text
         assert "codex-auth:" in config_text
         assert "codex_auth_status:" in config_text
@@ -162,6 +165,12 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert "  - codex_auth_status\n" in config_text
         assert "  - codex_auth_log\n" in config_text
         assert "  - codex_limits\n" in config_text
+        plugin_dir = home / ".hermes" / "plugins" / "tinyhat-codex"
+        assert (plugin_dir / "plugin.yaml").is_file()
+        plugin_source = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+        assert "ctx.register_command" in plugin_source
+        assert "hermes_runtime.telegram_codex_auth" in plugin_source
+        assert "hermes_runtime.codex_limits" in plugin_source
 
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
@@ -205,6 +214,20 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "codex_auth_log",
         "codex_limits",
     ]
+    assert result["codex_auth"]["plugin_commands"] == {
+        "config_file": str(home / ".hermes" / "config.yaml"),
+        "plugin_dir": str(home / ".hermes" / "plugins" / "tinyhat-codex"),
+        "installed": True,
+        "enabled": True,
+        "plugin": "tinyhat-codex",
+        "mechanism": "hermes_plugin_register_command",
+        "commands": [
+            "codex_auth",
+            "codex_auth_status",
+            "codex_auth_log",
+            "codex_limits",
+        ],
+    }
     assert result["codex_auth"]["telegram_command_menu"] == {
         "config_file": str(home / ".hermes" / "config.yaml"),
         "installed": True,
@@ -535,6 +558,39 @@ def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
     assert "codex_limits:" in text
     assert "python3 -m hermes_runtime.telegram_codex_auth start" in text
     assert "python3 -m hermes_runtime.codex_limits telegram" in text
+
+
+def test_install_codex_auth_plugin_commands_enables_menu_plugin() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / ".hermes" / "config.yaml"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            "model:\n"
+            "  provider: auto\n"
+            "plugins:\n"
+            "  enabled:\n"
+            "    - existing-plugin\n"
+            "  disabled:\n"
+            "    - tinyhat-codex\n",
+            encoding="utf-8",
+        )
+
+        result = configure_telegram._install_codex_auth_plugin_commands(config)
+        text = config.read_text(encoding="utf-8")
+        plugin_dir = config.parent / "plugins" / "tinyhat-codex"
+        plugin_source = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+
+    assert result["installed"] is True
+    assert result["enabled"] is True
+    assert result["mechanism"] == "hermes_plugin_register_command"
+    assert "existing-plugin" in text
+    assert "    - tinyhat-codex\n" in text
+    assert "disabled:" in text
+    assert "  disabled:\n    - tinyhat-codex" not in text
+    assert "ctx.register_command" in plugin_source
+    assert "codex_auth" in plugin_source
+    assert "hermes_runtime.telegram_codex_auth" in plugin_source
+    assert "hermes_runtime.codex_limits" in plugin_source
 
 
 def test_install_telegram_command_menu_priority_uses_hermes_config_shape() -> None:

@@ -182,6 +182,10 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_plugin_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
     ):
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
@@ -196,6 +200,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
     assert result["codex_auth"]["quick_commands"]["installed"] is True
+    assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["status"]["ok"] is True
 
 
@@ -228,6 +233,10 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_plugin_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
     ):
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
@@ -238,6 +247,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["changed"] is True
     assert result["codex_auth"]["quick_commands"]["installed"] is True
+    assert result["codex_auth"]["plugin_commands"]["installed"] is True
 
 
 def test_install_hermes_runs_official_installer_when_missing() -> None:
@@ -284,6 +294,10 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_plugin_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
     ):
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
@@ -303,6 +317,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
     assert result["codex_auth"]["quick_commands"]["installed"] is True
+    assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["prerequisites"]["attempted"] is True
 
 

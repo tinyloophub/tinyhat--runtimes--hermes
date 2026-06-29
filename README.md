@@ -190,7 +190,7 @@ it.
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
-| `install_hermes` | `hermes_runtime/commands/install_hermes.py` | Installs upstream Hermes Agent after the Tinyhat runtime is alive, and skips reinstalling when `hermes` already exists. | May install Debian prerequisites as root, then runs `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash`. By default Tinyhat passes `--skip-browser`; set `TINYHAT_HERMES_INSTALL_ARGS` to override. Verifies Hermes messaging dependencies and preinstalls the Codex auth quick commands in `~/.hermes/config.yaml` so a later Telegram connection is fast. Result fields distinguish no-op from install: `installed_now` means this command ran the installer; `installed_after` means Hermes is present after the command. |
+| `install_hermes` | `hermes_runtime/commands/install_hermes.py` | Installs upstream Hermes Agent after the Tinyhat runtime is alive, and skips reinstalling when `hermes` already exists. | May install Debian prerequisites as root, then runs `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash`. By default Tinyhat passes `--skip-browser`; set `TINYHAT_HERMES_INSTALL_ARGS` to override. Verifies Hermes messaging dependencies and preinstalls the Codex auth quick commands plus the matching Hermes menu plugin in `~/.hermes/config.yaml` so a later Telegram connection is fast. Result fields distinguish no-op from install: `installed_now` means this command ran the installer; `installed_after` means Hermes is present after the command. |
 | `hermes_status` | `hermes_runtime/commands/hermes_status.py` | Checks Hermes Agent through its public CLI. | Read-only. Runs `hermes --version`, `hermes status`, and `hermes status --all`, then returns bounded stdout/stderr for Hat admin. |
 | `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and `TELEGRAM_HOME_CHANNEL` into Hermes env files, installs the Telegram quick commands documented below, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token is not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
 | `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Starts Hermes Agent messaging again on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start` with the same foreground fallback used by local/Docker setup. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
@@ -203,12 +203,16 @@ it.
 ## Telegram Codex auth quick commands
 
 `configure_telegram` also prepares Hermes quick commands in
-`~/.hermes/config.yaml`. Hermes owns Telegram BotCommand registration: when the
-gateway starts, Hermes builds the menu from its central slash-command registry
-plus eligible plugin/skill commands. Tinyhat does not call Telegram
-`setMyCommands` for this. Instead, it writes Hermes' documented
-`platforms.telegram.extra.command_menu` config so the Codex quick commands are
-prioritized while Hermes still includes its default commands.
+`~/.hermes/config.yaml`. Hermes quick commands are dispatchable when typed, but
+Hermes does not add them to the Telegram command menu by themselves. To keep
+Hermes as the only code that calls Telegram `setMyCommands`, Tinyhat also
+installs a small user plugin at `~/.hermes/plugins/tinyhat-codex` that
+registers the same underscore commands with Hermes' documented plugin command
+registry. The command bodies still call the runtime helpers below; the plugin
+exists only so Hermes can include the entries when it builds Telegram
+BotCommands. Tinyhat also writes Hermes'
+`platforms.telegram.extra.command_menu` priority config so these commands are
+near the top while Hermes keeps its default commands.
 
 | Telegram command | What it does |
 | --- | --- |
@@ -222,10 +226,13 @@ API do not reliably handle hyphenated slash commands. The runtime also installs
 `codex-auth` as a best-effort Hermes quick-command alias for typed chat input,
 but `/codex_auth` is the reliable command.
 
-These are quick commands, not built-in Hermes slash commands. They are
-installed only when Telegram is connected because the device-code flow needs a
-private channel where the link and code can be delivered. The active device
-code is treated as sensitive: it is sent to the configured
+These commands are installed as both quick commands and plugin-registered
+Hermes commands. The quick commands keep the behavior zero-token and available
+when typed; the plugin registrations make the commands visible in `/help`,
+autocomplete, and Telegram's menu. They are installed only when Telegram is
+connected because the device-code flow needs a private channel where the link
+and code can be delivered. The active device code is treated as sensitive: it
+is sent to the configured
 `TELEGRAM_HOME_CHANNEL`, but it is not returned in the Tinyhat runtime command
 result and is not shown in Hat admin. The final OpenAI credentials are written
 locally by Codex CLI and Hermes on the Computer; the Tinyhat platform never

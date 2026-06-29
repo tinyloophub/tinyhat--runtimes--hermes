@@ -18,9 +18,10 @@ What it does:
     Tinyhat Computers warm: the later agent-assignment step only writes the bot
     settings and starts the gateway.
 
-    The command also preinstalls Tinyhat's OpenAI Codex auth quick commands in
-    ``~/.hermes/config.yaml``. They are inert until Telegram is connected, but
-    this keeps the later assignment path short.
+    The command also preinstalls Tinyhat's OpenAI Codex auth quick commands and
+    matching Hermes plugin slash-command registrations in ``~/.hermes``. They
+    are inert until Telegram is connected, but this keeps the later assignment
+    path short and lets Hermes add the Codex commands to Telegram's menu.
 
 When to use it:
     Hat admin queues this automatically during Computer creation after the
@@ -61,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime.commands.configure_telegram import (
+    _install_codex_auth_plugin_commands,
     _install_codex_auth_quick_commands,
 )
 from hermes_runtime.hermes_cli import (
@@ -233,6 +235,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Hermes messaging dependencies are not available.")
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
+        "plugin_commands": _install_codex_auth_plugin_commands(),
     }
 
     installed_after = bool(status.get("installed"))
