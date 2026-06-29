@@ -15,7 +15,8 @@ What it does:
     3. Applies the platform-selected model/base URL through Hermes' public
        ``hermes config set`` command.
     4. Installs Tinyhat-managed Hermes quick commands and a tiny Hermes plugin
-       for OpenAI Codex device-code auth:
+       for the agent settings Mini App and OpenAI Codex device-code auth:
+       ``/tinyhat_settings`` opens the Tinyhat settings Mini App.
        ``/codex_auth``, ``/codex_auth_status``, ``/codex_auth_log``, and
        ``/codex_limits``.
        It also installs ``codex-auth`` as a best-effort Hermes quick-command
@@ -26,15 +27,17 @@ What it does:
        ``ctx.register_command`` interface so Hermes' own Telegram BotCommand
        menu can discover them. These commands run only after Telegram is
        configured because they need a Telegram channel for the device code.
-    5. Configures Hermes' own Telegram command-menu priority so the Codex
+    5. Configures Hermes' own Telegram command-menu priority so Tinyhat
        plugin commands stay visible in Telegram's slash-command picker while
        Hermes still owns the full menu registration.
-    6. Clears Telegram's webhook for the bot so Hermes long-polling can own
+    6. Sets Telegram's default **configure** Mini App button to the same
+       Tinyhat settings page.
+    7. Clears Telegram's webhook for the bot so Hermes long-polling can own
        the bot connection.
-    7. Starts the Hermes gateway using the public ``hermes gateway`` command.
+    8. Starts the Hermes gateway using the public ``hermes gateway`` command.
        Hermes auto-registers the Telegram command menu from its central slash
        command registry, plugin/skill commands, and the priority list above.
-    8. Returns a command result to the Tinyhat runtime loop. The loop posts
+    9. Returns a command result to the Tinyhat runtime loop. The loop posts
        that result to ``/hapi/v1/computers/me/runtime-command/result``; on
        success the platform marks the Computer/agent active and revokes the
        short-lived Telegram setup grant so this Computer cannot fetch the bot
@@ -85,11 +88,18 @@ from hermes_runtime.hermes_cli import (
 from hermes_runtime.platform_paths import context_computer_api_path
 
 
+TELEGRAM_TINYHAT_MENU_COMMANDS = {
+    "tinyhat_settings": "Open Tinyhat settings",
+}
 TELEGRAM_CODEX_MENU_COMMANDS = {
     "codex_auth": "Connect OpenAI Codex auth",
     "codex_auth_status": "Check Codex auth status",
     "codex_auth_log": "Show recent Codex auth output",
     "codex_limits": "Show OpenAI Codex usage limits",
+}
+TELEGRAM_MANAGED_MENU_COMMANDS = {
+    **TELEGRAM_TINYHAT_MENU_COMMANDS,
+    **TELEGRAM_CODEX_MENU_COMMANDS,
 }
 TELEGRAM_MENU_PRIORITY_MODE = "prepend"
 TELEGRAM_MENU_MAX_COMMANDS = 60
@@ -181,8 +191,19 @@ def _codex_limits_command() -> str:
     )
 
 
+def _tinyhat_settings_command() -> str:
+    return (
+        'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
+        "python3 -m hermes_runtime.telegram_tinyhat_settings"
+    )
+
+
 def _codex_auth_quick_commands_block() -> str:
     commands = {
+        "tinyhat_settings": {
+            "description": "Open Tinyhat settings",
+            "command": _tinyhat_settings_command(),
+        },
         "codex_auth": {
             "description": "Connect OpenAI Codex auth",
             "command": _codex_auth_command("start"),
@@ -261,6 +282,7 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
         "config_file": str(config_file),
         "installed": True,
         "commands": [
+            "tinyhat_settings",
             "codex_auth",
             "codex-auth",
             "codex_auth_status",
@@ -268,6 +290,7 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
             "codex_limits",
         ],
         "telegram_menu_commands": [
+            "tinyhat_settings",
             "codex_auth",
             "codex_auth_status",
             "codex_auth_log",
@@ -292,6 +315,12 @@ import subprocess
 
 
 _COMMANDS = {
+    "tinyhat_settings": {
+        "description": "Open Tinyhat settings",
+        "module": "hermes_runtime.telegram_tinyhat_settings",
+        "args": [],
+        "timeout": 30,
+    },
     "codex_auth": {
         "description": "Connect OpenAI Codex auth",
         "module": "hermes_runtime.telegram_codex_auth",
@@ -498,7 +527,7 @@ def _install_codex_auth_plugin_commands(
         "enabled": True,
         "plugin": CODEX_PLUGIN_NAME,
         "mechanism": "hermes_plugin_register_command",
-        "commands": list(TELEGRAM_CODEX_MENU_COMMANDS),
+        "commands": list(TELEGRAM_MANAGED_MENU_COMMANDS),
     }
 
 
@@ -642,7 +671,7 @@ def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list
 
 
 def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> list[str]:
-    priority = list(TELEGRAM_CODEX_MENU_COMMANDS)
+    priority = list(TELEGRAM_MANAGED_MENU_COMMANDS)
     for command in existing_priority:
         if command not in priority:
             priority.append(command)
@@ -770,7 +799,7 @@ def _install_telegram_command_menu_priority(
         "path": "platforms.telegram.extra.command_menu",
         "priority_mode": TELEGRAM_MENU_PRIORITY_MODE,
         "max_commands": max_commands,
-        "commands": list(TELEGRAM_CODEX_MENU_COMMANDS),
+        "commands": list(TELEGRAM_MANAGED_MENU_COMMANDS),
     }
 
 
@@ -851,6 +880,101 @@ def _telegram_delete_webhook(token: str) -> dict[str, Any]:
     return {
         "ok": bool(payload.get("ok")),
         "description": str(payload.get("description") or "")[:500] or None,
+    }
+
+
+def _telegram_set_chat_menu_button(
+    token: str,
+    *,
+    text: str,
+    web_app_url: str,
+    chat_id: str | int | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "menu_button": {
+            "type": "web_app",
+            "text": text,
+            "web_app": {"url": web_app_url},
+        }
+    }
+    if chat_id is not None and str(chat_id).strip():
+        try:
+            payload["chat_id"] = int(str(chat_id).strip())
+        except ValueError:
+            payload["chat_id"] = str(chat_id).strip()
+    body = parse.urlencode(
+        {
+            key: json.dumps(value) if isinstance(value, dict) else str(value)
+            for key, value in payload.items()
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        f"https://api.telegram.org/bot{token}/setChatMenuButton",
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": "tinyhat-hermes-runtime/0.0.1",
+        },
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ok": False,
+            "http_status": exc.code,
+            "description": detail[:500],
+        }
+    except error.URLError as exc:
+        return {"ok": False, "description": str(exc.reason)[:500]}
+    try:
+        response_payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "description": "Telegram returned invalid JSON."}
+    if not isinstance(response_payload, dict):
+        return {"ok": False, "description": "Telegram returned non-object JSON."}
+    return {
+        "ok": bool(response_payload.get("ok")),
+        "description": str(response_payload.get("description") or "")[:500] or None,
+    }
+
+
+async def _configure_tinyhat_menu_button(
+    *,
+    token: str,
+    settings_url: str,
+    owner_chat_id: str,
+) -> dict[str, Any]:
+    if not settings_url:
+        return {"configured": False, "reason": "missing_settings_url"}
+    if not settings_url.lower().startswith("https://"):
+        return {
+            "configured": False,
+            "reason": "settings_url_not_https",
+            "settings_url": settings_url,
+        }
+    default_result = await asyncio.to_thread(
+        _telegram_set_chat_menu_button,
+        token,
+        text="configure",
+        web_app_url=settings_url,
+    )
+    owner_result = await asyncio.to_thread(
+        _telegram_set_chat_menu_button,
+        token,
+        text="configure",
+        web_app_url=settings_url,
+        chat_id=owner_chat_id,
+    )
+    return {
+        "configured": bool(default_result.get("ok")) and bool(owner_result.get("ok")),
+        "text": "configure",
+        "settings_url": settings_url,
+        "default": default_result,
+        "owner_chat": owner_result,
     }
 
 
@@ -1025,6 +1149,9 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "TELEGRAM_HOME_CHANNEL_NAME": str(
             setup.get("telegram_home_channel_name") or "Owner DM"
         ),
+        "TINYHAT_SETTINGS_MINIAPP_URL": str(
+            setup.get("settings_miniapp_url") or ""
+        ).strip(),
         **_openrouter_env_values(setup),
     }
     env_files = [
@@ -1041,6 +1168,11 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if hermes_bin is None:
         raise RuntimeError("Hermes CLI was not found; install Hermes first.")
     model_config = await _configure_model(hermes_bin, setup)
+    menu_button = await _configure_tinyhat_menu_button(
+        token=token,
+        settings_url=env_values["TINYHAT_SETTINGS_MINIAPP_URL"],
+        owner_chat_id=owner_user_id,
+    )
 
     webhook = await asyncio.to_thread(_telegram_delete_webhook, token)
     if not webhook.get("ok"):
@@ -1068,6 +1200,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "env_files": env_files,
         "codex_auth": codex_auth,
         "model_config": model_config,
+        "menu_button": menu_button,
         "webhook": webhook,
         "gateway": gateway,
         "hermes": _compact_hermes_status(hermes_status),
