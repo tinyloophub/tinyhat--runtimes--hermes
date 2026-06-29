@@ -79,6 +79,24 @@ async def _fake_checkout(
     return checkout, f"sha-for-{repo_url}-{ref}", FakeTmp()
 
 
+async def _fake_checkout_0201(
+    repo_url: str,
+    ref: str,
+) -> tuple[Path, str, FakeTmp]:
+    checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
+    (checkout / "plugin.yaml").write_text("name: tinyhat\nversion: 0.20.1\n")
+    return checkout, f"sha-for-{repo_url}-{ref}", FakeTmp()
+
+
+async def _fake_checkout_same(
+    _repo_url: str,
+    _ref: str,
+) -> tuple[Path, str, FakeTmp]:
+    checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
+    (checkout / "plugin.yaml").write_text("name: tinyhat\nversion: 0.20.0\n")
+    return checkout, "same", FakeTmp()
+
+
 async def _new_ref(_repo_url: str, _ref: str) -> str:
     return "new"
 
@@ -216,7 +234,7 @@ def test_update_tinyhat_plugin_reinstalls_when_lts_commit_changes() -> None:
                 return_value=Path("/usr/local/bin/hermes"),
             ),
             patch("hermes_runtime.plugin_manager._resolve_ref", _new_ref),
-            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout),
+            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout_0201),
             patch("hermes_runtime.plugin_manager.run_process", fake_run_process),
         ):
             result = asyncio.run(
@@ -229,7 +247,9 @@ def test_update_tinyhat_plugin_reinstalls_when_lts_commit_changes() -> None:
     assert install_call[4:] == ["--enable", "--force"]
     assert result["schema"] == "tinyhat_hermes_plugin_update_v1"
     assert result["updated_now"] is True
+    assert result["target_version"] == "0.20.1"
     assert result["after"]["version"] == "0.20.1"
+    assert result["after_status"]["update_available"] is False
 
 
 def test_update_tinyhat_plugin_skips_when_lts_commit_is_current() -> None:
@@ -263,6 +283,7 @@ def test_update_tinyhat_plugin_skips_when_lts_commit_is_current() -> None:
                 return_value=Path("/usr/local/bin/hermes"),
             ),
             patch("hermes_runtime.plugin_manager._resolve_ref", _same_ref),
+            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout_same),
             patch("hermes_runtime.plugin_manager.run_process", fake_run_process),
         ):
             result = asyncio.run(
@@ -314,6 +335,60 @@ def test_update_tinyhat_plugin_installs_when_missing() -> None:
     assert result["installed_before"] is False
     assert result["installed_now"] is True
     assert result["updated_now"] is True
+
+
+def test_tinyhat_plugin_status_reports_current_and_target() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "hermes-home"
+        _write_plugin(
+            home,
+            version="0.20.0",
+            source={
+                "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+                "ref": "channels/lts",
+                "commit": "old",
+            },
+        )
+        with (
+            patch.dict(os.environ, {"TINYHAT_HERMES_HOME": str(home)}),
+            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout_0201),
+        ):
+            result = asyncio.run(
+                run_command(SimpleNamespace(), {"kind": "tinyhat_plugin_status"})
+            )
+
+    assert result["schema"] == "tinyhat_hermes_plugin_status_v1"
+    assert result["installed_version"] == "0.20.0"
+    assert result["target_version"] == "0.20.1"
+    assert result["update_available"] is True
+    assert result["decision"] == "target_ref_changed"
+
+
+def test_check_tinyhat_plugin_update_reports_no_update_when_current() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "hermes-home"
+        source = {
+            "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+            "ref": "channels/lts",
+            "commit": "sha-for-https://github.com/tinyhat-ai/tinyhat.git-channels/lts",
+        }
+        _write_plugin(home, version="0.20.0", source=source)
+        with (
+            patch.dict(os.environ, {"TINYHAT_HERMES_HOME": str(home)}),
+            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {"kind": "check_tinyhat_plugin_update"},
+                )
+            )
+
+    assert result["schema"] == "tinyhat_hermes_plugin_update_check_v1"
+    assert result["installed_version"] == "0.20.0"
+    assert result["target_version"] == "0.20.0"
+    assert result["update_available"] is False
+    assert result["decision"] == "installed_matches_target"
 
 
 def test_plugin_commands_fail_clearly_when_hermes_missing() -> None:

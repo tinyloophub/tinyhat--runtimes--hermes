@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import Any
+from datetime import datetime, timezone
 
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 
@@ -111,6 +112,99 @@ def plugin_snapshot(name: str) -> dict[str, Any]:
         "manifest_name": _read_manifest_field(manifest, "name"),
         "version": _read_manifest_field(manifest, "version"),
         "source": source,
+    }
+
+
+def _source_commit(snapshot: dict[str, Any]) -> str | None:
+    source = snapshot.get("source")
+    if not isinstance(source, dict):
+        return None
+    commit = str(source.get("commit") or "").strip()
+    return commit or None
+
+
+def _target_matches_installed(
+    snapshot: dict[str, Any],
+    *,
+    repo_url: str,
+    ref: str,
+    target_commit: str | None,
+) -> bool:
+    if not snapshot.get("installed"):
+        return False
+    if not _source_matches(snapshot, repo_url=repo_url, ref=ref):
+        return False
+    installed_commit = _source_commit(snapshot)
+    return bool(
+        target_commit and installed_commit and installed_commit == target_commit
+    )
+
+
+async def plugin_target_snapshot(command: dict[str, Any]) -> dict[str, Any]:
+    repo_url = plugin_repo_url(command)
+    ref = plugin_ref(command)
+    checkout, commit, tmp = await _prepare_checkout(repo_url, ref)
+    try:
+        manifest = checkout / "plugin.yaml"
+        return {
+            "repo_url": repo_url,
+            "ref": ref,
+            "commit": commit,
+            "version": _read_manifest_field(manifest, "version"),
+            "manifest_name": _read_manifest_field(manifest, "name"),
+        }
+    finally:
+        tmp.cleanup()
+
+
+async def tinyhat_plugin_status(command: dict[str, Any]) -> dict[str, Any]:
+    """Return installed and target Tinyhat plugin versions without changing it."""
+    name = plugin_name(command)
+    repo_url = plugin_repo_url(command)
+    ref = plugin_ref(command)
+    installed = plugin_snapshot(name)
+    target: dict[str, Any] | None = None
+    target_error: str | None = None
+    try:
+        target = await plugin_target_snapshot(command)
+    except Exception as exc:  # pragma: no cover - exercised through callers
+        target_error = str(exc)[:500]
+    target_commit = str((target or {}).get("commit") or "").strip() or None
+    update_available = (
+        None
+        if target_error
+        else not _target_matches_installed(
+            installed,
+            repo_url=repo_url,
+            ref=ref,
+            target_commit=target_commit,
+        )
+    )
+    if update_available is True and not installed.get("installed"):
+        decision = "plugin_missing"
+    elif update_available is True:
+        decision = "target_ref_changed"
+    elif update_available is False:
+        decision = "installed_matches_target"
+    else:
+        decision = "target_unavailable"
+    return {
+        "plugin_name": name,
+        "plugin_repo_url": repo_url,
+        "plugin_ref": ref,
+        "installed": installed,
+        "target": target,
+        "installed_version": installed.get("version"),
+        "installed_commit": _source_commit(installed),
+        "target_version": (target or {}).get("version"),
+        "target_commit": target_commit,
+        "update_available": update_available,
+        "decision": decision,
+        "checked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "target_error": target_error,
     }
 
 
@@ -328,7 +422,18 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Hermes CLI was not found; run install_hermes first.")
 
     list_before = await _plugins_list(hermes_bin)
-    target_commit = await _resolve_ref(repo_url, ref)
+    before_status = await tinyhat_plugin_status(command)
+    if before_status.get("target_error"):
+        raise RuntimeError(
+            "Tinyhat plugin target could not be resolved: "
+            f"{before_status.get('target_error')}"
+        )
+    target = (
+        before_status.get("target")
+        if isinstance(before_status.get("target"), dict)
+        else None
+    )
+    target_commit = str((target or {}).get("commit") or "").strip() or None
     installed_commit = (
         before.get("source", {}).get("commit")
         if isinstance(before.get("source"), dict)
@@ -353,12 +458,14 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
     after = plugin_snapshot(name)
     if not after["installed"]:
         raise RuntimeError("Hermes plugin update completed, but plugin.yaml was not found.")
+    after_status = await tinyhat_plugin_status(command)
 
     return {
         "plugin_name": name,
         "plugin_repo_url": repo_url,
         "plugin_ref": ref,
         "target_commit": target_commit or (metadata.get("commit") if metadata else None),
+        "target_version": (target or {}).get("version"),
         "installed_before": bool(before["installed"]),
         "installed_after": bool(after["installed"]),
         "updated_now": install is not None and bool(install.get("ok")),
@@ -366,10 +473,24 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
         "changed": install is not None and bool(install.get("ok")),
         "before": before,
         "after": after,
+        "before_status": before_status,
+        "after_status": after_status,
+        "update_available_after": after_status.get("update_available"),
         "commands": {
             "list_before": _compact_process(list_before),
             "install": _compact_process(install),
             "enable": _compact_process(enable),
             "list_after": _compact_process(list_after),
+        },
+        "reload": {
+            "hermes_cli_sees_plugin": bool(after["installed"]),
+            "gateway_restart_required": bool(install is not None),
+            "message": (
+                "Hermes has the updated plugin installed and enabled. Restart "
+                "the Hermes gateway or run start_hermes after stopping it if a "
+                "long-running Telegram gateway should reload plugin commands now."
+            )
+            if install is not None
+            else "Hermes already had the selected plugin checkout enabled.",
         },
     }

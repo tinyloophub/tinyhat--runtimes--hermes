@@ -9,8 +9,10 @@ What it does:
         hermes plugins install file:///prepared/tinyhat-checkout --enable --force
 
     If the plugin is missing, this command falls back to the same install path
-    as ``install_tinyhat_plugin``. After either path, it enables the plugin so
-    the next Hermes start can load it.
+    as ``install_tinyhat_plugin``. After either path, it enables the plugin and
+    verifies that the installed plugin metadata now matches the selected
+    target. A long-running Hermes Telegram gateway may still need a Hermes
+    restart to reload plugin commands already held in memory.
 
 When to use it:
     Run this from Hat admin when a Computer should pick up the latest Tinyhat
@@ -30,9 +32,9 @@ Example output:
 
 Side effects:
     Runs Hermes' public plugin install/enable commands for the resolved channel
-    ref when an update is needed. It does not restart Hermes Agent; use the
-    existing ``start_hermes`` or ``restart_runtime_service`` runtime commands
-    when a reload is needed.
+    ref when an update is needed. It does not restart Hermes Agent by itself;
+    run ``stop_hermes`` then ``start_hermes`` when an already-running Telegram
+    gateway should reload the new plugin immediately.
 """
 
 from __future__ import annotations

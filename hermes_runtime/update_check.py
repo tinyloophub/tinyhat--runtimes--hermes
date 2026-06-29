@@ -25,6 +25,8 @@ from typing import Any
 from urllib import error, parse, request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from hermes_runtime.plugin_manager import tinyhat_plugin_status
+
 
 REPO = "tinyloophub/tinyhat--runtimes--hermes"
 GITHUB_API_BASE = f"https://api.github.com/repos/{REPO}"
@@ -319,5 +321,21 @@ async def run_update_check(
         result["message"] = resolved.get("message")
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
+    try:
+        result["plugin_update_check"] = {
+            "schema": "tinyhat_hermes_plugin_update_check_v1",
+            **(await tinyhat_plugin_status({"spec": command_spec})),
+        }
+    except Exception as exc:
+        result["plugin_update_check"] = {
+            "schema": "tinyhat_hermes_plugin_update_check_v1",
+            "update_available": None,
+            "decision": "target_unavailable",
+            "error": str(exc)[:500],
+            "checked_at": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
     _write_json(state_dir / "updates" / "last_check.json", result)
     return result
