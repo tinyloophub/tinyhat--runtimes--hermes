@@ -45,7 +45,7 @@ import re
 from typing import Any
 
 from hermes_runtime import __version__
-from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_snapshot
+from hermes_runtime.plugin_manager import plugin_name, plugin_snapshot
 from hermes_runtime.update_check import read_last_result
 from hermes_runtime.update_artifacts import staged_package_dir
 
@@ -160,7 +160,7 @@ def _last_update_check_for_current_state(
     return stale_payload
 
 
-async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
+async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     staged_version = ctx.staged_version()
     staged_metadata = _read_staged_metadata(ctx)
     current_version = ctx.current_version()
@@ -195,7 +195,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "startup_activation_error": _read_activation_error(ctx),
         "last_update_check": last_update_check,
         "plugin": {
-            "installed": plugin_snapshot(DEFAULT_TINYHAT_PLUGIN_NAME),
+            "installed": plugin_snapshot(plugin_name(command)),
             "last_update_check": (
                 last_update_check.get("plugin_update_check")
                 if isinstance(last_update_check, dict)

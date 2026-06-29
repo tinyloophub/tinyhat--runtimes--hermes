@@ -352,6 +352,7 @@ def test_tinyhat_plugin_status_reports_current_and_target() -> None:
         with (
             patch.dict(os.environ, {"TINYHAT_HERMES_HOME": str(home)}),
             patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout_0201),
+            patch("hermes_runtime.plugin_manager._resolve_ref", _new_ref),
         ):
             result = asyncio.run(
                 run_command(SimpleNamespace(), {"kind": "tinyhat_plugin_status"})
@@ -370,12 +371,13 @@ def test_check_tinyhat_plugin_update_reports_no_update_when_current() -> None:
         source = {
             "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
             "ref": "channels/lts",
-            "commit": "sha-for-https://github.com/tinyhat-ai/tinyhat.git-channels/lts",
+            "commit": "same",
         }
         _write_plugin(home, version="0.20.0", source=source)
         with (
             patch.dict(os.environ, {"TINYHAT_HERMES_HOME": str(home)}),
             patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout),
+            patch("hermes_runtime.plugin_manager._resolve_ref", _same_ref),
         ):
             result = asyncio.run(
                 run_command(
@@ -389,6 +391,36 @@ def test_check_tinyhat_plugin_update_reports_no_update_when_current() -> None:
     assert result["target_version"] == "0.20.0"
     assert result["update_available"] is False
     assert result["decision"] == "installed_matches_target"
+
+
+def test_install_tinyhat_plugin_reports_cli_success_without_manifest() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        return _ok(args)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "hermes-home"
+        with (
+            patch.dict(os.environ, {"TINYHAT_HERMES_HOME": str(home)}),
+            patch(
+                "hermes_runtime.plugin_manager.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.plugin_manager._prepare_checkout", _fake_checkout),
+            patch("hermes_runtime.plugin_manager.run_process", fake_run_process),
+            unittest.TestCase().assertRaisesRegex(
+                RuntimeError,
+                "reported plugin install success",
+            ),
+        ):
+            asyncio.run(
+                run_command(SimpleNamespace(), {"kind": "install_tinyhat_plugin"})
+            )
 
 
 def test_plugin_commands_fail_clearly_when_hermes_missing() -> None:

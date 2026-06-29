@@ -97,11 +97,15 @@ def _read_source_metadata(name: str) -> dict[str, Any] | None:
 
 def _write_source_metadata(name: str, metadata: dict[str, Any]) -> None:
     path = _source_metadata_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
 def plugin_snapshot(name: str) -> dict[str, Any]:
     root = plugin_dir(name)
+    # Hermes file plugins live under ~/.hermes/plugins/<name>. The CLI does not
+    # expose a stable JSON "show plugin" command yet, so this public plugin
+    # manifest is the version source after Hermes CLI install/list succeeds.
     manifest = root / "plugin.yaml"
     source = _read_source_metadata(name)
     return {
@@ -143,13 +147,14 @@ def _target_matches_installed(
 async def plugin_target_snapshot(command: dict[str, Any]) -> dict[str, Any]:
     repo_url = plugin_repo_url(command)
     ref = plugin_ref(command)
+    resolved_commit = await _resolve_ref(repo_url, ref)
     checkout, commit, tmp = await _prepare_checkout(repo_url, ref)
     try:
         manifest = checkout / "plugin.yaml"
         return {
             "repo_url": repo_url,
             "ref": ref,
-            "commit": commit,
+            "commit": resolved_commit or commit,
             "version": _read_manifest_field(manifest, "version"),
             "manifest_name": _read_manifest_field(manifest, "name"),
         }
@@ -263,6 +268,8 @@ def _raise_if_failed(action: str, result: dict[str, Any]) -> None:
 
 
 async def _resolve_ref(repo_url: str, ref: str) -> str | None:
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+        return ref.lower()
     result = await _git(["ls-remote", repo_url, ref], timeout_seconds=60)
     if not result.get("ok"):
         return None
@@ -271,38 +278,40 @@ async def _resolve_ref(repo_url: str, ref: str) -> str | None:
     sha = first.split()[0] if first else ""
     if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
         return sha.lower()
-    if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
-        return ref.lower()
     return None
 
 
 async def _prepare_checkout(repo_url: str, ref: str) -> tuple[Path, str | None, tempfile.TemporaryDirectory[str]]:
     tmp = tempfile.TemporaryDirectory(prefix="tinyhat-plugin-")
     checkout = Path(tmp.name) / "tinyhat"
-    clone = await _git(
-        ["clone", "--depth", "1", "--branch", ref, repo_url, str(checkout)],
-        timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-    )
-    if not clone.get("ok"):
+    try:
         clone = await _git(
-            ["clone", "--depth", "1", repo_url, str(checkout)],
+            ["clone", "--depth", "1", "--branch", ref, repo_url, str(checkout)],
             timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
         )
-        _raise_if_failed("clone", clone)
-        fetch = await _git(
-            ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
-            timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-        )
-        _raise_if_failed("fetch ref", fetch)
-        checkout_result = await _git(
-            ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
-            timeout_seconds=60,
-        )
-        _raise_if_failed("checkout ref", checkout_result)
-    commit_result = await _git(["-C", str(checkout), "rev-parse", "HEAD"], timeout_seconds=60)
-    _raise_if_failed("read commit", commit_result)
-    commit = str(commit_result.get("stdout") or "").strip() or None
-    return checkout, commit, tmp
+        if not clone.get("ok"):
+            clone = await _git(
+                ["clone", "--depth", "1", repo_url, str(checkout)],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            _raise_if_failed("clone", clone)
+            fetch = await _git(
+                ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            _raise_if_failed("fetch ref", fetch)
+            checkout_result = await _git(
+                ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+                timeout_seconds=60,
+            )
+            _raise_if_failed("checkout ref", checkout_result)
+        commit_result = await _git(["-C", str(checkout), "rev-parse", "HEAD"], timeout_seconds=60)
+        _raise_if_failed("read commit", commit_result)
+        commit = str(commit_result.get("stdout") or "").strip() or None
+        return checkout, commit, tmp
+    except Exception:
+        tmp.cleanup()
+        raise
 
 
 def _source_matches(snapshot: dict[str, Any], *, repo_url: str, ref: str) -> bool:
@@ -330,6 +339,7 @@ async def _install_from_ref(
     repo_url: str,
     ref: str,
     force: bool,
+    resolved_commit: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     checkout, commit, tmp = await _prepare_checkout(repo_url, ref)
     try:
@@ -345,7 +355,7 @@ async def _install_from_ref(
         metadata = {
             "repo_url": repo_url,
             "ref": ref,
-            "commit": commit,
+            "commit": resolved_commit or commit,
         }
         _write_source_metadata(name, metadata)
         return install, metadata
@@ -386,7 +396,12 @@ async def install_tinyhat_plugin(
     list_after = await _plugins_list(hermes_bin)
     after = plugin_snapshot(name)
     if not after["installed"]:
-        raise RuntimeError("Hermes plugin install completed, but plugin.yaml was not found.")
+        raise RuntimeError(
+            "Hermes reported plugin install success, but the Tinyhat runtime "
+            "could not read plugin.yaml from Hermes' documented plugin "
+            f"directory for {name!r}. Check HERMES_HOME/TINYHAT_HERMES_HOME "
+            "or Hermes plugin path behavior."
+        )
 
     return {
         "plugin_name": name,
@@ -448,6 +463,7 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
             repo_url=repo_url,
             ref=ref,
             force=bool(before["installed"]),
+            resolved_commit=target_commit,
         )
     else:
         metadata = before.get("source") if isinstance(before.get("source"), dict) else None
@@ -457,7 +473,12 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
     list_after = await _plugins_list(hermes_bin)
     after = plugin_snapshot(name)
     if not after["installed"]:
-        raise RuntimeError("Hermes plugin update completed, but plugin.yaml was not found.")
+        raise RuntimeError(
+            "Hermes reported plugin update success, but the Tinyhat runtime "
+            "could not read plugin.yaml from Hermes' documented plugin "
+            f"directory for {name!r}. Check HERMES_HOME/TINYHAT_HERMES_HOME "
+            "or Hermes plugin path behavior."
+        )
     after_status = await tinyhat_plugin_status(command)
 
     return {
