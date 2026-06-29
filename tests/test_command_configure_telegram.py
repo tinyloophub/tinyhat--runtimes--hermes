@@ -11,8 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import yaml
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -59,6 +57,24 @@ class FakePlatform:
                 "default_model": "deepseek/deepseek-v4-pro"
             },
         }
+
+
+def _yaml_block_list(text: str, key: str) -> list[str]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != f"{key}:":
+            continue
+        items: list[str] = []
+        for next_line in lines[index + 1:]:
+            stripped = next_line.strip()
+            if not stripped:
+                continue
+            if not next_line.startswith("    "):
+                break
+            if stripped.startswith("- "):
+                items.append(stripped[2:])
+        return items
+    return []
 
 
 def test_configure_telegram_writes_env_and_starts_gateway() -> None:
@@ -614,11 +630,12 @@ def test_install_codex_auth_plugin_commands_normalizes_flow_plugin_lists() -> No
 
             result = configure_telegram._install_codex_auth_plugin_commands(config)
             text = config.read_text(encoding="utf-8")
-            parsed = yaml.safe_load(text)
 
-        enabled = parsed["plugins"]["enabled"]
-        disabled = parsed["plugins"].get("disabled") or []
+        enabled = _yaml_block_list(text, "enabled")
+        disabled = _yaml_block_list(text, "disabled")
         assert result["installed"] is True
+        assert "enabled: []" not in text
+        assert "enabled: [existing-plugin]" not in text
         assert enabled.count("tinyhat-codex") == 1
         for plugin in existing_enabled:
             assert plugin in enabled
