@@ -15,6 +15,8 @@ COMMAND_MODULES = {
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "install_hermes": "hermes_runtime.commands.install_hermes",
     "hermes_status": "hermes_runtime.commands.hermes_status",
+    "install_tinyhat_plugin": "hermes_runtime.commands.install_tinyhat_plugin",
+    "update_tinyhat_plugin": "hermes_runtime.commands.update_tinyhat_plugin",
     "configure_telegram": "hermes_runtime.commands.configure_telegram",
     "start_hermes": "hermes_runtime.commands.start_hermes",
     "stop_hermes": "hermes_runtime.commands.stop_hermes",
