@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.21 - 2026-06-29
+
+- Add Tinyhat plugin lifecycle commands for Hermes Computers:
+  `install_tinyhat_plugin`, `update_tinyhat_plugin`,
+  `tinyhat_plugin_status`, and `check_tinyhat_plugin_update`.
+- Include Tinyhat plugin freshness in the daily runtime update check and
+  `update_status` payload so Hat admin can see the installed plugin version,
+  target channel version, and whether a plugin update is available.
+- Harden plugin update diagnostics by recording the resolved channel commit,
+  cleaning temporary checkouts on failure, and reporting a clear error if
+  Hermes reports plugin installation success but no plugin manifest is readable
+  from the documented Hermes plugin directory.
+
 ## 0.0.20 - 2026-06-28
 
 - Register the Tinyhat Codex Telegram commands through a small Hermes user
