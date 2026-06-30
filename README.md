@@ -219,16 +219,18 @@ installs a small user plugin at `~/.hermes/plugins/tinyhat-codex` that
 registers the same underscore commands with Hermes' documented plugin command
 registry. The same plugin registers `openai-codex-stt`, a Hermes transcription
 provider that uses the Codex/OpenAI auth connected by `/codex_auth` and OpenAI's
-audio transcription API. The command bodies still call the runtime helpers
-below; the plugin exists so Hermes can include the entries when it builds
-Telegram BotCommands and so voice transcription can switch to the OpenAI/Codex
-auth path after login. Tinyhat also writes Hermes'
+audio transcription API. Tinyhat does not select that provider automatically
+because Codex subscription auth may not include API-billed audio transcription;
+new assignments keep local STT active unless the operator opts into the Codex
+STT provider. The command bodies still call the runtime helpers below; the
+plugin exists so Hermes can include the entries when it builds Telegram
+BotCommands. Tinyhat also writes Hermes'
 `platforms.telegram.extra.command_menu` priority config so these commands are
 near the top while Hermes keeps its default commands.
 
 | Telegram command | What it does |
 | --- | --- |
-| `/codex_auth` | Starts the official Codex CLI device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, asks Hermes through its formal model picker to import/switch to OpenAI Codex, switches STT to `openai-codex-stt`, and restarts the Telegram gateway so the next reply uses the new credential. |
+| `/codex_auth` | Starts the official Codex CLI device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, asks Hermes through its formal model picker to import/switch to OpenAI Codex, registers `openai-codex-stt` settings without making it the active STT provider, and restarts the Telegram gateway so the next reply uses the new model credential while local STT remains the voice fallback. |
 | `/codex_auth_status` | Shows whether the helper is still running and checks both Hermes Codex auth and Codex CLI auth status. |
 | `/codex_auth_log` | Shows the recent bounded auth log if the device-code output needs to be resent or debugged. |
 | `/codex_limits` | Reads the current OpenAI Codex account limits through `codex app-server --listen stdio://` and shows the remaining primary and weekly windows as progress bars, reset times, plan type, credits, and reset-credit count when Codex returns them. |

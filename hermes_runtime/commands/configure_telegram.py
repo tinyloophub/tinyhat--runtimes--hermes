@@ -1090,13 +1090,29 @@ def _run_config_set_commands_sync(
 
 
 def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
+    # Register provider-specific settings but do not make Codex STT active by
+    # default. Codex subscription auth may not include API-billed transcription,
+    # so day-one local STT remains the safe active provider.
     commands = [
         ("stt.enabled", "true"),
-        ("stt.provider", CODEX_STT_PROVIDER),
         (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
         ("auxiliary.vision.provider", "auto"),
     ]
-    return _run_config_set_commands_sync(hermes_bin, commands)
+    result = _run_config_set_commands_sync(hermes_bin, commands)
+    result.update(
+        {
+            "active_provider": "unchanged",
+            "codex_stt_provider": CODEX_STT_PROVIDER,
+            "codex_stt_model": CODEX_STT_MODEL,
+            "auto_selected_codex_stt": False,
+        }
+    )
+    if result.get("ok"):
+        result["message"] = (
+            "Registered OpenAI Codex STT settings without changing the active "
+            "Hermes STT provider."
+        )
+    return result
 
 
 def _telegram_delete_webhook(token: str) -> dict[str, Any]:

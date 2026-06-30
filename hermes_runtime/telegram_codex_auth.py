@@ -680,7 +680,11 @@ def _completion_message(
         media_sentence = ""
         if multimedia is not None:
             if multimedia.get("ok"):
-                media_sentence = " Voice transcription is now set to OpenAI Codex STT."
+                media_sentence = (
+                    " Voice remains on the local STT fallback by default; "
+                    "OpenAI Codex STT is registered for opt-in accounts that "
+                    "can use OpenAI audio transcription."
+                )
             else:
                 media_sentence = " I could not confirm the voice transcription config; send /codex_auth_status if voice still fails."
         return (
@@ -966,13 +970,13 @@ def worker() -> int:
                 {
                     "state": "connected",
                     "provider": provider,
-                        "model_provider": MODEL_PROVIDER,
-                        "codex_cli_status": codex_status,
-                        "config_switch": switch,
-                        "multimedia_config": multimedia,
-                        "gateway_restart": gateway,
-                        "auth_status": status,
-                        "message": "OpenAI Codex auth connected.",
+                    "model_provider": MODEL_PROVIDER,
+                    "codex_cli_status": codex_status,
+                    "config_switch": switch,
+                    "multimedia_config": multimedia,
+                    "gateway_restart": gateway,
+                    "auth_status": status,
+                    "message": "OpenAI Codex auth connected.",
                 }
             )
             _telegram_send(

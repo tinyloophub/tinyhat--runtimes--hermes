@@ -450,6 +450,11 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     assert status["gateway_restart"]["healthy"] is True
     hermes_auth_fallback.assert_not_called()
     assert any("restarted my Telegram gateway" in text for text in sent)
+    assert any("Voice remains on the local STT fallback" in text for text in sent)
+    assert not any(
+        "Voice transcription is now set to OpenAI Codex STT" in text
+        for text in sent
+    )
 
 
 def test_worker_stops_when_codex_cli_auth_fails_before_touching_hermes_auth() -> None:
