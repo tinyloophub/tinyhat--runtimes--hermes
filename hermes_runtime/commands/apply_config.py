@@ -23,7 +23,6 @@ from hermes_runtime.commands.configure_telegram import (
 )
 from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.platform_paths import context_computer_api_path
-from hermes_runtime.runtime_env import parse_env_value
 from hermes_runtime.runtime_env import load_env_files_into_process
 from hermes_runtime.telegram_codex_auth import _telegram_send
 
@@ -49,8 +48,8 @@ def _clean_secret_map(payload: dict[str, Any]) -> dict[str, str]:
     return cleaned
 
 
-def _read_managed_secret_block(lines: list[str]) -> dict[str, str]:
-    values: dict[str, str] = {}
+def _read_managed_secret_keys(lines: list[str]) -> set[str]:
+    keys: set[str] = set()
     in_managed_block = False
     for line in lines:
         clean = line.strip()
@@ -62,19 +61,18 @@ def _read_managed_secret_block(lines: list[str]) -> dict[str, str]:
             continue
         if not in_managed_block or not clean or clean.startswith("#") or "=" not in clean:
             continue
-        key, raw_value = clean.split("=", 1)
+        key, _raw_value = clean.split("=", 1)
         key = key.strip()
         if key and ENV_NAME_RE.fullmatch(key):
-            values[key] = parse_env_value(raw_value)
-    return values
+            keys.add(key)
+    return keys
 
 
 def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[str, Any]:
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    previous_values = _read_managed_secret_block(existing)
-    previous_keys = set(previous_values)
+    previous_keys = _read_managed_secret_keys(existing)
     next_keys = set(values)
     next_lines: list[str] = []
     in_managed_block = False
@@ -168,6 +166,15 @@ async def _send_secret_restart_notice(removed_keys: list[str]) -> dict[str, Any]
         }
 
 
+def _notice_result(*, sent: bool, notice: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": bool(notice.get("ok")) if sent else None,
+        "sent": sent,
+        "http_status": notice.get("http_status") if sent else None,
+        "description": notice.get("description") if sent else None,
+    }
+
+
 async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     spec = command.get("spec") if isinstance(command.get("spec"), dict) else {}
     desired_revision = int(spec.get("desired_config_revision") or 0)
@@ -221,18 +228,14 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "removed_secret_names": removed_keys,
         "env_files": env_files,
         "env_reload": env_reload,
-        "secret_available_notice": {
-            "ok": bool(notice.get("ok")) if not restart_required else None,
-            "sent": not restart_required,
-            "http_status": notice.get("http_status"),
-            "description": notice.get("description"),
-        },
-        "gateway_restart_notice": {
-            "ok": bool(notice.get("ok")) if restart_required else None,
-            "sent": restart_required,
-            "http_status": notice.get("http_status"),
-            "description": notice.get("description"),
-        },
+        "secret_available_notice": _notice_result(
+            sent=not restart_required,
+            notice=notice,
+        ),
+        "gateway_restart_notice": _notice_result(
+            sent=restart_required,
+            notice=notice,
+        ),
         "gateway": gateway,
         "restart_requested": restart_required,
         "systemd_restart_requested": False,

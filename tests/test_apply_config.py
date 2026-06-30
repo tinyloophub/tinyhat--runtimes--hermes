@@ -90,7 +90,7 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
 
     def fake_telegram_send(text: str, **_kwargs: Any) -> dict[str, Any]:
         events.append(("notice", text))
-        return {"ok": True}
+        return {"ok": True, "http_status": 200, "description": "sent"}
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
@@ -167,8 +167,12 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
     assert result["env_reload"]["keys"] == ["EXA_API_KEY", "SECOND_SECRET"]
     assert result["secret_available_notice"]["ok"] is True
     assert result["secret_available_notice"]["sent"] is True
+    assert result["secret_available_notice"]["http_status"] == 200
+    assert result["secret_available_notice"]["description"] == "sent"
     assert result["gateway_restart_notice"]["ok"] is None
     assert result["gateway_restart_notice"]["sent"] is False
+    assert result["gateway_restart_notice"]["http_status"] is None
+    assert result["gateway_restart_notice"]["description"] is None
     assert result["gateway"]["restarted"] is False
     assert result["gateway"]["restart_required"] is False
     assert result["restart_requested"] is False
@@ -194,7 +198,7 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
 
     def fake_telegram_send(text: str, **_kwargs: Any) -> dict[str, Any]:
         events.append(("notice", text))
-        return {"ok": True}
+        return {"ok": True, "http_status": 200, "description": "sent"}
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
@@ -265,9 +269,14 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert "restarting my Telegram gateway" in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
+    assert result["secret_available_notice"]["ok"] is None
     assert result["secret_available_notice"]["sent"] is False
+    assert result["secret_available_notice"]["http_status"] is None
+    assert result["secret_available_notice"]["description"] is None
     assert result["gateway_restart_notice"]["ok"] is True
     assert result["gateway_restart_notice"]["sent"] is True
+    assert result["gateway_restart_notice"]["http_status"] == 200
+    assert result["gateway_restart_notice"]["description"] == "sent"
     assert result["gateway"]["healthy"] is True
     assert result["restart_requested"] is True
 
