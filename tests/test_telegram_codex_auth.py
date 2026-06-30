@@ -387,6 +387,10 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     sent: list[str] = []
     hermes_auth_fallback = Mock(return_value=(0, True))
 
+    def fake_gateway_restart(_hermes_bin: Path) -> dict[str, bool]:
+        sent.append("__gateway_restart__")
+        return {"healthy": True, "started": True}
+
     with tempfile.TemporaryDirectory() as tmp:
         old_env = os.environ.copy()
         os.environ.update({"HOME": tmp})
@@ -414,7 +418,7 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._restart_gateway_after_auth",
-                    return_value={"healthy": True, "started": True},
+                    side_effect=fake_gateway_restart,
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
@@ -447,9 +451,18 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     assert status["model_provider"] == "openai-codex"
     assert status["codex_cli_status"]["ok"] is True
     assert status["multimedia_config"]["ok"] is True
+    assert status["gateway_restart_notice"]["ok"] is True
     assert status["gateway_restart"]["healthy"] is True
     hermes_auth_fallback.assert_not_called()
     assert any("restarted my Telegram gateway" in text for text in sent)
+    notice_index = next(
+        index for index, text in enumerate(sent) if "new OpenAI model is available" in text
+    )
+    gateway_index = sent.index("__gateway_restart__")
+    completion_index = next(
+        index for index, text in enumerate(sent) if "restarted my Telegram gateway" in text
+    )
+    assert notice_index < gateway_index < completion_index
     assert any("Voice remains on the local STT fallback" in text for text in sent)
     assert not any(
         "Voice transcription is now set to OpenAI Codex STT" in text
