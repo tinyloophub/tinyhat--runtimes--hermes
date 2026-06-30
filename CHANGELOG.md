@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.24 - 2026-06-30
+
 - Add `apply_config`, a runtime command that writes Tinyhat settings Mini App
   secrets into Hermes env files, reloads those keys into the runtime process,
   sends the owner an availability notice, and restarts the Telegram gateway
