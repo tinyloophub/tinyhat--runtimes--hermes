@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.22 - 2026-06-30
+
+- Add `/tinyhat_settings` as a Tinyhat-managed Hermes Telegram command so an
+  assigned agent can send the Tinyhat settings Mini App button from chat.
+- Set Telegram's default `configure` Mini App button to the same Tinyhat
+  settings page during `configure_telegram`, while still letting Hermes own the
+  full Telegram command menu.
+
 ## 0.0.21 - 2026-06-29
 
 - Add Tinyhat plugin lifecycle commands for Hermes Computers:
