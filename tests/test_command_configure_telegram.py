@@ -49,6 +49,10 @@ class FakePlatform:
             "telegram_allowed_users": "555111",
             "telegram_home_channel": "555111",
             "telegram_home_channel_name": "Owner DM",
+            "settings_miniapp_url": (
+                "https://tinyloop-wt5.ngrok.app/tinyhat/miniapp/agents/"
+                "agt_test/settings"
+            ),
             "expires_at": "2026-06-26T10:00:00Z",
             "openrouter_api_key": "sk-or-v1-test-runtime-key",
             "openrouter_base_url": "https://openrouter.ai/api/v1",
@@ -108,6 +112,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
 
     platform = FakePlatform()
     gateway_calls: list[list[str]] = []
+    menu_calls: list[dict[str, object]] = []
     events: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
@@ -139,6 +144,13 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
                     "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
                     return_value={"ok": True, "description": "Webhook was deleted"},
                 ),
+                patch(
+                    "hermes_runtime.commands.configure_telegram._telegram_set_chat_menu_button",
+                    lambda token, **kwargs: menu_calls.append(
+                        {"token": token, **kwargs}
+                    )
+                    or {"ok": True, "description": "menu set"},
+                ),
             ):
                 result = asyncio.run(
                     run_command(
@@ -161,6 +173,10 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         )
         project_env_text = project_env.read_text(encoding="utf-8")
         assert "TELEGRAM_ALLOWED_USERS=\"555111\"" in project_env_text
+        assert (
+            "TINYHAT_SETTINGS_MINIAPP_URL=\"https://tinyloop-wt5.ngrok.app/"
+            "tinyhat/miniapp/agents/agt_test/settings\"" in project_env_text
+        )
         assert "OPENROUTER_API_KEY=\"sk-or-v1-test-runtime-key\"" in project_env_text
         config_text = (home / ".hermes" / "config.yaml").read_text(
             encoding="utf-8"
@@ -169,6 +185,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert "plugins:" in config_text
         assert "enabled:" in config_text
         assert "tinyhat-codex" in config_text
+        assert "tinyhat_settings:" in config_text
         assert "codex_auth:" in config_text
         assert "codex-auth:" in config_text
         assert "codex_auth_status:" in config_text
@@ -179,6 +196,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert "priority_mode: prepend" in config_text
         assert "max_commands: 60" in config_text
         assert "priority:" in config_text
+        assert "  - tinyhat_settings\n" in config_text
         assert "  - codex_auth\n" in config_text
         assert "  - codex_auth_status\n" in config_text
         assert "  - codex_auth_log\n" in config_text
@@ -187,11 +205,31 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert (plugin_dir / "plugin.yaml").is_file()
         plugin_source = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
         assert "ctx.register_command" in plugin_source
+        assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
         assert "hermes_runtime.telegram_codex_auth" in plugin_source
         assert "hermes_runtime.codex_limits" in plugin_source
 
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
+    ]
+    assert menu_calls == [
+        {
+            "token": "123456:secret-token",
+            "text": "configure",
+            "web_app_url": (
+                "https://tinyloop-wt5.ngrok.app/tinyhat/miniapp/agents/"
+                "agt_test/settings"
+            ),
+        },
+        {
+            "token": "123456:secret-token",
+            "text": "configure",
+            "web_app_url": (
+                "https://tinyloop-wt5.ngrok.app/tinyhat/miniapp/agents/"
+                "agt_test/settings"
+            ),
+            "chat_id": "555111",
+        },
     ]
     assert gateway_calls == [
         ["/usr/local/bin/hermes", "config", "set", "model.provider", "auto"],
@@ -220,6 +258,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     assert "sk-or-v1-test-runtime-key" not in str(result)
     assert result["model_config"]["ok"] is True
     assert result["codex_auth"]["quick_commands"]["commands"] == [
+        "tinyhat_settings",
         "codex_auth",
         "codex-auth",
         "codex_auth_status",
@@ -227,6 +266,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "codex_limits",
     ]
     assert result["codex_auth"]["quick_commands"]["telegram_menu_commands"] == [
+        "tinyhat_settings",
         "codex_auth",
         "codex_auth_status",
         "codex_auth_log",
@@ -240,6 +280,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "plugin": "tinyhat-codex",
         "mechanism": "hermes_plugin_register_command",
         "commands": [
+            "tinyhat_settings",
             "codex_auth",
             "codex_auth_status",
             "codex_auth_log",
@@ -254,6 +295,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "priority_mode": "prepend",
         "max_commands": 60,
         "commands": [
+            "tinyhat_settings",
             "codex_auth",
             "codex_auth_status",
             "codex_auth_log",
@@ -262,6 +304,8 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     }
     assert result["gateway"]["healthy"] is True
     assert result["gateway"]["mode"] == "service"
+    assert result["menu_button"]["configured"] is True
+    assert result["menu_button"]["text"] == "configure"
 
 
 def test_configure_telegram_uses_gcloud_me_path() -> None:
@@ -306,6 +350,10 @@ def test_configure_telegram_uses_gcloud_me_path() -> None:
         ),
         patch(
             "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
+            return_value={"ok": True},
+        ),
+        patch(
+            "hermes_runtime.commands.configure_telegram._telegram_set_chat_menu_button",
             return_value={"ok": True},
         ),
         tempfile.TemporaryDirectory() as tmp,
@@ -408,6 +456,10 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
                 ),
                 patch(
                     "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
+                    return_value={"ok": True},
+                ),
+                patch(
+                    "hermes_runtime.commands.configure_telegram._telegram_set_chat_menu_button",
                     return_value={"ok": True},
                 ),
             ):
@@ -571,9 +623,11 @@ def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
     assert result["installed"] is True
     assert "model:\n  provider: auto" in text
     assert "existing:" in text
+    assert "tinyhat_settings:" in text
     assert "codex_auth:" in text
     assert "codex-auth:" in text
     assert "codex_limits:" in text
+    assert "python3 -m hermes_runtime.telegram_tinyhat_settings" in text
     assert "python3 -m hermes_runtime.telegram_codex_auth start" in text
     assert "python3 -m hermes_runtime.codex_limits telegram" in text
 
@@ -606,6 +660,8 @@ def test_install_codex_auth_plugin_commands_enables_menu_plugin() -> None:
     assert "disabled:" in text
     assert "  disabled:\n    - tinyhat-codex" not in text
     assert "ctx.register_command" in plugin_source
+    assert "tinyhat_settings" in plugin_source
+    assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
     assert "codex_auth" in plugin_source
     assert "hermes_runtime.telegram_codex_auth" in plugin_source
     assert "hermes_runtime.codex_limits" in plugin_source
@@ -674,6 +730,7 @@ def test_install_telegram_command_menu_priority_uses_hermes_config_shape() -> No
     assert "max_commands: 75" in text
     assert "priority_mode: prepend" in text
     assert text.count("priority:") == 1
+    assert text.index("- tinyhat_settings") < text.index("- codex_auth")
     assert text.index("- codex_auth") < text.index("- model")
     assert "          - codex_auth_status\n" in text
     assert "          - codex_auth_log\n" in text
