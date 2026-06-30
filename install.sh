@@ -13,8 +13,11 @@
 #    The installer does not create, fetch, or store a production Tinyhat API
 #    token. Production machine authentication is handled by the runtime through
 #    cloud identity attestation after installation.
-# 4. Requires python3 and install. If it needs to download the runtime source,
-#    it also requires curl and tar.
+# 4. Requires python3 and install. On apt-based Linux hosts running as root, it
+#    installs Tinyhat's recommended Hermes machine packages up front: Git,
+#    curl, xz-utils, build-essential, ffmpeg, ripgrep, xclip, and
+#    wl-clipboard. If it needs to download the runtime source, it also
+#    requires curl and tar.
 # 5. Gets the runtime source either from --source-dir, when you already have a
 #    checkout, or by downloading the selected ref from
 #    tinyloophub/tinyhat--runtimes--hermes as a GitHub tarball.
@@ -65,7 +68,8 @@
 #     NodeSource setup for the configured major version. For unusual local dev
 #     hosts that intentionally do not need Codex auth, set
 #     TINYHAT_SKIP_CODEX_CLI=1 to skip this dependency.
-# 18. This installer installs the Tinyhat Hermes runtime process and the Codex
+# 18. This installer installs the Tinyhat Hermes runtime process, the
+#     provisioning-time machine package set, and the Codex
 #     CLI dependency it needs for Codex auth support. It does not install
 #     upstream Hermes Agent yet, create a Tinyhat Computer row, or assign a
 #     Computer to an Agent.
@@ -84,6 +88,17 @@ DEFAULT_STATE_DIR="/var/lib/tinyhat-hermes-runtime"
 DEFAULT_CODEX_NPM_PACKAGE="@openai/codex"
 DEFAULT_CODEX_NODE_MAJOR="22"
 DEFAULT_CODEX_NODE_MIN_MAJOR="20"
+RECOMMENDED_DEBIAN_PACKAGES=(
+  ca-certificates
+  curl
+  git
+  xz-utils
+  build-essential
+  ffmpeg
+  ripgrep
+  xclip
+  wl-clipboard
+)
 
 runtime_ref="${TINYHAT_RUNTIME_REF:-$DEFAULT_REF}"
 prefix="${TINYHAT_RUNTIME_PREFIX:-$DEFAULT_PREFIX}"
@@ -96,6 +111,7 @@ codex_npm_package="${TINYHAT_CODEX_NPM_PACKAGE:-$DEFAULT_CODEX_NPM_PACKAGE}"
 codex_npm_version="${TINYHAT_CODEX_NPM_VERSION:-}"
 codex_node_major="${TINYHAT_CODEX_NODE_MAJOR:-$DEFAULT_CODEX_NODE_MAJOR}"
 skip_codex_cli="${TINYHAT_SKIP_CODEX_CLI:-0}"
+skip_recommended_packages="${TINYHAT_SKIP_RECOMMENDED_PACKAGES:-0}"
 install_systemd=1
 run_foreground=0
 
@@ -127,10 +143,14 @@ Environment:
                             Codex auth or /codex_limits.
   TINYHAT_CODEX_NODE_MAJOR  NodeSource major version to install on apt Linux
                             when node/npm is missing or too old. Defaults to 22.
+  TINYHAT_SKIP_RECOMMENDED_PACKAGES=1
+                            Skip apt installation of Tinyhat's recommended
+                            Hermes machine packages. Intended only for unusual
+                            local development hosts.
 
-The installer installs the Tinyhat runtime process and the Codex CLI dependency
-used by Tinyhat's Codex auth support. It does not install upstream Hermes Agent
-yet.
+The installer installs the Tinyhat runtime process, Tinyhat's recommended
+Hermes Linux machine packages when it can, and the Codex CLI dependency used by
+Tinyhat's Codex auth support. It does not install upstream Hermes Agent yet.
 USAGE
 }
 
@@ -238,6 +258,50 @@ nodejs_npm_ready() {
 
 need_cmd python3
 need_cmd install
+
+recommended_package_commands_missing() {
+  local missing=()
+  command -v git >/dev/null 2>&1 || missing+=("git")
+  command -v curl >/dev/null 2>&1 || missing+=("curl")
+  command -v xz >/dev/null 2>&1 || missing+=("xz")
+  command -v g++ >/dev/null 2>&1 || missing+=("g++")
+  command -v ffmpeg >/dev/null 2>&1 || missing+=("ffmpeg")
+  command -v rg >/dev/null 2>&1 || missing+=("rg")
+  command -v xclip >/dev/null 2>&1 || missing+=("xclip")
+  command -v wl-paste >/dev/null 2>&1 || missing+=("wl-paste")
+  if (( ${#missing[@]} )); then
+    printf '%s\n' "${missing[@]}"
+  fi
+}
+
+install_recommended_debian_packages_if_possible() {
+  if is_truthy "$skip_recommended_packages"; then
+    echo "install.sh: skipping recommended machine packages because TINYHAT_SKIP_RECOMMENDED_PACKAGES is set"
+    return 0
+  fi
+
+  local missing
+  missing="$(recommended_package_commands_missing || true)"
+  if [[ -z "$missing" ]]; then
+    return 0
+  fi
+
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    echo "install.sh: recommended command(s) missing but apt is unavailable: $(tr '\n' ' ' <<<"$missing")"
+    return 0
+  fi
+  if [[ "$(id -u)" != "0" ]]; then
+    echo "install.sh: recommended command(s) missing but apt install requires root: $(tr '\n' ' ' <<<"$missing")"
+    return 0
+  fi
+
+  echo "install.sh: installing recommended Hermes machine packages: ${RECOMMENDED_DEBIAN_PACKAGES[*]}"
+  export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+  apt-get update
+  apt-get install -y --no-install-recommends "${RECOMMENDED_DEBIAN_PACKAGES[@]}"
+}
+
+install_recommended_debian_packages_if_possible
 
 install_nodejs_npm_if_needed() {
   if nodejs_npm_ready; then

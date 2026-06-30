@@ -139,7 +139,7 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     assert len(shell_calls) == 1
     script, env = shell_calls[0]
     assert f"cd {project_dir}" in script
-    package_spec = shlex.quote(f"{project_dir}[messaging]")
+    package_spec = shlex.quote(f"{project_dir}[messaging,voice]")
     assert f"{python_bin} -m pip install -e {package_spec}" in script
     assert "--python" not in script
     assert env == {"PIP_DISABLE_PIP_VERSION_CHECK": "1"}

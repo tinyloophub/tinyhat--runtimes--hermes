@@ -655,16 +655,39 @@ def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
         }
 
 
+def _configure_multimedia_after_auth(hermes_bin: Path) -> dict[str, Any]:
+    """Switch Hermes voice/image config to the Codex-backed media route."""
+
+    try:
+        from hermes_runtime.commands.configure_telegram import configure_codex_multimedia
+
+        return configure_codex_multimedia(hermes_bin)
+    except Exception as exc:  # noqa: BLE001 - auth worker reports best-effort status.
+        return {
+            "ok": False,
+            "message": str(exc),
+            "failure_code": exc.__class__.__name__,
+        }
+
+
 def _completion_message(
     *,
     switch: dict[str, Any],
     gateway: dict[str, Any],
+    multimedia: dict[str, Any] | None = None,
 ) -> str:
     if switch.get("ok") and gateway.get("healthy"):
+        media_sentence = ""
+        if multimedia is not None:
+            if multimedia.get("ok"):
+                media_sentence = " Voice transcription is now set to OpenAI Codex STT."
+            else:
+                media_sentence = " I could not confirm the voice transcription config; send /codex_auth_status if voice still fails."
         return (
             "OpenAI Codex auth is connected ✅\n\n"
             "I switched Hermes to OpenAI Codex and restarted my Telegram gateway, "
             "so your next message should use your OpenAI subscription."
+            f"{media_sentence}"
         )
     if switch.get("ok"):
         return (
@@ -905,6 +928,7 @@ def worker() -> int:
 
     switch = _run_config_switch(hermes_bin)
     if switch.get("ok"):
+        multimedia = _configure_multimedia_after_auth(hermes_bin)
         gateway = _restart_gateway_after_auth(hermes_bin)
         status = _auth_status(hermes_bin)
         codex_status = _codex_cli_status(codex_bin)
@@ -915,12 +939,13 @@ def worker() -> int:
                 "model_provider": MODEL_PROVIDER,
                 "codex_cli_status": codex_status,
                 "config_switch": switch,
+                "multimedia_config": multimedia,
                 "gateway_restart": gateway,
                 "auth_status": status,
                 "message": "OpenAI Codex auth connected.",
             }
         )
-        _telegram_send(_completion_message(switch=switch, gateway=gateway))
+        _telegram_send(_completion_message(switch=switch, gateway=gateway, multimedia=multimedia))
         return 0
 
     last_returncode = 1
@@ -933,6 +958,7 @@ def worker() -> int:
             saw_material = False
         if last_returncode == 0:
             switch = _run_config_switch(hermes_bin)
+            multimedia = _configure_multimedia_after_auth(hermes_bin)
             gateway = _restart_gateway_after_auth(hermes_bin)
             status = _auth_status(hermes_bin)
             codex_status = _codex_cli_status(codex_bin)
@@ -940,16 +966,17 @@ def worker() -> int:
                 {
                     "state": "connected",
                     "provider": provider,
-                    "model_provider": MODEL_PROVIDER,
-                    "codex_cli_status": codex_status,
-                    "config_switch": switch,
-                    "gateway_restart": gateway,
-                    "auth_status": status,
-                    "message": "OpenAI Codex auth connected.",
+                        "model_provider": MODEL_PROVIDER,
+                        "codex_cli_status": codex_status,
+                        "config_switch": switch,
+                        "multimedia_config": multimedia,
+                        "gateway_restart": gateway,
+                        "auth_status": status,
+                        "message": "OpenAI Codex auth connected.",
                 }
             )
             _telegram_send(
-                _completion_message(switch=switch, gateway=gateway)
+                _completion_message(switch=switch, gateway=gateway, multimedia=multimedia)
             )
             return 0
         if saw_material:

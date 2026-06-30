@@ -13,6 +13,17 @@ from typing import Any
 HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
 DEFAULT_HERMES_INSTALL_ARGS = ("--skip-browser",)
 MAX_OUTPUT_CHARS = 12_000
+DEBIAN_PREREQUISITE_COMMANDS: dict[str, str] = {
+    "curl": "curl",
+    "git": "git",
+    "xz": "xz-utils",
+    "pip": "python3-pip",
+    "g++": "build-essential",
+    "ffmpeg": "ffmpeg",
+    "rg": "ripgrep",
+    "xclip": "xclip",
+    "wl-paste": "wl-clipboard",
+}
 
 
 def find_hermes_binary() -> Path | None:
@@ -115,7 +126,7 @@ def hermes_install_script() -> str:
 
 
 async def maybe_install_debian_prerequisites() -> dict[str, Any]:
-    required = ["curl", "git", "xz", "pip"]
+    required = list(DEBIAN_PREREQUISITE_COMMANDS)
     missing = [
         name
         for name in required
@@ -136,10 +147,16 @@ async def maybe_install_debian_prerequisites() -> dict[str, Any]:
         return result
     if shutil.which("apt-get") is None:
         return result
+    packages = ["ca-certificates"]
+    for command in missing:
+        package = DEBIAN_PREREQUISITE_COMMANDS[command]
+        if package not in packages:
+            packages.append(package)
     install = await run_shell(
         "export DEBIAN_FRONTEND=noninteractive\n"
         "apt-get update\n"
-        "apt-get install -y --no-install-recommends ca-certificates curl git python3-pip xz-utils",
+        "apt-get install -y --no-install-recommends "
+        + " ".join(shlex.quote(package) for package in packages),
         timeout_seconds=240,
     )
     result["attempted"] = True

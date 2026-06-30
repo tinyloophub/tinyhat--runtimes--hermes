@@ -267,6 +267,10 @@ fi
                 curl_args.read_text(encoding="utf-8"),
             )
             self.assertIn(
+                "install -y --no-install-recommends ca-certificates curl git xz-utils build-essential ffmpeg ripgrep xclip wl-clipboard",
+                apt_args.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
                 "install -y ca-certificates curl gnupg",
                 apt_args.read_text(encoding="utf-8"),
             )
@@ -289,7 +293,10 @@ fi
         self.assertIn("tinyhat-hermes-runtime exited with status", script)
         self.assertIn("@openai/codex", script)
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", script)
+        self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", script)
         self.assertIn("setup_${codex_node_major}.x", script)
+        self.assertIn("ffmpeg", script)
+        self.assertIn("wl-clipboard", script)
 
         help_result = subprocess.run(
             ["bash", str(ROOT / "install.sh"), "--help"],
@@ -303,6 +310,7 @@ fi
         self.assertIn("Codex CLI", help_result.stdout)
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", help_result.stdout)
         self.assertIn("TINYHAT_CODEX_NODE_MAJOR", help_result.stdout)
+        self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", help_result.stdout)
 
     def _run_foreground_until_signal(
         self,

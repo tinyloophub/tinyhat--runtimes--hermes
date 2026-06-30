@@ -205,6 +205,8 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert (plugin_dir / "plugin.yaml").is_file()
         plugin_source = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
         assert "ctx.register_command" in plugin_source
+        assert "ctx.register_transcription_provider" in plugin_source
+        assert "openai-codex-stt" in plugin_source
         assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
         assert "hermes_runtime.telegram_codex_auth" in plugin_source
         assert "hermes_runtime.codex_limits" in plugin_source
@@ -247,6 +249,16 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "model.base_url",
             "https://openrouter.ai/api/v1",
         ],
+        ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.provider",
+            "auto",
+        ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
         ["/usr/local/bin/hermes", "gateway", "status"],
@@ -278,7 +290,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "installed": True,
         "enabled": True,
         "plugin": "tinyhat-codex",
-        "mechanism": "hermes_plugin_register_command",
+        "mechanism": "hermes_plugin_register_command_and_transcription_provider",
         "commands": [
             "tinyhat_settings",
             "codex_auth",
@@ -286,7 +298,46 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "codex_auth_log",
             "codex_limits",
         ],
+        "transcription_providers": ["openai-codex-stt"],
     }
+    assert result["multimedia_config"]["commands"] == [
+        {
+            "key": "stt.enabled",
+            "value": "true",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.provider",
+            "value": "local",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.local.model",
+            "value": "base",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "auxiliary.vision.provider",
+            "value": "auto",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+    ]
     assert result["codex_auth"]["telegram_command_menu"] == {
         "config_file": str(home / ".hermes" / "config.yaml"),
         "installed": True,
@@ -494,6 +545,16 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "model.base_url",
             "https://openrouter.ai/api/v1",
         ],
+        ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.provider",
+            "auto",
+        ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
         ["/usr/local/bin/hermes", "gateway", "status"],
@@ -654,12 +715,14 @@ def test_install_codex_auth_plugin_commands_enables_menu_plugin() -> None:
 
     assert result["installed"] is True
     assert result["enabled"] is True
-    assert result["mechanism"] == "hermes_plugin_register_command"
+    assert result["mechanism"] == "hermes_plugin_register_command_and_transcription_provider"
+    assert result["transcription_providers"] == ["openai-codex-stt"]
     assert "existing-plugin" in text
     assert "    - tinyhat-codex\n" in text
     assert "disabled:" in text
     assert "  disabled:\n    - tinyhat-codex" not in text
     assert "ctx.register_command" in plugin_source
+    assert "ctx.register_transcription_provider" in plugin_source
     assert "tinyhat_settings" in plugin_source
     assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
     assert "codex_auth" in plugin_source

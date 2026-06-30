@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Install Hermes' voice extra with messaging dependencies, configure fresh
+  Telegram assignments with local STT and automatic vision routing, and switch
+  voice transcription to a Tinyhat `openai-codex-stt` Hermes provider after
+  `/codex_auth` succeeds.
+- Install Tinyhat's recommended Linux machine packages during runtime
+  provisioning, including `ffmpeg` for TTS voice bubbles, `ripgrep`,
+  `build-essential`, and Linux clipboard helpers for image paste.
+
 ## 0.0.22 - 2026-06-30
 
 - Add `/tinyhat_settings` as a Tinyhat-managed Hermes Telegram command so an
