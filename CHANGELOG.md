@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.23 - 2026-06-30
+
 - Install Hermes' voice extra with messaging dependencies, configure fresh
   Telegram assignments with local STT and automatic vision routing, and
   register a Tinyhat `openai-codex-stt` Hermes provider after `/codex_auth`
