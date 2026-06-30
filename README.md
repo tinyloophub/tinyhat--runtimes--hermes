@@ -195,13 +195,13 @@ it.
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
 | `setup_snapshot` | `hermes_runtime/commands/setup_snapshot.py` | Summarizes the installed service, runtime ref, current version, commit, and important directories from Hat admin. | Reads systemd metadata and runtime state files only. It does not read env file contents and does not use sudo. |
-| `install_hermes` | `hermes_runtime/commands/install_hermes.py` | Installs upstream Hermes Agent after the Tinyhat runtime is alive, and skips reinstalling when `hermes` already exists. | May install Debian prerequisites as root, then runs `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash`. By default Tinyhat passes `--skip-browser`; set `TINYHAT_HERMES_INSTALL_ARGS` to override. Verifies Hermes messaging dependencies and preinstalls the Codex auth quick commands plus the matching Hermes menu plugin in `~/.hermes/config.yaml` so a later Telegram connection is fast. Result fields distinguish no-op from install: `installed_now` means this command ran the installer; `installed_after` means Hermes is present after the command. |
+| `install_hermes` | `hermes_runtime/commands/install_hermes.py` | Installs upstream Hermes Agent after the Tinyhat runtime is alive, and skips reinstalling when `hermes` already exists. | May install Debian prerequisites as root, then runs `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash`. By default Tinyhat passes `--skip-browser`; set `TINYHAT_HERMES_INSTALL_ARGS` to override. Verifies Hermes messaging and voice dependencies, then preinstalls the Codex auth quick commands plus the matching Hermes menu plugin in `~/.hermes/config.yaml` so a later Telegram connection is fast. The prerequisite set includes `ffmpeg` for Telegram TTS voice bubbles, `ripgrep` for fast search, `build-essential` for native modules, and `xclip`/`wl-clipboard` for Linux desktop image paste. Result fields distinguish no-op from install: `installed_now` means this command ran the installer; `installed_after` means Hermes is present after the command. |
 | `hermes_status` | `hermes_runtime/commands/hermes_status.py` | Checks Hermes Agent through its public CLI. | Read-only. Runs `hermes --version`, `hermes status`, and `hermes status --all`, then returns bounded stdout/stderr for Hat admin. |
 | `tinyhat_plugin_status` | `hermes_runtime/commands/tinyhat_plugin_status.py` | Shows the Tinyhat plugin version/commit installed in Hermes and the configured target version/commit. | Read-only. Reads the installed plugin manifest and source metadata, then uses a temporary checkout of the public plugin repo to read the target manifest. |
 | `check_tinyhat_plugin_update` | `hermes_runtime/commands/check_tinyhat_plugin_update.py` | Checks whether the configured Tinyhat plugin channel has moved beyond the installed plugin. | Read-only. Resolves the configured plugin ref, compares it with `.tinyhat-plugin-source.json`, and reports `update_available`; it does not install, enable, restart, or change Hermes. |
 | `install_tinyhat_plugin` | `hermes_runtime/commands/install_tinyhat_plugin.py` | Installs the Tinyhat plugin after Hermes Agent is present, and skips reinstalling when the plugin already exists. | Resolves `TINYHAT_PLUGIN_REF` (default `channels/lts`) from `TINYHAT_PLUGIN_REPO_URL` (default `https://github.com/tinyhat-ai/tinyhat.git`), prepares that checkout, runs `hermes plugins install file://... --enable`, then runs `hermes plugins enable tinyhat`. Records repo/ref/commit in `.tinyhat-plugin-source.json`. Does not configure Telegram or read Tinyhat platform credentials. |
 | `update_tinyhat_plugin` | `hermes_runtime/commands/update_tinyhat_plugin.py` | Updates the Tinyhat plugin independently of the Tinyhat runtime. | Resolves the configured plugin ref, compares it with the installed repo/ref/commit metadata, and reinstalls through `hermes plugins install file://... --enable --force` only when the target changed or the plugin is missing. It verifies the installed plugin after the update. A long-running Hermes Telegram gateway may still need a Hermes restart to reload plugin commands. |
-| `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and `TELEGRAM_HOME_CHANNEL` into Hermes env files, installs the Telegram quick commands documented below, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token is not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
+| `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, and `TELEGRAM_HOME_CHANNEL` into Hermes env files, installs the Telegram quick commands documented below, configures local STT plus automatic vision routing, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token is not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
 | `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Starts Hermes Agent messaging again on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start` with the same foreground fallback used by local/Docker setup. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
 | `stop_hermes` | `hermes_runtime/commands/stop_hermes.py` | Stops Hermes Agent messaging before Tinyhat parks or reassigns a Telegram bot. | Runs `hermes gateway stop`, checks gateway status, and terminates the foreground `hermes gateway run` process used by local/Docker fallback mode. It does not stop the Tinyhat runtime service, change Telegram webhooks, remove credentials, or unassign the Computer. |
 | `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts the Codex CLI installed during provisioning with `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, writes the last structured JSON response to `codex/last_limits.json` under the runtime state directory, and returns a readable summary. It does not read or return OpenAI auth tokens, parse terminal logs, or call the normal OpenAI REST API. |
@@ -217,15 +217,20 @@ Hermes does not add them to the Telegram command menu by themselves. To keep
 Hermes as the only code that calls Telegram `setMyCommands`, Tinyhat also
 installs a small user plugin at `~/.hermes/plugins/tinyhat-codex` that
 registers the same underscore commands with Hermes' documented plugin command
-registry. The command bodies still call the runtime helpers below; the plugin
-exists only so Hermes can include the entries when it builds Telegram
+registry. The same plugin registers `openai-codex-stt`, a Hermes transcription
+provider that uses the Codex/OpenAI auth connected by `/codex_auth` and OpenAI's
+audio transcription API. Tinyhat does not select that provider automatically
+because Codex subscription auth may not include API-billed audio transcription;
+new assignments keep local STT active unless the operator opts into the Codex
+STT provider. The command bodies still call the runtime helpers below; the
+plugin exists so Hermes can include the entries when it builds Telegram
 BotCommands. Tinyhat also writes Hermes'
 `platforms.telegram.extra.command_menu` priority config so these commands are
 near the top while Hermes keeps its default commands.
 
 | Telegram command | What it does |
 | --- | --- |
-| `/codex_auth` | Starts the official Codex CLI device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, asks Hermes through its formal model picker to import/switch to OpenAI Codex, and restarts the Telegram gateway so the next reply uses the new credential. |
+| `/codex_auth` | Starts the official Codex CLI device-code auth flow in the background. The helper sends the authorization link as a Telegram button, sends the device code as a separate copyable message, waits for OpenAI to finish the device flow on this Computer, asks Hermes through its formal model picker to import/switch to OpenAI Codex, registers `openai-codex-stt` settings without making it the active STT provider, and restarts the Telegram gateway so the next reply uses the new model credential while local STT remains the voice fallback. |
 | `/codex_auth_status` | Shows whether the helper is still running and checks both Hermes Codex auth and Codex CLI auth status. |
 | `/codex_auth_log` | Shows the recent bounded auth log if the device-code output needs to be resent or debugged. |
 | `/codex_limits` | Reads the current OpenAI Codex account limits through `codex app-server --listen stdio://` and shows the remaining primary and weekly windows as progress bars, reset times, plan type, credits, and reset-credit count when Codex returns them. |
@@ -455,11 +460,15 @@ Hermes Agent's Linux command-line installer is:
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-The installer expects Git plus `curl` and `xz-utils` on Linux. Tinyhat's
-`install_hermes` command installs those Debian prerequisites when it is running
-as root and they are missing, then calls the official installer. The upstream
-installer handles the Hermes clone, Python 3.11 via uv, Node.js 22, ripgrep,
-ffmpeg, a virtual environment, and the global `hermes` command setup.
+The installer expects Git plus `curl` and `xz-utils` on Linux; the desktop app
+also expects `g++` or `build-essential` for native modules. Tinyhat installs the
+recommended apt package set during Computer provisioning, before assignment:
+`ca-certificates`, `curl`, `git`, `xz-utils`, `build-essential`, `ffmpeg`,
+`ripgrep`, `xclip`, and `wl-clipboard`. `ffmpeg` keeps Hermes TTS replies as
+Telegram voice bubbles for providers that do not emit Opus directly, and
+`xclip`/`wl-clipboard` cover the Linux CLI image-paste path. The upstream
+installer still owns the Hermes clone, Python 3.11 via uv, Node.js 22, a virtual
+environment, and the global `hermes` command setup.
 
 For a dedicated unprivileged service account, install Chromium system
 libraries separately when browser automation is needed:

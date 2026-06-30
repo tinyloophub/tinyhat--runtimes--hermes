@@ -417,6 +417,10 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                     return_value={"healthy": True, "started": True},
                 ),
                 patch(
+                    "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
+                    return_value={"ok": True, "commands": []},
+                ),
+                patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
                     return_value={"ok": True, "provider": "codex-oauth"},
                 ),
@@ -442,9 +446,15 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     assert status["provider"] == "openai-codex"
     assert status["model_provider"] == "openai-codex"
     assert status["codex_cli_status"]["ok"] is True
+    assert status["multimedia_config"]["ok"] is True
     assert status["gateway_restart"]["healthy"] is True
     hermes_auth_fallback.assert_not_called()
     assert any("restarted my Telegram gateway" in text for text in sent)
+    assert any("Voice remains on the local STT fallback" in text for text in sent)
+    assert not any(
+        "Voice transcription is now set to OpenAI Codex STT" in text
+        for text in sent
+    )
 
 
 def test_worker_stops_when_codex_cli_auth_fails_before_touching_hermes_auth() -> None:
@@ -481,6 +491,10 @@ def test_worker_stops_when_codex_cli_auth_fails_before_touching_hermes_auth() ->
                 patch(
                     "hermes_runtime.telegram_codex_auth._restart_gateway_after_auth",
                     gateway_restart,
+                ),
+                patch(
+                    "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
+                    return_value={"ok": True, "commands": []},
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._telegram_send",
@@ -549,6 +563,10 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
                     return_value={"healthy": True, "started": True},
                 ),
                 patch(
+                    "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
+                    return_value={"ok": True, "commands": []},
+                ),
+                patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
                     return_value={"ok": True, "provider": "codex-oauth"},
                 ),
@@ -568,6 +586,7 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
     assert status is not None
     assert status["provider"] == "codex-oauth"
     assert status["model_provider"] == "openai-codex"
+    assert status["multimedia_config"]["ok"] is True
 
 
 def test_status_reports_connected_state_without_exposing_tokens() -> None:

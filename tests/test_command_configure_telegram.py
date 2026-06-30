@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -205,6 +207,8 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert (plugin_dir / "plugin.yaml").is_file()
         plugin_source = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
         assert "ctx.register_command" in plugin_source
+        assert "ctx.register_transcription_provider" in plugin_source
+        assert "openai-codex-stt" in plugin_source
         assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
         assert "hermes_runtime.telegram_codex_auth" in plugin_source
         assert "hermes_runtime.codex_limits" in plugin_source
@@ -247,6 +251,16 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "model.base_url",
             "https://openrouter.ai/api/v1",
         ],
+        ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.provider",
+            "auto",
+        ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
         ["/usr/local/bin/hermes", "gateway", "status"],
@@ -278,7 +292,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "installed": True,
         "enabled": True,
         "plugin": "tinyhat-codex",
-        "mechanism": "hermes_plugin_register_command",
+        "mechanism": "hermes_plugin_register_command_and_transcription_provider",
         "commands": [
             "tinyhat_settings",
             "codex_auth",
@@ -286,7 +300,46 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "codex_auth_log",
             "codex_limits",
         ],
+        "transcription_providers": ["openai-codex-stt"],
     }
+    assert result["multimedia_config"]["commands"] == [
+        {
+            "key": "stt.enabled",
+            "value": "true",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.provider",
+            "value": "local",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.local.model",
+            "value": "base",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "auxiliary.vision.provider",
+            "value": "auto",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+    ]
     assert result["codex_auth"]["telegram_command_menu"] == {
         "config_file": str(home / ".hermes" / "config.yaml"),
         "installed": True,
@@ -494,6 +547,16 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "model.base_url",
             "https://openrouter.ai/api/v1",
         ],
+        ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.provider",
+            "auto",
+        ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
         ["/usr/local/bin/hermes", "gateway", "status"],
@@ -654,17 +717,102 @@ def test_install_codex_auth_plugin_commands_enables_menu_plugin() -> None:
 
     assert result["installed"] is True
     assert result["enabled"] is True
-    assert result["mechanism"] == "hermes_plugin_register_command"
+    assert result["mechanism"] == "hermes_plugin_register_command_and_transcription_provider"
+    assert result["transcription_providers"] == ["openai-codex-stt"]
     assert "existing-plugin" in text
     assert "    - tinyhat-codex\n" in text
     assert "disabled:" in text
     assert "  disabled:\n    - tinyhat-codex" not in text
     assert "ctx.register_command" in plugin_source
+    assert "ctx.register_transcription_provider" in plugin_source
     assert "tinyhat_settings" in plugin_source
     assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
     assert "codex_auth" in plugin_source
     assert "hermes_runtime.telegram_codex_auth" in plugin_source
     assert "hermes_runtime.codex_limits" in plugin_source
+
+
+def test_codex_auth_plugin_source_compiles_and_maps_stt_errors() -> None:
+    source = configure_telegram._codex_auth_plugin_source()
+    ast.parse(source)
+
+    agent_module = ModuleType("agent")
+    provider_module = ModuleType("agent.transcription_provider")
+
+    class FakeTranscriptionProvider:
+        pass
+
+    provider_module.TranscriptionProvider = FakeTranscriptionProvider
+    old_agent_module = sys.modules.get("agent")
+    old_provider_module = sys.modules.get("agent.transcription_provider")
+    sys.modules["agent"] = agent_module
+    sys.modules["agent.transcription_provider"] = provider_module
+    namespace: dict[str, object] = {"__name__": "tinyhat_codex_plugin_test"}
+    try:
+        exec(compile(source, "tinyhat-codex/__init__.py", "exec"), namespace)
+    finally:
+        if old_agent_module is None:
+            sys.modules.pop("agent", None)
+        else:
+            sys.modules["agent"] = old_agent_module
+        if old_provider_module is None:
+            sys.modules.pop("agent.transcription_provider", None)
+        else:
+            sys.modules["agent.transcription_provider"] = old_provider_module
+
+    response = SimpleNamespace(
+        status_code=429,
+        text="",
+        json=lambda: {
+            "error": {
+                "code": "billing_not_active",
+                "message": "Billing is not active.",
+            }
+        },
+    )
+    error_text = namespace["_error_from_response"](response)  # type: ignore[index]
+    provider = namespace["OpenAICodexTranscriptionProvider"]()  # type: ignore[index]
+
+    assert error_text == (
+        "OpenAI Codex STT failed (429): "
+        "billing_not_active: Billing is not active."
+    )
+    assert provider.name == "openai-codex-stt"
+    assert provider.default_model() == "gpt-4o-transcribe"
+
+
+def test_configure_codex_multimedia_does_not_auto_select_codex_stt() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "calls.jsonl"
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"log = pathlib.Path({str(log)!r})\n"
+            "log.open('a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "print('ok')\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        result = configure_telegram.configure_codex_multimedia(hermes_bin)
+        calls = [
+            json.loads(line)
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    keys = [call[2] for call in calls]
+
+    assert result["ok"] is True
+    assert result["active_provider"] == "unchanged"
+    assert result["codex_stt_provider"] == "openai-codex-stt"
+    assert result["auto_selected_codex_stt"] is False
+    assert "stt.provider" not in keys
+    assert keys == [
+        "stt.enabled",
+        "stt.openai-codex-stt.model",
+        "auxiliary.vision.provider",
+    ]
 
 
 def test_install_codex_auth_plugin_commands_normalizes_flow_plugin_lists() -> None:

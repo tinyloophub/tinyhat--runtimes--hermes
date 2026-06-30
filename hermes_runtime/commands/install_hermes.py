@@ -13,10 +13,10 @@ What it does:
     to override those installer arguments.
 
     After Hermes is present, the command verifies the Hermes venv can import
-    the Telegram gateway adapter dependencies. If not, it installs Hermes'
-    official ``messaging`` extra into the same Hermes project venv. This keeps
-    Tinyhat Computers warm: the later agent-assignment step only writes the bot
-    settings and starts the gateway.
+    the Telegram gateway adapter and voice-transcription dependencies. If not,
+    it installs Hermes' official ``messaging`` and ``voice`` extras into the same
+    Hermes project venv. This keeps Tinyhat Computers warm: the later
+    agent-assignment step only writes the bot settings and starts the gateway.
 
     The command also preinstalls Tinyhat's OpenAI Codex auth quick commands and
     matching Hermes plugin slash-command registrations in ``~/.hermes``. They
@@ -46,9 +46,11 @@ Example output:
 
 Side effects:
     May install Debian packages ``ca-certificates``, ``curl``, ``git``, and
-    ``python3-pip``, and ``xz-utils`` when running as root on Debian/Ubuntu.
+    ``python3-pip``, ``xz-utils``, ``build-essential``, ``ffmpeg``,
+    ``ripgrep``, ``xclip``, and ``wl-clipboard`` when running as root on
+    Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
-    ``messaging`` extra into the Hermes venv. Does not configure Tinyhat
+    ``messaging``/``voice`` extras into the Hermes venv. Does not configure Tinyhat
     platform state.
 """
 
@@ -113,7 +115,7 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
             "-c",
             (
                 "import importlib.util\n"
-                "missing=[name for name in ('telegram','telegram.ext') "
+                "missing=[name for name in ('telegram','telegram.ext','faster_whisper') "
                 "if importlib.util.find_spec(name) is None]\n"
                 "print('ok' if not missing else 'missing:' + ','.join(missing))\n"
                 "raise SystemExit(0 if not missing else 1)\n"
@@ -184,7 +186,7 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
         prerequisites = await maybe_install_debian_prerequisites()
 
     python_bin = project_dir / "venv" / "bin" / "python"
-    package_spec = f"{project_dir}[messaging]"
+    package_spec = f"{project_dir}[messaging,voice]"
     install = await run_shell(
         (
             f"cd {shlex.quote(str(project_dir))}\n"

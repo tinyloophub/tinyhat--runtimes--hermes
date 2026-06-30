@@ -77,6 +77,7 @@ import os
 import subprocess
 from pathlib import Path
 import shlex
+import time
 from typing import Any
 from urllib import error, parse, request
 
@@ -107,6 +108,9 @@ TELEGRAM_MENU_START_MARKER = "# tinyhat managed telegram command menu start"
 TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
 CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
+CODEX_STT_PROVIDER = "openai-codex-stt"
+CODEX_STT_MODEL = "gpt-4o-transcribe"
+LOCAL_STT_MODEL = "base"
 
 
 def _quote_env(value: str) -> str:
@@ -312,6 +316,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
+
+try:
+    from agent.transcription_provider import TranscriptionProvider
+except Exception:  # noqa: BLE001 - older Hermes builds may not expose STT plugins.
+    TranscriptionProvider = None
 
 
 _COMMANDS = {
@@ -346,6 +356,176 @@ _COMMANDS = {
         "timeout": 60,
     },
 }
+
+_STT_PROVIDER_NAME = "openai-codex-stt"
+_STT_DEFAULT_MODEL = "gpt-4o-transcribe"
+_STT_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def _load_stt_provider_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+    except Exception:
+        return {}
+    try:
+        config = load_config() or {}
+    except Exception:
+        return {}
+    stt = config.get("stt") if isinstance(config, dict) else None
+    provider_cfg = stt.get(_STT_PROVIDER_NAME) if isinstance(stt, dict) else None
+    return provider_cfg if isinstance(provider_cfg, dict) else {}
+
+
+def _resolve_codex_audio_credentials() -> tuple[str, str, str | None]:
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+    except Exception as exc:
+        return "", "", f"Hermes Codex auth resolver is unavailable: {exc}"
+    try:
+        credentials = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+    except TypeError:
+        try:
+            credentials = resolve_codex_runtime_credentials()
+        except Exception as exc:  # noqa: BLE001
+            return "", "", f"OpenAI Codex auth is not connected: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return "", "", f"OpenAI Codex auth is not connected: {exc}"
+    token = str((credentials or {}).get("api_key") or "").strip()
+    if not token:
+        return "", "", "OpenAI Codex auth is not connected. Run /codex_auth first."
+
+    provider_cfg = _load_stt_provider_config()
+    # Codex chat itself uses chatgpt.com/backend-api/codex, but OpenAI audio
+    # transcription is exposed on the regular OpenAI API host.
+    base_url = str(
+        provider_cfg.get("base_url")
+        or os.environ.get("TINYHAT_OPENAI_CODEX_STT_BASE_URL")
+        or _STT_DEFAULT_BASE_URL
+    ).strip().rstrip("/")
+    return token, base_url, None
+
+
+def _error_from_response(response) -> str:
+    detail = ""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or error.get("type") or "").strip()
+            if message and code:
+                detail = f"{code}: {message}"
+            elif message:
+                detail = message
+    if not detail:
+        detail = str(getattr(response, "text", "") or "").strip()[:500]
+    return f"OpenAI Codex STT failed ({response.status_code}): {detail or 'no response body'}"
+
+
+if TranscriptionProvider is not None:
+    class OpenAICodexTranscriptionProvider(TranscriptionProvider):
+        @property
+        def name(self) -> str:
+            return _STT_PROVIDER_NAME
+
+        @property
+        def display_name(self) -> str:
+            return "OpenAI Codex Speech-to-Text"
+
+        def list_models(self):
+            return [
+                {
+                    "id": "gpt-4o-transcribe",
+                    "display": "GPT-4o Transcribe",
+                },
+                {
+                    "id": "gpt-4o-mini-transcribe",
+                    "display": "GPT-4o Mini Transcribe",
+                },
+                {
+                    "id": "whisper-1",
+                    "display": "Whisper",
+                },
+            ]
+
+        def default_model(self):
+            return _STT_DEFAULT_MODEL
+
+        def is_available(self) -> bool:
+            token, _base_url, error = _resolve_codex_audio_credentials()
+            return bool(token and not error)
+
+        def get_setup_schema(self):
+            return {
+                "name": self.display_name,
+                "badge": "OpenAI auth",
+                "tag": "Uses Hermes OpenAI Codex auth from /codex_auth",
+                "env_vars": [],
+            }
+
+        def transcribe(self, file_path: str, *, model=None, language=None, **_extra):
+            token, base_url, error = _resolve_codex_audio_credentials()
+            if error:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "provider": self.name,
+                    "error": error,
+                }
+            path = Path(file_path).expanduser()
+            model_name = str(model or _STT_DEFAULT_MODEL).strip() or _STT_DEFAULT_MODEL
+            data = {"model": model_name, "response_format": "json"}
+            if language:
+                data["language"] = str(language)
+            try:
+                import httpx
+
+                with path.open("rb") as audio:
+                    files = {
+                        "file": (
+                            path.name,
+                            audio,
+                            "application/octet-stream",
+                        )
+                    }
+                    response = httpx.post(
+                        f"{base_url}/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {token}"},
+                        data=data,
+                        files=files,
+                        timeout=60.0,
+                    )
+                if response.status_code >= 400:
+                    return {
+                        "success": False,
+                        "transcript": "",
+                        "provider": self.name,
+                        "error": _error_from_response(response),
+                    }
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    text = str(payload.get("text") or "").strip()
+                else:
+                    text = str(getattr(response, "text", "") or "").strip()
+                return {
+                    "success": bool(text),
+                    "transcript": text,
+                    "provider": self.name,
+                    **({} if text else {"error": "OpenAI Codex STT returned an empty transcript."}),
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "provider": self.name,
+                    "error": f"OpenAI Codex STT failed: {exc}",
+                }
 
 
 def _runtime_pythonpath(env: dict[str, str]) -> str:
@@ -387,6 +567,8 @@ def register(ctx):
             _handler(spec["module"], list(spec["args"]), int(spec["timeout"])),
             description=str(spec["description"]),
         )
+    if TranscriptionProvider is not None and hasattr(ctx, "register_transcription_provider"):
+        ctx.register_transcription_provider(OpenAICodexTranscriptionProvider())
 '''
 
 
@@ -395,7 +577,7 @@ def _codex_auth_plugin_manifest() -> str:
         [
             "name: tinyhat-codex",
             "version: 1.0.0",
-            "description: Tinyhat Codex Telegram slash-command menu entries.",
+            "description: Tinyhat Codex Telegram slash-command menu entries and OpenAI Codex STT provider.",
             "author: Tinyhat",
             "kind: standalone",
             "",
@@ -526,8 +708,9 @@ def _install_codex_auth_plugin_commands(
         "installed": True,
         "enabled": True,
         "plugin": CODEX_PLUGIN_NAME,
-        "mechanism": "hermes_plugin_register_command",
+        "mechanism": "hermes_plugin_register_command_and_transcription_provider",
         "commands": list(TELEGRAM_MANAGED_MENU_COMMANDS),
+        "transcription_providers": [CODEX_STT_PROVIDER],
     }
 
 
@@ -814,17 +997,10 @@ def _openrouter_env_values(setup: dict[str, Any]) -> dict[str, str]:
     return values
 
 
-async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str, Any]:
-    # OpenRouter setup is deterministic provisioning, so use Hermes' public
-    # config CLI instead of private Hermes modules or on-disk internals.
-    commands: list[tuple[str, str]] = [("model.provider", "auto")]
-    default_model = str(setup.get("openrouter_default_model") or "").strip()
-    if default_model:
-        commands.append(("model.default", default_model))
-    base_url = str(setup.get("openrouter_base_url") or "").strip()
-    if base_url:
-        commands.append(("model.base_url", base_url))
-
+async def _run_config_set_commands(
+    hermes_bin: Path,
+    commands: list[tuple[str, str]],
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for key, value in commands:
         result = await run_process(
@@ -845,6 +1021,98 @@ async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str,
         if not result.get("ok"):
             raise RuntimeError(f"Hermes config set failed for {key}.")
     return {"ok": True, "commands": results}
+
+
+async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str, Any]:
+    # OpenRouter setup is deterministic provisioning, so use Hermes' public
+    # config CLI instead of private Hermes modules or on-disk internals.
+    commands: list[tuple[str, str]] = [("model.provider", "auto")]
+    default_model = str(setup.get("openrouter_default_model") or "").strip()
+    if default_model:
+        commands.append(("model.default", default_model))
+    base_url = str(setup.get("openrouter_base_url") or "").strip()
+    if base_url:
+        commands.append(("model.base_url", base_url))
+    return await _run_config_set_commands(hermes_bin, commands)
+
+
+async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
+    commands = [
+        ("stt.enabled", "true"),
+        ("stt.provider", "local"),
+        ("stt.local.model", LOCAL_STT_MODEL),
+        ("auxiliary.vision.provider", "auto"),
+    ]
+    return await _run_config_set_commands(hermes_bin, commands)
+
+
+def _run_config_set_commands_sync(
+    hermes_bin: Path,
+    commands: list[tuple[str, str]],
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for key, value in commands:
+        started = time.monotonic()
+        try:
+            process = subprocess.run(
+                [str(hermes_bin), "config", "set", key, value],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=45,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            result = {
+                "key": key,
+                "value": value,
+                "ok": False,
+                "returncode": None,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "stdout": "",
+                "stderr": str(exc)[:500],
+            }
+        else:
+            result = {
+                "key": key,
+                "value": value,
+                "ok": process.returncode == 0,
+                "returncode": process.returncode,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "stdout": process.stdout[:500],
+                "stderr": process.stderr[:500],
+            }
+        results.append(result)
+        if not result["ok"]:
+            return {"ok": False, "commands": results, "failed_key": key}
+    return {"ok": True, "commands": results}
+
+
+def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
+    # Register provider-specific settings but do not make Codex STT active by
+    # default. Codex subscription auth may not include API-billed transcription,
+    # so day-one local STT remains the safe active provider.
+    commands = [
+        ("stt.enabled", "true"),
+        (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
+        ("auxiliary.vision.provider", "auto"),
+    ]
+    result = _run_config_set_commands_sync(hermes_bin, commands)
+    result.update(
+        {
+            "active_provider": "unchanged",
+            "codex_stt_provider": CODEX_STT_PROVIDER,
+            "codex_stt_model": CODEX_STT_MODEL,
+            "auto_selected_codex_stt": False,
+        }
+    )
+    if result.get("ok"):
+        result["message"] = (
+            "Registered OpenAI Codex STT settings without changing the active "
+            "Hermes STT provider."
+        )
+    return result
 
 
 def _telegram_delete_webhook(token: str) -> dict[str, Any]:
@@ -1168,6 +1436,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if hermes_bin is None:
         raise RuntimeError("Hermes CLI was not found; install Hermes first.")
     model_config = await _configure_model(hermes_bin, setup)
+    multimedia_config = await _configure_day_one_multimedia(hermes_bin)
     menu_button = await _configure_tinyhat_menu_button(
         token=token,
         settings_url=env_values["TINYHAT_SETTINGS_MINIAPP_URL"],
@@ -1200,6 +1469,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "env_files": env_files,
         "codex_auth": codex_auth,
         "model_config": model_config,
+        "multimedia_config": multimedia_config,
         "menu_button": menu_button,
         "webhook": webhook,
         "gateway": gateway,
