@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add `apply_config`, a runtime command that writes Tinyhat settings Mini App
+  secrets into Hermes env files, reloads those keys into the runtime process,
+  sends the owner an availability notice, and restarts the Telegram gateway
+  only when a previously managed secret was removed and must be cleared from
+  the running process environment.
+- Add `list_hermes_secrets_masked`, a read-only runtime command that lists
+  Tinyhat-managed Hermes secret names with masked values and source-file
+  metadata without returning plaintext secrets.
+- Send a pre-restart Telegram note during `/codex_auth` so the owner knows the
+  gateway is restarting to load the new OpenAI Codex model configuration.
+
 ## 0.0.23 - 2026-06-30
 
 - Install Hermes' voice extra with messaging dependencies, configure fresh

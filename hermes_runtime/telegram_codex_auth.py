@@ -655,6 +655,25 @@ def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
         }
 
 
+def _auth_restart_notice_message() -> str:
+    return (
+        "OpenAI Codex auth is connected. I'm restarting my Telegram gateway now "
+        "so the new OpenAI model is available in chat. I'll send a confirmation "
+        "once it is back."
+    )
+
+
+def _send_auth_restart_notice() -> dict[str, Any]:
+    try:
+        return _telegram_send(_auth_restart_notice_message())
+    except Exception as exc:  # noqa: BLE001 - restart must still be attempted.
+        return {
+            "ok": False,
+            "message": str(exc),
+            "failure_code": exc.__class__.__name__,
+        }
+
+
 def _configure_multimedia_after_auth(hermes_bin: Path) -> dict[str, Any]:
     """Switch Hermes voice/image config to the Codex-backed media route."""
 
@@ -933,6 +952,7 @@ def worker() -> int:
     switch = _run_config_switch(hermes_bin)
     if switch.get("ok"):
         multimedia = _configure_multimedia_after_auth(hermes_bin)
+        restart_notice = _send_auth_restart_notice()
         gateway = _restart_gateway_after_auth(hermes_bin)
         status = _auth_status(hermes_bin)
         codex_status = _codex_cli_status(codex_bin)
@@ -944,6 +964,7 @@ def worker() -> int:
                 "codex_cli_status": codex_status,
                 "config_switch": switch,
                 "multimedia_config": multimedia,
+                "gateway_restart_notice": restart_notice,
                 "gateway_restart": gateway,
                 "auth_status": status,
                 "message": "OpenAI Codex auth connected.",
@@ -963,6 +984,7 @@ def worker() -> int:
         if last_returncode == 0:
             switch = _run_config_switch(hermes_bin)
             multimedia = _configure_multimedia_after_auth(hermes_bin)
+            restart_notice = _send_auth_restart_notice()
             gateway = _restart_gateway_after_auth(hermes_bin)
             status = _auth_status(hermes_bin)
             codex_status = _codex_cli_status(codex_bin)
@@ -974,6 +996,7 @@ def worker() -> int:
                     "codex_cli_status": codex_status,
                     "config_switch": switch,
                     "multimedia_config": multimedia,
+                    "gateway_restart_notice": restart_notice,
                     "gateway_restart": gateway,
                     "auth_status": status,
                     "message": "OpenAI Codex auth connected.",

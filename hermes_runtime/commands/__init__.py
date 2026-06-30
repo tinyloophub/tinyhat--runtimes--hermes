@@ -20,6 +20,10 @@ COMMAND_MODULES = {
     "install_tinyhat_plugin": "hermes_runtime.commands.install_tinyhat_plugin",
     "update_tinyhat_plugin": "hermes_runtime.commands.update_tinyhat_plugin",
     "configure_telegram": "hermes_runtime.commands.configure_telegram",
+    "apply_config": "hermes_runtime.commands.apply_config",
+    "list_hermes_secrets_masked": (
+        "hermes_runtime.commands.list_hermes_secrets_masked"
+    ),
     "start_hermes": "hermes_runtime.commands.start_hermes",
     "stop_hermes": "hermes_runtime.commands.stop_hermes",
     "codex_limits": "hermes_runtime.commands.codex_limits",
