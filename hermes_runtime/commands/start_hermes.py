@@ -43,6 +43,7 @@ from typing import Any
 from hermes_runtime.commands.configure_telegram import (
     _compact_hermes_status,
     _compact_process,
+    _env_file_candidates,
     _gateway_log_has_adapter_failure,
     _gateway_needs_foreground_run,
     _gateway_status_is_healthy,
@@ -53,6 +54,8 @@ from hermes_runtime.hermes_cli import (
     probe_hermes_status,
     run_process,
 )
+from hermes_runtime.runtime_env import load_env_files_into_process
+from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
 
 
 async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
@@ -128,6 +131,8 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             "message": "Hermes CLI was not found; install Hermes first.",
         }
 
+    terminal_env_hook = install_terminal_env_reload_hook()
+    env_reload = load_env_files_into_process(_env_file_candidates())
     gateway = await _start_gateway(hermes_bin)
     hermes_status = await probe_hermes_status()
     return {
@@ -137,6 +142,8 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "already_running": bool(gateway.get("already_running")),
         "hermes_installed": True,
         "hermes_bin": str(hermes_bin),
+        "terminal_env_hook": terminal_env_hook,
+        "env_reload": env_reload,
         "gateway": gateway,
         "hermes": _compact_hermes_status(hermes_status),
         "message": (
