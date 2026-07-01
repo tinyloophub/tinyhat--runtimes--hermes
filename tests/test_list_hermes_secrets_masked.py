@@ -70,6 +70,7 @@ def test_list_hermes_secrets_masked_masks_values_from_managed_env_blocks() -> No
         os.environ.update(
             {
                 "HOME": str(home),
+                "HERMES_BIN": str(Path(tmp) / "no-hermes"),
                 "HERMES_PROJECT_DIR": str(project_dir),
                 "EXA_API_KEY": "rotated-raw-token-222222",
             }
@@ -175,6 +176,60 @@ def test_list_hermes_secrets_masked_uses_hermes_env_path() -> None:
     assert "custom-runtime-secret-654321" not in serialized
 
 
+def test_list_hermes_secrets_masked_falls_back_when_env_path_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        fallback_env = Path(tmp) / "fallback.env"
+        fallback_env.write_text(
+            'FALLBACK_API_KEY="fallback-secret-123456"\n',
+            encoding="utf-8",
+        )
+        hermes_bin = Path(tmp) / "hermes"
+        hermes_bin.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"config\" ] && [ \"$2\" = \"env-path\" ]; then\n"
+            "  printf '%s\\n' 'env-path unsupported' >&2\n"
+            "  exit 42\n"
+            "fi\n"
+            "exit 64\n",
+            encoding="utf-8",
+        )
+        hermes_bin.chmod(0o755)
+
+        old_env = os.environ.copy()
+        os.environ.clear()
+        os.environ.update(
+            {
+                "HOME": str(Path(tmp) / "home"),
+                "HERMES_BIN": str(hermes_bin),
+                "HERMES_ENV_FILE": str(fallback_env),
+                "HERMES_PROJECT_DIR": str(Path(tmp) / "missing-project"),
+            }
+        )
+        try:
+            result = asyncio.run(
+                run_command(SimpleNamespace(), {"kind": "list_hermes_secrets_masked"})
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert result["hermes_env_path"] == {
+        "available": True,
+        "ok": False,
+        "path": None,
+        "returncode": 42,
+        "duration_ms": result["hermes_env_path"]["duration_ms"],
+        "stderr": result["hermes_env_path"]["stderr"],
+    }
+    assert result["hermes_env_path"]["stderr"].strip() == "env-path unsupported"
+    by_name = {item["name"]: item for item in result["secrets"]}
+    assert sorted(by_name) == ["FALLBACK_API_KEY"]
+    assert by_name["FALLBACK_API_KEY"]["source_files"] == [str(fallback_env)]
+    assert any(item["path"] == str(fallback_env) for item in result["env_files"])
+    serialized = json.dumps(result, sort_keys=True)
+    assert "fallback-secret-123456" not in serialized
+
+
 def test_list_hermes_secrets_masked_reports_empty_missing_env_files() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
@@ -184,6 +239,7 @@ def test_list_hermes_secrets_masked_reports_empty_missing_env_files() -> None:
         os.environ.update(
             {
                 "HOME": str(home),
+                "HERMES_BIN": str(Path(tmp) / "no-hermes"),
                 "HERMES_ENV_FILE": str(missing_explicit),
                 "HERMES_PROJECT_DIR": str(Path(tmp) / "missing-project"),
             }
