@@ -168,8 +168,9 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             if name in managed_keys:
                 managed_source_files.setdefault(name, []).append(path)
 
+    env_names = sorted(latest_values)
     secrets: list[dict[str, Any]] = []
-    for name in sorted(latest_values):
+    for name in env_names:
         value = latest_values[name]
         process_present = name in os.environ
         managed_files = managed_source_files.get(name, [])
@@ -192,6 +193,8 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "schema": SCHEMA,
+        "env_count": len(env_names),
+        "env_names": env_names,
         "secret_count": len(secrets),
         "secrets": secrets,
         "env_files": env_files,

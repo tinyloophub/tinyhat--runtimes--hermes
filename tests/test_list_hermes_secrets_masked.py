@@ -84,6 +84,13 @@ def test_list_hermes_secrets_masked_masks_values_from_managed_env_blocks() -> No
             os.environ.update(old_env)
 
     assert result["schema"] == "tinyhat_hermes_secrets_masked_v1"
+    assert result["env_count"] == 4
+    assert result["env_names"] == [
+        "EXA_API_KEY",
+        "PLAIN_NON_SECRET",
+        "SECOND_SECRET",
+        "SHORT_SECRET",
+    ]
     assert result["secret_count"] == 4
     assert result["values_masked"] is True
     by_name = {item["name"]: item for item in result["secrets"]}
@@ -168,6 +175,8 @@ def test_list_hermes_secrets_masked_uses_hermes_env_path() -> None:
         "duration_ms": result["hermes_env_path"]["duration_ms"],
     }
     by_name = {item["name"]: item for item in result["secrets"]}
+    assert result["env_count"] == 2
+    assert result["env_names"] == ["CUSTOM_RUNTIME_NAME", "EXA_API_KEY"]
     assert sorted(by_name) == ["CUSTOM_RUNTIME_NAME", "EXA_API_KEY"]
     assert by_name["EXA_API_KEY"]["managed_by_tinyhat"] is False
     assert by_name["EXA_API_KEY"]["source_files"] == [str(hermes_env)]
@@ -222,6 +231,8 @@ def test_list_hermes_secrets_masked_falls_back_when_env_path_fails() -> None:
         "stderr": result["hermes_env_path"]["stderr"],
     }
     assert result["hermes_env_path"]["stderr"].strip() == "env-path unsupported"
+    assert result["env_count"] == 1
+    assert result["env_names"] == ["FALLBACK_API_KEY"]
     by_name = {item["name"]: item for item in result["secrets"]}
     assert sorted(by_name) == ["FALLBACK_API_KEY"]
     assert by_name["FALLBACK_API_KEY"]["source_files"] == [str(fallback_env)]
@@ -253,6 +264,8 @@ def test_list_hermes_secrets_masked_reports_empty_missing_env_files() -> None:
             os.environ.update(old_env)
 
     assert result["secret_count"] == 0
+    assert result["env_count"] == 0
+    assert result["env_names"] == []
     assert result["secrets"] == []
     assert result["values_masked"] is True
     assert all(item["exists"] is False for item in result["env_files"])
