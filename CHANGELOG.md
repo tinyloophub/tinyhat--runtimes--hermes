@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.25 - 2026-07-01
+
 - Remove `list_hermes_secrets_masked` from runtime command dispatch because
   Hermes provider credentials are not safe to model as generic shell-visible
   secrets.
