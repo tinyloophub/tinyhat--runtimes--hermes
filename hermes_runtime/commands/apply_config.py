@@ -24,6 +24,7 @@ from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.runtime_env import load_env_files_into_process
 from hermes_runtime.telegram_codex_auth import _telegram_send
+from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
 
 
 SCHEMA = "tinyhat_hermes_apply_config_v1"
@@ -198,6 +199,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         os.environ.pop(key, None)
     env_paths = [Path(str(item["path"])) for item in env_files]
     env_reload = load_env_files_into_process(env_paths, keys=secret_names)
+    terminal_env_hook = install_terminal_env_reload_hook()
 
     restart_required = bool(secret_names or removed_keys)
     if restart_required:
@@ -230,6 +232,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "removed_secret_names": removed_keys,
         "env_files": env_files,
         "env_reload": env_reload,
+        "terminal_env_hook": terminal_env_hook,
         "secret_available_notice": _notice_result(
             sent=restart_required and not bool(removed_keys),
             notice=notice,

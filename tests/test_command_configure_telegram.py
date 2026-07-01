@@ -184,6 +184,9 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             encoding="utf-8"
         )
         assert "quick_commands:" in config_text
+        assert "terminal:" in config_text
+        assert "shell_init_files:" in config_text
+        assert str(home / ".hermes" / "tinyhat" / "terminal-env.sh") in config_text
         assert "plugins:" in config_text
         assert "enabled:" in config_text
         assert "tinyhat-codex" in config_text
@@ -271,6 +274,10 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     assert "123456:secret-token" not in str(result)
     assert "sk-or-v1-test-runtime-key" not in str(result)
     assert result["model_config"]["ok"] is True
+    assert result["terminal_env_hook"]["installed"] is True
+    assert result["terminal_env_hook"]["hook"]["path"] == str(
+        home / ".hermes" / "tinyhat" / "terminal-env.sh"
+    )
     assert result["codex_auth"]["quick_commands"]["commands"] == [
         "tinyhat_settings",
         "codex_auth",
