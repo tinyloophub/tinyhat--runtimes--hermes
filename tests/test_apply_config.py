@@ -76,7 +76,7 @@ def test_load_env_files_into_process_loads_selected_keys_only() -> None:
     assert str(env_file) in result["files"]
 
 
-def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -> None:
+def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     events: list[tuple[str, str]] = []
     platform = FakePlatform(
         {
@@ -91,6 +91,10 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
     def fake_telegram_send(text: str, **_kwargs: Any) -> dict[str, Any]:
         events.append(("notice", text))
         return {"ok": True, "http_status": 200, "description": "sent"}
+
+    async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+        events.append(("gateway", os.environ.get("EXA_API_KEY") or ""))
+        return {"healthy": True, "started": True}
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
@@ -121,9 +125,19 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
             }
         )
         try:
-            with patch(
-                "hermes_runtime.commands.apply_config._telegram_send",
-                side_effect=fake_telegram_send,
+            with (
+                patch(
+                    "hermes_runtime.commands.apply_config.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch(
+                    "hermes_runtime.commands.apply_config._run_gateway",
+                    side_effect=fake_run_gateway,
+                ),
+                patch(
+                    "hermes_runtime.commands.apply_config._telegram_send",
+                    side_effect=fake_telegram_send,
+                ),
             ):
                 result = asyncio.run(
                     apply_config.run(
@@ -155,10 +169,12 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
     assert "# tinyhat runtime secrets start" in env_text
     assert "# tinyhat runtime secrets end" in env_text
     assert 'EXA_API_KEY="exa-secret"' in project_env_text
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0][0] == "notice"
     assert events[0][1].startswith("2 secrets are saved.")
-    assert "making the new secret available to Hermes now" in events[0][1]
+    assert "restarting my Telegram gateway now" in events[0][1]
+    assert "available to shell commands" in events[0][1]
+    assert events[1] == ("gateway", "exa-secret")
     assert result["schema"] == "tinyhat_hermes_apply_config_v1"
     assert result["revision"] == 8
     assert result["desired_config_revision"] == 7
@@ -173,9 +189,8 @@ def test_apply_config_writes_reloads_and_notifies_without_restarting_gateway() -
     assert result["gateway_restart_notice"]["sent"] is False
     assert result["gateway_restart_notice"]["http_status"] is None
     assert result["gateway_restart_notice"]["description"] is None
-    assert result["gateway"]["restarted"] is False
-    assert result["gateway"]["restart_required"] is False
-    assert result["restart_requested"] is False
+    assert result["gateway"]["healthy"] is True
+    assert result["restart_requested"] is True
     serialized = json.dumps(result, sort_keys=True)
     assert "exa-secret" not in serialized
     assert "two" not in serialized

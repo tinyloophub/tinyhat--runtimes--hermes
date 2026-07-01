@@ -5,6 +5,8 @@
 - Update `list_hermes_secrets_masked` to discover Hermes' canonical env file
   with `hermes config env-path` and list masked env names from that file, while
   preserving Tinyhat-managed block metadata when present.
+- Restart `hermes gateway` after Tinyhat settings Mini App secret add/update
+  applies so chat shell commands inherit the refreshed env file.
 
 ## 0.0.24 - 2026-06-30
 
