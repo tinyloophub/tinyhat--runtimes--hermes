@@ -2,10 +2,9 @@
 
 The Tinyhat platform queues this command when a user saves a runtime secret in
 the settings Mini App. Hermes stores those values in its normal env files, then
-reloads the updated env entries into this Python process. Current Hermes gateway
-builds reload ``~/.hermes/.env`` before each turn, so a saved secret becomes
-available to the next chat shell command without restarting the Telegram
-gateway.
+reloads the updated env entries into this Python process. Hermes gateway
+processes load env files at startup, so saved secrets become available to
+Hermes only after the gateway is restarted.
 """
 
 from __future__ import annotations
@@ -120,8 +119,8 @@ def _secret_available_notice(secret_names: list[str]) -> str:
     else:
         subject = "Your secret settings are saved"
     return (
-        f"{subject}. I'm making the new secret available to Hermes now, so the "
-        "next shell command can use it."
+        f"{subject}. I'm restarting my Telegram gateway now to make the "
+        "updated secret available to Hermes before your next message."
     )
 
 
@@ -148,7 +147,7 @@ def _secret_restart_notice(removed_keys: list[str]) -> str:
         subject = "Your secret settings changed"
     return (
         f"{subject}. I'm restarting my Telegram gateway now so removed secrets "
-        "are no longer available in shell commands. I'll confirm once it is back."
+        "are no longer loaded by Hermes before your next message."
     )
 
 
@@ -200,21 +199,24 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     env_paths = [Path(str(item["path"])) for item in env_files]
     env_reload = load_env_files_into_process(env_paths, keys=secret_names)
 
-    restart_required = bool(removed_keys)
+    restart_required = bool(secret_names or removed_keys)
     if restart_required:
         hermes_bin = find_hermes_binary()
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
-        notice = await _send_secret_restart_notice(removed_keys)
+        if removed_keys:
+            notice = await _send_secret_restart_notice(removed_keys)
+        else:
+            notice = await _send_secret_available_notice(secret_names)
         gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
     else:
-        notice = await _send_secret_available_notice(secret_names)
+        notice = {"ok": None}
         gateway = {
             "restarted": False,
             "restart_required": False,
-            "reason": "runtime_secret_add_or_update_does_not_require_gateway_restart",
+            "reason": "runtime_secret_apply_no_restart_needed",
         }
 
     return {
@@ -229,11 +231,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "env_files": env_files,
         "env_reload": env_reload,
         "secret_available_notice": _notice_result(
-            sent=not restart_required,
+            sent=restart_required and not bool(removed_keys),
             notice=notice,
         ),
         "gateway_restart_notice": _notice_result(
-            sent=restart_required,
+            sent=restart_required and bool(removed_keys),
             notice=notice,
         ),
         "gateway": gateway,
