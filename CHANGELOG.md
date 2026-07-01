@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.26 - 2026-07-01
+
 - Export Hermes env files into fresh terminal sessions through Hermes'
   `terminal.shell_init_files` config so newly saved secrets are available to
   shell/exec tools after gateway restart.
