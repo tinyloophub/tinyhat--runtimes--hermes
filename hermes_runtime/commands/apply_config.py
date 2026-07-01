@@ -3,8 +3,8 @@
 The Tinyhat platform queues this command when a user saves a runtime secret in
 the settings Mini App. Hermes stores those values in its normal env files, then
 reloads the updated env entries into this Python process. Hermes gateway
-processes inherit environment at startup, so saved secrets become reliably
-available to chat shell commands only after the gateway is restarted.
+processes load env files at startup, so saved secrets become available to
+Hermes only after the gateway is restarted.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def _secret_available_notice(secret_names: list[str]) -> str:
         subject = "Your secret settings are saved"
     return (
         f"{subject}. I'm restarting my Telegram gateway now to make the "
-        "updated secret available to shell commands. I'll confirm once it is back."
+        "updated secret available to Hermes. I'll confirm once it is back."
     )
 
 
@@ -147,7 +147,7 @@ def _secret_restart_notice(removed_keys: list[str]) -> str:
         subject = "Your secret settings changed"
     return (
         f"{subject}. I'm restarting my Telegram gateway now so removed secrets "
-        "are no longer available in shell commands. I'll confirm once it is back."
+        "are no longer loaded by Hermes. I'll confirm once it is back."
     )
 
 

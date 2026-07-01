@@ -2,19 +2,18 @@
 
 ## Unreleased
 
-- Update `list_hermes_secrets_masked` to discover Hermes' canonical env file
-  with `hermes config env-path` and list masked env names from that file, while
-  preserving Tinyhat-managed block metadata when present.
+- Remove `list_hermes_secrets_masked` from runtime command dispatch because
+  Hermes provider credentials are not safe to model as generic shell-visible
+  secrets.
 - Restart `hermes gateway` after Tinyhat settings Mini App secret add/update
-  applies so chat shell commands inherit the refreshed env file.
+  applies so Hermes reloads the refreshed env file.
 
 ## 0.0.24 - 2026-06-30
 
 - Add `apply_config`, a runtime command that writes Tinyhat settings Mini App
   secrets into Hermes env files, reloads those keys into the runtime process,
   sends the owner an availability notice, and restarts the Telegram gateway
-  only when a previously managed secret was removed and must be cleared from
-  the running process environment.
+  when those additions or removals must be loaded by Hermes.
 - Add `list_hermes_secrets_masked`, a read-only runtime command that lists
   Tinyhat-managed Hermes secret names with masked values and source-file
   metadata without returning plaintext secrets.
