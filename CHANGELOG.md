@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Export Hermes env files into fresh terminal sessions through Hermes'
+  `terminal.shell_init_files` config so newly saved secrets are available to
+  shell/exec tools after gateway restart.
+
 ## 0.0.25 - 2026-07-01
 
 - Remove `list_hermes_secrets_masked` from runtime command dispatch because

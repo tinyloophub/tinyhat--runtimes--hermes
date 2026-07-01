@@ -12,26 +12,21 @@ import os
 from pathlib import Path
 from typing import Any
 
+from hermes_runtime.plugin_manager import hermes_home
+
 HOOK_COMMENT = "# Tinyhat-managed: export Hermes env files into terminal snapshots."
 HOOK_RELATIVE_PATH = ("tinyhat", "terminal-env.sh")
 
 
-def _hermes_home() -> Path:
-    explicit = (os.getenv("HERMES_HOME") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    return Path.home() / ".hermes"
-
-
 def terminal_env_hook_path() -> Path:
-    return _hermes_home().joinpath(*HOOK_RELATIVE_PATH)
+    return hermes_home().joinpath(*HOOK_RELATIVE_PATH)
 
 
 def _hermes_config_file() -> Path:
     explicit = (os.getenv("HERMES_CONFIG_FILE") or "").strip()
     if explicit:
         return Path(explicit).expanduser()
-    return _hermes_home() / "config.yaml"
+    return hermes_home() / "config.yaml"
 
 
 def _hook_script() -> str:
@@ -45,10 +40,11 @@ def _hook_script() -> str:
             '  . "$1"',
             '  [ "$__tinyhat_had_allexport" = "1" ] || set +a',
             "}",
-            '__tinyhat_source_env_file "${HERMES_ENV_FILE:-$HOME/.hermes/.env}"',
+            '__tinyhat_hermes_home="${TINYHAT_HERMES_HOME:-${HERMES_HOME:-$HOME/.hermes}}"',
+            '__tinyhat_source_env_file "${HERMES_ENV_FILE:-$__tinyhat_hermes_home/.env}"',
             '__tinyhat_source_env_file "${HERMES_PROJECT_DIR:-/usr/local/lib/hermes-agent}/.env"',
             "unset -f __tinyhat_source_env_file 2>/dev/null || true",
-            "unset __tinyhat_had_allexport 2>/dev/null || true",
+            "unset __tinyhat_had_allexport __tinyhat_hermes_home 2>/dev/null || true",
             "",
         ]
     )

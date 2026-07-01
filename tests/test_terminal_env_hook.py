@@ -53,12 +53,30 @@ def test_terminal_env_hook_creates_config_and_export_script() -> None:
         assert result["config"]["config_file"] == str(config_path)
         hook_text = hook_path.read_text(encoding="utf-8")
         assert "set -a" in hook_text
-        assert "$HOME/.hermes/.env" in hook_text
+        assert "$__tinyhat_hermes_home/.env" in hook_text
         assert "/usr/local/lib/hermes-agent" in hook_text
         config_text = config_path.read_text(encoding="utf-8")
         assert "terminal:" in config_text
         assert "shell_init_files:" in config_text
         assert f"    - {hook_path}" in config_text
+
+    _with_home(run)
+
+
+def test_terminal_env_hook_honors_tinyhat_hermes_home() -> None:
+    def run(home: Path) -> None:
+        hermes_home = home / "custom-hermes-home"
+        os.environ["TINYHAT_HERMES_HOME"] = str(hermes_home)
+
+        result = install_terminal_env_reload_hook()
+        hook_path = hermes_home / "tinyhat" / "terminal-env.sh"
+        config_path = hermes_home / "config.yaml"
+
+        assert result["hook"]["path"] == str(hook_path)
+        assert result["config"]["config_file"] == str(config_path)
+        assert hook_path.exists()
+        assert config_path.exists()
+        assert "TINYHAT_HERMES_HOME" in hook_path.read_text(encoding="utf-8")
 
     _with_home(run)
 
@@ -90,6 +108,35 @@ def test_terminal_env_hook_adds_to_existing_terminal_block() -> None:
         assert "terminal:\n  shell_init_files:\n" in text
         assert "  backend: local" in text
         assert "browser:" in text
+
+    _with_home(run)
+
+
+def test_terminal_env_hook_adds_to_existing_block_list() -> None:
+    def run(home: Path) -> None:
+        config_path = home / ".hermes" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "terminal:",
+                    "  shell_init_files:",
+                    "    - /opt/custom-one.sh",
+                    "  backend: local",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = install_terminal_env_reload_hook()
+        text = config_path.read_text(encoding="utf-8")
+        hook_path = home / ".hermes" / "tinyhat" / "terminal-env.sh"
+
+        assert result["config"]["updated"] is True
+        assert "    - /opt/custom-one.sh\n" in text
+        assert f"    - {hook_path}\n" in text
+        assert text.index(str(hook_path)) < text.index("  backend: local")
 
     _with_home(run)
 

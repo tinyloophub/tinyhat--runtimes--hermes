@@ -65,6 +65,30 @@ class FakePlatform:
         }
 
 
+def test_configure_telegram_uses_canonical_hermes_home_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        hermes_home = Path(tmp) / "tinyhat-hermes-home"
+        home.mkdir()
+        old_env = os.environ.copy()
+        os.environ.clear()
+        os.environ.update(
+            {
+                "HOME": str(home),
+                "TINYHAT_HERMES_HOME": str(hermes_home),
+            }
+        )
+        try:
+            config_file = configure_telegram._hermes_config_file()
+            env_files = configure_telegram._env_file_candidates()
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert config_file == hermes_home / "config.yaml"
+    assert env_files[0] == hermes_home / ".env"
+
+
 def _yaml_block_list(text: str, key: str) -> list[str]:
     lines = text.splitlines()
     for index, line in enumerate(lines):
