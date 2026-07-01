@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Update `list_hermes_secrets_masked` to discover Hermes' canonical env file
+  with `hermes config env-path` and list masked env names from that file, while
+  preserving Tinyhat-managed block metadata when present.
+
 ## 0.0.24 - 2026-06-30
 
 - Add `apply_config`, a runtime command that writes Tinyhat settings Mini App
