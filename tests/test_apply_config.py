@@ -184,6 +184,18 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert result["removed_secret_names"] == []
     assert result["env_reload"]["keys"] == ["EXA_API_KEY", "SECOND_SECRET"]
     assert result["terminal_env_hook"]["installed"] is True
+    assert result["terminal_env_hook"]["terminal_secret_env_names"] == [
+        "EXA_API_KEY",
+        "SECOND_SECRET",
+    ]
+    assert result["terminal_env_hook"]["config"]["env_passthrough"]["added"] == [
+        "EXA_API_KEY",
+        "SECOND_SECRET",
+    ]
+    assert result["terminal_env_hook"]["config"]["docker_forward_env"]["added"] == [
+        "EXA_API_KEY",
+        "SECOND_SECRET",
+    ]
     assert result["secret_available_notice"]["ok"] is True
     assert result["secret_available_notice"]["sent"] is True
     assert result["secret_available_notice"]["http_status"] == 200

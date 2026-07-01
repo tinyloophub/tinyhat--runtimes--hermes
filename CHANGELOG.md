@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Register Tinyhat-managed secret names with Hermes' terminal env passthrough
+  and Docker env forwarding config so newly saved credentials are visible to
+  terminal/execute-code tools after the gateway reloads them.
+
 ## 0.0.26 - 2026-07-01
 
 - Export Hermes env files into fresh terminal sessions through Hermes'

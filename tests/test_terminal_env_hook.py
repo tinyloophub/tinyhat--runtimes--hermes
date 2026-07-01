@@ -63,6 +63,37 @@ def test_terminal_env_hook_creates_config_and_export_script() -> None:
     _with_home(run)
 
 
+def test_terminal_env_hook_adds_secret_terminal_passthrough() -> None:
+    def run(home: Path) -> None:
+        result = install_terminal_env_reload_hook(
+            secret_names=["SECOND_SECRET", "EXA_API_KEY", "EXA_API_KEY"],
+        )
+        config_path = home / ".hermes" / "config.yaml"
+        text = config_path.read_text(encoding="utf-8")
+
+        assert result["terminal_secret_env_names"] == ["EXA_API_KEY", "SECOND_SECRET"]
+        assert result["config"]["paths"] == [
+            "terminal.shell_init_files",
+            "terminal.env_passthrough",
+            "terminal.docker_forward_env",
+        ]
+        assert result["config"]["env_passthrough"]["added"] == [
+            "EXA_API_KEY",
+            "SECOND_SECRET",
+        ]
+        assert result["config"]["docker_forward_env"]["added"] == [
+            "EXA_API_KEY",
+            "SECOND_SECRET",
+        ]
+        assert "  env_passthrough:\n" in text
+        assert "    - EXA_API_KEY\n" in text
+        assert "    - SECOND_SECRET\n" in text
+        assert "  docker_forward_env:\n" in text
+        assert "exa-secret" not in text
+
+    _with_home(run)
+
+
 def test_terminal_env_hook_honors_tinyhat_hermes_home() -> None:
     def run(home: Path) -> None:
         hermes_home = home / "custom-hermes-home"
@@ -77,6 +108,38 @@ def test_terminal_env_hook_honors_tinyhat_hermes_home() -> None:
         assert hook_path.exists()
         assert config_path.exists()
         assert "TINYHAT_HERMES_HOME" in hook_path.read_text(encoding="utf-8")
+
+    _with_home(run)
+
+
+def test_terminal_env_hook_preserves_existing_passthrough_entries() -> None:
+    def run(home: Path) -> None:
+        config_path = home / ".hermes" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            "\n".join(
+                [
+                    "terminal:",
+                    "  env_passthrough: [KEEP_ME]",
+                    "  docker_forward_env:",
+                    "    - KEEP_DOCKER",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        first = install_terminal_env_reload_hook(secret_names=["EXA_API_KEY"])
+        second = install_terminal_env_reload_hook(secret_names=["EXA_API_KEY"])
+        text = config_path.read_text(encoding="utf-8")
+
+        assert first["config"]["updated"] is True
+        assert first["config"]["env_passthrough"]["added"] == ["EXA_API_KEY"]
+        assert first["config"]["docker_forward_env"]["added"] == ["EXA_API_KEY"]
+        assert second["config"]["updated"] is False
+        assert "    - KEEP_ME\n" in text
+        assert "    - KEEP_DOCKER\n" in text
+        assert text.count("EXA_API_KEY") == 2
 
     _with_home(run)
 

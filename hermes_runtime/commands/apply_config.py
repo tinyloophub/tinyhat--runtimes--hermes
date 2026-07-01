@@ -4,7 +4,10 @@ The Tinyhat platform queues this command when a user saves a runtime secret in
 the settings Mini App. Hermes stores those values in its normal env files, then
 reloads the updated env entries into this Python process. Hermes gateway
 processes load env files at startup, so saved secrets become available to
-Hermes only after the gateway is restarted.
+Hermes only after the gateway is restarted. Hermes' terminal tool also filters
+child-process environment variables through a config allowlist, so the runtime
+registers saved secret names with the terminal passthrough settings before the
+restart.
 """
 
 from __future__ import annotations
@@ -199,7 +202,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         os.environ.pop(key, None)
     env_paths = [Path(str(item["path"])) for item in env_files]
     env_reload = load_env_files_into_process(env_paths, keys=secret_names)
-    terminal_env_hook = install_terminal_env_reload_hook()
+    terminal_env_hook = install_terminal_env_reload_hook(secret_names=secret_names)
 
     restart_required = bool(secret_names or removed_keys)
     if restart_required:
