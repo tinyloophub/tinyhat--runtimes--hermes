@@ -120,7 +120,7 @@ def _secret_available_notice(secret_names: list[str]) -> str:
         subject = "Your secret settings are saved"
     return (
         f"{subject}. I'm restarting my Telegram gateway now to make the "
-        "updated secret available to Hermes. I'll confirm once it is back."
+        "updated secret available to Hermes before your next message."
     )
 
 
@@ -147,7 +147,7 @@ def _secret_restart_notice(removed_keys: list[str]) -> str:
         subject = "Your secret settings changed"
     return (
         f"{subject}. I'm restarting my Telegram gateway now so removed secrets "
-        "are no longer loaded by Hermes. I'll confirm once it is back."
+        "are no longer loaded by Hermes before your next message."
     )
 
 

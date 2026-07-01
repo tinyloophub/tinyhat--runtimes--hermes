@@ -174,6 +174,8 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert events[0][1].startswith("2 secrets are saved.")
     assert "restarting my Telegram gateway now" in events[0][1]
     assert "available to Hermes" in events[0][1]
+    assert "before your next message" in events[0][1]
+    assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "exa-secret")
     assert result["schema"] == "tinyhat_hermes_apply_config_v1"
     assert result["revision"] == 8
@@ -282,6 +284,8 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert "OLD_SECRET" not in env_text
     assert events[0][0] == "notice"
     assert "restarting my Telegram gateway" in events[0][1]
+    assert "before your next message" in events[0][1]
+    assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
     assert result["secret_available_notice"]["ok"] is None
