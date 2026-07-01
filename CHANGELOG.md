@@ -13,7 +13,8 @@
 - Add `apply_config`, a runtime command that writes Tinyhat settings Mini App
   secrets into Hermes env files, reloads those keys into the runtime process,
   sends the owner an availability notice, and restarts the Telegram gateway
-  when those additions or removals must be loaded by Hermes.
+  only when a previously managed secret was removed and must be cleared from
+  the running process environment.
 - Add `list_hermes_secrets_masked`, a read-only runtime command that lists
   Tinyhat-managed Hermes secret names with masked values and source-file
   metadata without returning plaintext secrets.
