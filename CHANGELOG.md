@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Warm the default local `small` faster-whisper model during Hermes
+  provisioning, and configure fresh Telegram assignments with that multilingual
+  STT model plus explicit OpenRouter `google/gemini-2.5-flash` auxiliary vision.
+
 ## 0.0.27 - 2026-07-02
 
 - Stop exporting Hermes env-file secrets through login-shell hooks. Tinyhat now

@@ -279,13 +279,20 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
             "set",
             "auxiliary.vision.provider",
-            "auto",
+            "openrouter",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.model",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -350,7 +357,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.local.model",
-            "value": "base",
+            "value": "small",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -359,7 +366,16 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "auxiliary.vision.provider",
-            "value": "auto",
+            "value": "openrouter",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "auxiliary.vision.model",
+            "value": "google/gemini-2.5-flash",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -576,13 +592,20 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "base"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
             "set",
             "auxiliary.vision.provider",
-            "auto",
+            "openrouter",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "auxiliary.vision.model",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -591,6 +614,55 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
     ]
     assert result["gateway"]["healthy"] is True
     assert result["gateway"]["mode"] == "foreground_detached"
+
+
+def test_configure_day_one_multimedia_uses_overrides() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        calls.append(args)
+        return {
+            "args": args,
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 1,
+            "stdout": "ok\n",
+            "stderr": "",
+        }
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TINYHAT_HERMES_LOCAL_STT_MODEL": "medium",
+                "TINYHAT_HERMES_VISION_PROVIDER": "openai",
+                "TINYHAT_HERMES_VISION_MODEL": "gpt-4o-mini",
+            },
+        ),
+        patch(
+            "hermes_runtime.commands.configure_telegram.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(
+            configure_telegram._configure_day_one_multimedia(Path("/bin/hermes"))
+        )
+
+    assert result["ok"] is True
+    assert calls == [
+        ["/bin/hermes", "config", "set", "stt.enabled", "true"],
+        ["/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        ["/bin/hermes", "config", "set", "auxiliary.vision.provider", "openai"],
+        ["/bin/hermes", "config", "set", "auxiliary.vision.model", "gpt-4o-mini"],
+    ]
 
 
 def test_run_gateway_rejects_foreground_adapter_failure() -> None:

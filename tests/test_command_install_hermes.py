@@ -47,6 +47,16 @@ def _status(*, installed: bool = True, ok: bool = True) -> dict[str, object]:
     }
 
 
+async def _fake_local_stt_model_prefetch() -> dict[str, object]:
+    return {
+        "ok": True,
+        "changed": True,
+        "skipped": False,
+        "model": "small",
+        "project_dir": "/usr/local/lib/hermes-agent",
+    }
+
+
 def test_pip_command_prefers_venv_pip_when_available() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         python_bin = Path(tmp) / "venv" / "bin" / "python"
@@ -179,6 +189,10 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
             fake_messaging,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            _fake_local_stt_model_prefetch,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -199,6 +213,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["status"]["ok"] is True
@@ -230,6 +245,10 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
             fake_messaging,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            _fake_local_stt_model_prefetch,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -246,6 +265,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
     assert result["installed_now"] is False
     assert result["changed"] is False
     assert result["messaging"]["changed"] is True
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
 
@@ -291,6 +311,10 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             fake_messaging,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            _fake_local_stt_model_prefetch,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -316,6 +340,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["already_installed"] is False
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["prerequisites"]["attempted"] is True
@@ -455,4 +480,124 @@ def test_install_hermes_raises_when_messaging_is_unavailable() -> None:
         ),
     ):
         with _raises_runtime("messaging dependencies"):
+            asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
+
+
+def test_prefetch_local_stt_model_warms_selected_model() -> None:
+    calls: list[tuple[list[str], int, dict[str, str] | None]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        calls.append((args, timeout_seconds, env))
+        return {
+            "args": args,
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 1,
+            "stdout": "cached:medium\n",
+            "stderr": "",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "hermes-agent"
+        python_bin = project_dir / "venv" / "bin" / "python"
+        python_bin.parent.mkdir(parents=True)
+        python_bin.write_text("", encoding="utf-8")
+        (project_dir / "pyproject.toml").write_text(
+            "[project]\nname='hermes-agent'\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "TINYHAT_HERMES_LOCAL_STT_MODEL": "medium",
+                    "TINYHAT_HERMES_STT_MODEL_PREFETCH_TIMEOUT_SECONDS": "120",
+                },
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes._find_hermes_project_dir",
+                return_value=project_dir,
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_process",
+                fake_run_process,
+            ),
+        ):
+            result = asyncio.run(install_hermes._prefetch_local_stt_model())
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["model"] == "medium"
+    assert len(calls) == 1
+    args, timeout_seconds, env = calls[0]
+    assert args[0] == str(python_bin)
+    assert "WhisperModel(model, device='cpu', compute_type='int8')" in args[-1]
+    assert timeout_seconds == 120
+    assert env == {
+        "TINYHAT_LOCAL_STT_MODEL": "medium",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+    }
+
+
+def test_prefetch_local_stt_model_can_be_skipped() -> None:
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TINYHAT_SKIP_LOCAL_STT_MODEL_PREFETCH": "1",
+                "TINYHAT_HERMES_LOCAL_STT_MODEL": "tiny",
+            },
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._find_hermes_project_dir",
+            side_effect=AssertionError("project lookup should not run"),
+        ),
+    ):
+        result = asyncio.run(install_hermes._prefetch_local_stt_model())
+
+    assert result == {
+        "ok": True,
+        "changed": False,
+        "skipped": True,
+        "skip_env": "TINYHAT_SKIP_LOCAL_STT_MODEL_PREFETCH",
+        "model": "tiny",
+    }
+
+
+def test_install_hermes_raises_when_prefetch_fails() -> None:
+    async def fake_status() -> dict[str, object]:
+        return _status()
+
+    async def fake_messaging() -> dict[str, object]:
+        return {"ok": True, "changed": False}
+
+    async def fake_prefetch() -> dict[str, object]:
+        return {"ok": False, "changed": False, "model": "small"}
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.probe_hermes_status",
+            fake_status,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
+            fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            fake_prefetch,
+        ),
+    ):
+        with _raises_runtime("local STT model prefetch"):
             asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))

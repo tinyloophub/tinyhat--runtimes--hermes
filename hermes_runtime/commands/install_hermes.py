@@ -17,6 +17,8 @@ What it does:
     it installs Hermes' official ``messaging`` and ``voice`` extras into the same
     Hermes project venv. This keeps Tinyhat Computers warm: the later
     agent-assignment step only writes the bot settings and starts the gateway.
+    It also warms faster-whisper's selected local STT model cache so the first
+    user voice note does not have to wait for a model download.
 
     The command also preinstalls Tinyhat's OpenAI Codex auth quick commands and
     matching Hermes plugin slash-command registrations in ``~/.hermes``. They
@@ -50,8 +52,8 @@ Side effects:
     ``ripgrep``, ``xclip``, and ``wl-clipboard`` when running as root on
     Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
-    ``messaging``/``voice`` extras into the Hermes venv. Does not configure Tinyhat
-    platform state.
+    ``messaging``/``voice`` extras into the Hermes venv and download the selected
+    local STT model weights. Does not configure Tinyhat platform state.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ from typing import Any
 from hermes_runtime.commands.configure_telegram import (
     _install_codex_auth_plugin_commands,
     _install_codex_auth_quick_commands,
+    local_stt_model,
 )
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
@@ -208,6 +211,84 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
     }
 
 
+def _skip_local_stt_model_prefetch() -> bool:
+    value = (os.getenv("TINYHAT_SKIP_LOCAL_STT_MODEL_PREFETCH") or "").strip().lower()
+    return value in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _local_stt_model_prefetch_timeout_seconds() -> int:
+    raw = (os.getenv("TINYHAT_HERMES_STT_MODEL_PREFETCH_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return 900
+    try:
+        timeout = int(raw)
+    except ValueError:
+        return 900
+    return max(60, timeout)
+
+
+async def _prefetch_local_stt_model() -> dict[str, Any]:
+    """Warm faster-whisper's model cache during provisioning.
+
+    Hermes downloads local STT model weights on first use. Doing that while a
+    user waits on their first Telegram voice note makes voice look broken, so
+    Tinyhat warms the selected local model during ``install_hermes`` instead.
+    """
+    if _skip_local_stt_model_prefetch():
+        return {
+            "ok": True,
+            "changed": False,
+            "skipped": True,
+            "skip_env": "TINYHAT_SKIP_LOCAL_STT_MODEL_PREFETCH",
+            "model": local_stt_model(),
+        }
+
+    project_dir = _find_hermes_project_dir()
+    if project_dir is None:
+        return {
+            "ok": False,
+            "changed": False,
+            "skipped": False,
+            "message": "Hermes project venv was not found.",
+            "model": local_stt_model(),
+        }
+
+    python_bin = project_dir / "venv" / "bin" / "python"
+    model = local_stt_model()
+    result = await run_process(
+        [
+            str(python_bin),
+            "-c",
+            (
+                "import os\n"
+                "from faster_whisper import WhisperModel\n"
+                "model = os.environ['TINYHAT_LOCAL_STT_MODEL']\n"
+                "WhisperModel(model, device='cpu', compute_type='int8')\n"
+                "print('cached:' + model)\n"
+            ),
+        ],
+        timeout_seconds=_local_stt_model_prefetch_timeout_seconds(),
+        env={
+            "TINYHAT_LOCAL_STT_MODEL": model,
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+        },
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "changed": bool(result.get("ok")),
+        "skipped": False,
+        "model": model,
+        "project_dir": str(project_dir),
+        "python": str(python_bin),
+        "result": result,
+    }
+
+
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     installed_before = find_hermes_binary() is not None
     prerequisites: dict[str, Any] | None = None
@@ -235,6 +316,9 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     messaging = await _ensure_messaging_dependencies()
     if not messaging.get("ok"):
         raise RuntimeError("Hermes messaging dependencies are not available.")
+    local_stt_model_prefetch = await _prefetch_local_stt_model()
+    if not local_stt_model_prefetch.get("ok"):
+        raise RuntimeError("Hermes local STT model prefetch failed.")
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
         "plugin_commands": _install_codex_auth_plugin_commands(),
@@ -255,6 +339,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "prerequisites": prerequisites,
         "install": install_result,
         "messaging": messaging,
+        "local_stt_model_prefetch": local_stt_model_prefetch,
         "codex_auth": codex_auth,
         "status": status,
     }

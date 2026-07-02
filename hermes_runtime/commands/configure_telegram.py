@@ -12,8 +12,9 @@ What it does:
        - ``~/.hermes/.env``
        - ``/usr/local/lib/hermes-agent/.env`` when that project directory
          exists.
-    3. Applies the platform-selected model/base URL through Hermes' public
-       ``hermes config set`` command.
+    3. Applies the platform-selected model/base URL, local multilingual STT,
+       and auxiliary vision model through Hermes' public ``hermes config set``
+       command.
     4. Installs Tinyhat-managed Hermes quick commands and a tiny Hermes plugin
        for the agent settings Mini App and OpenAI Codex device-code auth:
        ``/tinyhat_settings`` opens the Tinyhat settings Mini App.
@@ -112,7 +113,30 @@ CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
-LOCAL_STT_MODEL = "base"
+DEFAULT_LOCAL_STT_MODEL = "small"
+DEFAULT_VISION_PROVIDER = "openrouter"
+DEFAULT_VISION_MODEL = "google/gemini-2.5-flash"
+
+
+def local_stt_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL")
+        or DEFAULT_LOCAL_STT_MODEL
+    ).strip() or DEFAULT_LOCAL_STT_MODEL
+
+
+def vision_provider() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_VISION_PROVIDER")
+        or DEFAULT_VISION_PROVIDER
+    ).strip() or DEFAULT_VISION_PROVIDER
+
+
+def vision_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_VISION_MODEL")
+        or DEFAULT_VISION_MODEL
+    ).strip() or DEFAULT_VISION_MODEL
 
 
 def _quote_env(value: str) -> str:
@@ -1023,8 +1047,9 @@ async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
     commands = [
         ("stt.enabled", "true"),
         ("stt.provider", "local"),
-        ("stt.local.model", LOCAL_STT_MODEL),
-        ("auxiliary.vision.provider", "auto"),
+        ("stt.local.model", local_stt_model()),
+        ("auxiliary.vision.provider", vision_provider()),
+        ("auxiliary.vision.model", vision_model()),
     ]
     return await _run_config_set_commands(hermes_bin, commands)
 
