@@ -146,7 +146,6 @@ def test_multimodal_status_reports_models_without_values() -> None:
                 "google/gemini-2.5-flash-lite",
                 "openai/gpt-4o-mini",
                 "qwen/qwen2.5-vl-72b-instruct",
-                "meta-llama/llama-4-maverick",
             ],
             "fallback_mechanism": "openrouter_chat_completions_models",
         },
