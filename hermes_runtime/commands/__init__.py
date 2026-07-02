@@ -22,6 +22,8 @@ COMMAND_MODULES = {
     "update_tinyhat_plugin": "hermes_runtime.commands.update_tinyhat_plugin",
     "configure_telegram": "hermes_runtime.commands.configure_telegram",
     "apply_config": "hermes_runtime.commands.apply_config",
+    "import_openclaw_state": "hermes_runtime.commands.import_openclaw_state",
+    "import_legacy_tinyhat_secrets": "hermes_runtime.commands.import_legacy_tinyhat_secrets",
     "start_hermes": "hermes_runtime.commands.start_hermes",
     "stop_hermes": "hermes_runtime.commands.stop_hermes",
     "codex_limits": "hermes_runtime.commands.codex_limits",
