@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Configure fresh Telegram assignments with OpenRouter
+- Configure fresh installs and Telegram assignments with OpenRouter
   `openai/whisper-large-v3-turbo` command-provider STT, a warmed local `medium`
   faster-whisper fallback, and OpenRouter `google/gemini-2.5-flash-lite`
   auxiliary vision.

@@ -57,6 +57,24 @@ async def _fake_local_stt_model_prefetch() -> dict[str, object]:
     }
 
 
+async def _fake_day_one_multimedia(_hermes_bin: Path) -> dict[str, object]:
+    return {
+        "ok": True,
+        "commands": [
+            {
+                "key": "stt.provider",
+                "value": "openrouter",
+                "ok": True,
+            },
+            {
+                "key": "auxiliary.vision.provider",
+                "value": "openrouter",
+                "ok": True,
+            },
+        ],
+    }
+
+
 def test_pip_command_prefers_venv_pip_when_available() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         python_bin = Path(tmp) / "venv" / "bin" / "python"
@@ -193,6 +211,10 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
+            _fake_day_one_multimedia,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -213,6 +235,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
+    assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["model"] == "medium"
     assert result["local_stt_model_prefetch_warning"] is None
     assert result["codex_auth"]["quick_commands"]["installed"] is True
@@ -250,6 +273,10 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
+            _fake_day_one_multimedia,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -266,6 +293,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
     assert result["installed_now"] is False
     assert result["changed"] is False
     assert result["messaging"]["changed"] is True
+    assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["model"] == "medium"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
@@ -316,6 +344,10 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
+            _fake_day_one_multimedia,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
@@ -341,6 +373,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["already_installed"] is False
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
+    assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["model"] == "medium"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
@@ -599,10 +632,15 @@ def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
             fake_prefetch,
         ),
+        patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
+            _fake_day_one_multimedia,
+        ),
     ):
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
 
     assert result["installed_after"] is True
+    assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["ok"] is False
     assert result["local_stt_model_prefetch_warning"] == (
         "Hermes local STT fallback model prefetch failed; provisioning "

@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime.commands.configure_telegram import (
+    _configure_day_one_multimedia,
     _install_codex_auth_plugin_commands,
     _install_codex_auth_quick_commands,
     local_stt_model,
@@ -316,9 +317,19 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if not status.get("ok"):
         raise RuntimeError("Hermes CLI is installed, but status checks failed.")
 
+    hermes_bin_value = status.get("hermes_bin")
+    hermes_bin = (
+        Path(str(hermes_bin_value))
+        if hermes_bin_value
+        else find_hermes_binary()
+    )
+    if hermes_bin is None:
+        raise RuntimeError("Hermes CLI is installed, but hermes binary was not found.")
+
     messaging = await _ensure_messaging_dependencies()
     if not messaging.get("ok"):
         raise RuntimeError("Hermes messaging dependencies are not available.")
+    multimodal_defaults = await _configure_day_one_multimedia(hermes_bin)
     local_stt_model_prefetch = await _prefetch_local_stt_model()
     local_stt_model_prefetch_warning = None
     if not local_stt_model_prefetch.get("ok"):
@@ -346,6 +357,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "prerequisites": prerequisites,
         "install": install_result,
         "messaging": messaging,
+        "multimodal_defaults": multimodal_defaults,
         "local_stt_model_prefetch": local_stt_model_prefetch,
         "local_stt_model_prefetch_warning": local_stt_model_prefetch_warning,
         "codex_auth": codex_auth,
