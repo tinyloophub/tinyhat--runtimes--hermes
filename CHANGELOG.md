@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.28 - 2026-07-02
+
 - Configure fresh installs and Telegram assignments with OpenRouter
   `openai/whisper-large-v3-turbo` command-provider STT, a warmed local `medium`
   faster-whisper model prepared for explicit local-mode selection, and
