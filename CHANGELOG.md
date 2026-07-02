@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Stop exporting Hermes env-file secrets through login-shell hooks. Tinyhat now
+  records secret names through the documented `terminal.env_passthrough` config
+  and writes Tinyhat-managed `_HERMES_FORCE_<NAME>` aliases into the first local
+  Hermes env file that already defines each saved name, so Hermes' terminal
+  backend can expose the saved name without leaking the alias itself.
+- Add `python3 -m hermes_runtime.terminal_env_passthrough register <NAME>` so
+  the Tinyhat plugin can make encrypted private-handoff secrets available to
+  terminal/code subprocesses after the gateway reloads, including provider/tool
+  names such as `EXA_API_KEY`.
+
 ## 0.0.26 - 2026-07-01
 
 - Export Hermes env files into fresh terminal sessions through Hermes'
