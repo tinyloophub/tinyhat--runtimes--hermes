@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.27 - 2026-07-02
+
 - Stop exporting Hermes env-file secrets through login-shell hooks. Tinyhat now
   records secret names through the documented `terminal.env_passthrough` config
   and writes Tinyhat-managed `_HERMES_FORCE_<NAME>` aliases into the first local
@@ -11,6 +13,9 @@
   the Tinyhat plugin can make encrypted private-handoff secrets available to
   terminal/code subprocesses after the gateway reloads, including provider/tool
   names such as `EXA_API_KEY`.
+- Persist `TINYHAT_COMPUTER_TOKEN_AUDIENCE` during installer setup, including
+  the `--token-audience` override, so non-default GCE identity-token audiences
+  reach the running runtime service.
 
 ## 0.0.26 - 2026-07-01
 
