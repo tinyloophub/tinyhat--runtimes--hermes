@@ -35,7 +35,12 @@ def _with_home(fn) -> None:
         home.mkdir()
         old_env = os.environ.copy()
         os.environ.clear()
-        os.environ.update({"HOME": str(home)})
+        os.environ.update(
+            {
+                "HOME": str(home),
+                "HERMES_PROJECT_DIR": str(home / "missing-project"),
+            }
+        )
         try:
             fn(home)
         finally:
@@ -50,35 +55,45 @@ def _write(path: Path, text: str) -> None:
 
 def test_register_uses_hermes_passthrough_for_non_protected_names() -> None:
     def run(home: Path) -> None:
+        _write(home / ".hermes" / ".env", 'CUSTOM_SERVICE_TOKEN="custom-secret"\n')
         result = terminal_env_passthrough.register_name("CUSTOM_SERVICE_TOKEN")
         config_path = home / ".hermes" / "config.yaml"
+        env_path = home / ".hermes" / ".env"
         text = config_path.read_text(encoding="utf-8")
+        env_text = env_path.read_text(encoding="utf-8")
 
         assert result["registered_names"] == ["CUSTOM_SERVICE_TOKEN"]
         assert result["skipped_names"] == []
+        assert result["terminal_secret_aliases"]["aliased_names"] == [
+            "CUSTOM_SERVICE_TOKEN"
+        ]
         assert "terminal:\n  env_passthrough:\n" in text
         assert "    - CUSTOM_SERVICE_TOKEN\n" in text
+        assert "# tinyhat terminal secret aliases start" in env_text
+        assert '_HERMES_FORCE_CUSTOM_SERVICE_TOKEN="custom-secret"' in env_text
 
     _with_home(run)
 
 
-def test_register_skips_hermes_provider_credentials() -> None:
+def test_register_records_provider_names_for_hermes_to_enforce() -> None:
     def run(home: Path) -> None:
+        _write(home / ".hermes" / ".env", 'EXA_API_KEY="exa-secret"\n')
         result = terminal_env_passthrough.register_name("EXA_API_KEY")
         config_path = home / ".hermes" / "config.yaml"
+        env_path = home / ".hermes" / ".env"
+        text = config_path.read_text(encoding="utf-8")
+        env_text = env_path.read_text(encoding="utf-8")
 
-        assert result["registered_names"] == []
-        assert result["skipped_names"] == [
-            {
-                "name": "EXA_API_KEY",
-                "reason": "hermes_protected_credential",
-                "message": (
-                    "Hermes keeps this provider/tool credential in the main "
-                    "agent process and refuses terminal env passthrough."
-                ),
-            }
+        assert result["registered_names"] == ["EXA_API_KEY"]
+        assert result["skipped_names"] == []
+        assert result["terminal_secret_aliases"]["alias_names"] == [
+            "_HERMES_FORCE_EXA_API_KEY"
         ]
-        assert not config_path.exists()
+        assert "terminal:\n  env_passthrough:\n" in text
+        assert "    - EXA_API_KEY\n" in text
+        assert "# tinyhat terminal secret aliases start" in env_text
+        assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in env_text
+        assert "exa-secret" not in str(result)
 
     _with_home(run)
 
@@ -107,6 +122,7 @@ def test_passthrough_update_dedupes_existing_inline_list() -> None:
 def test_passthrough_removes_deleted_names() -> None:
     def run(home: Path) -> None:
         config_path = home / ".hermes" / "config.yaml"
+        env_path = home / ".hermes" / ".env"
         _write(
             config_path,
             "\n".join(
@@ -119,16 +135,32 @@ def test_passthrough_removes_deleted_names() -> None:
             )
             + "\n",
         )
+        _write(
+            env_path,
+            "\n".join(
+                [
+                    'CUSTOM_SERVICE_TOKEN="custom-secret"',
+                    "",
+                    "# tinyhat terminal secret aliases start",
+                    '_HERMES_FORCE_OLD_SERVICE_TOKEN="old-secret"',
+                    "# tinyhat terminal secret aliases end",
+                ]
+            )
+            + "\n",
+        )
 
         result = terminal_env_passthrough.sync_terminal_env_passthrough(
             ["CUSTOM_SERVICE_TOKEN"],
             remove_names=["OLD_SERVICE_TOKEN"],
         )
         text = config_path.read_text(encoding="utf-8")
+        env_text = env_path.read_text(encoding="utf-8")
 
         assert result["removed_names"] == ["OLD_SERVICE_TOKEN"]
         assert "CUSTOM_SERVICE_TOKEN" in text
         assert "OLD_SERVICE_TOKEN" not in text
+        assert '_HERMES_FORCE_CUSTOM_SERVICE_TOKEN="custom-secret"' in env_text
+        assert "_HERMES_FORCE_OLD_SERVICE_TOKEN" not in env_text
 
     _with_home(run)
 

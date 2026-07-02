@@ -1,10 +1,11 @@
-"""Register Tinyhat secret names with Hermes' terminal env passthrough.
+"""Register Tinyhat secret names for Hermes terminal environments.
 
 Hermes owns the security boundary for values that enter terminal/code
-subprocesses. Tinyhat therefore records only env names in Hermes'
-``terminal.env_passthrough`` config when Hermes permits that name. Hermes-managed
-provider/tool credentials such as ``EXA_API_KEY`` stay in Hermes' main process
-after the gateway reloads its ``.env``; they are not forced into child shells.
+subprocesses. Tinyhat records names in Hermes' ``terminal.env_passthrough``
+config for non-provider/custom names, and stores Tinyhat-managed force aliases
+in the same local Hermes env files that already contain the saved plaintext
+secret. Hermes consumes ``_HERMES_FORCE_<NAME>`` and exposes only ``<NAME>`` to
+terminal children.
 """
 
 from __future__ import annotations
@@ -17,55 +18,10 @@ import sys
 from typing import Any, Iterable
 
 from hermes_runtime.runtime_env import hermes_home
+from hermes_runtime.terminal_secret_aliases import sync_terminal_secret_aliases
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PASSTHROUGH_SCHEMA = "tinyhat_hermes_terminal_env_passthrough_v1"
-
-# Fallback mirror of Hermes' provider/tool credential blocklist for the names
-# Tinyhat is most likely to receive. When Hermes is installed, its own helper is
-# the authority; this set only keeps local tests and partial installs safe.
-_FALLBACK_PROTECTED_NAMES = {
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_TOKEN",
-    "BRAVE_SEARCH_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-    "COHERE_API_KEY",
-    "DAYTONA_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "EMAIL_PASSWORD",
-    "EXA_API_KEY",
-    "FAL_KEY",
-    "FIRECRAWL_API_KEY",
-    "FIRECRAWL_API_URL",
-    "FIREWORKS_API_KEY",
-    "GH_TOKEN",
-    "GITHUB_APP_ID",
-    "GITHUB_APP_INSTALLATION_ID",
-    "GITHUB_APP_PRIVATE_KEY_PATH",
-    "GOOGLE_API_KEY",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "GROQ_API_KEY",
-    "HASS_TOKEN",
-    "HELICONE_API_KEY",
-    "MISTRAL_API_KEY",
-    "MODAL_TOKEN_ID",
-    "MODAL_TOKEN_SECRET",
-    "OPENAI_API_BASE",
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "OPENAI_ORG_ID",
-    "OPENAI_ORGANIZATION",
-    "OPENROUTER_API_KEY",
-    "PARALLEL_API_KEY",
-    "PERPLEXITY_API_KEY",
-    "TAVILY_API_KEY",
-    "TELEGRAM_BOT_TOKEN",
-    "TOGETHER_API_KEY",
-    "VERTEX_CREDENTIALS_PATH",
-    "VOICE_TOOLS_OPENAI_KEY",
-    "XAI_API_KEY",
-}
-
 
 def _hermes_config_file() -> Path:
     explicit = (os.getenv("HERMES_CONFIG_FILE") or "").strip()
@@ -127,23 +83,6 @@ def _clean_names(names: Iterable[str]) -> list[str]:
         if name not in clean:
             clean.append(name)
     return clean
-
-
-def _hermes_blocks_passthrough(name: str) -> bool:
-    try:
-        from tools.env_passthrough import _is_hermes_provider_credential
-
-        return bool(_is_hermes_provider_credential(name))
-    except Exception:  # noqa: BLE001 - partial Hermes installs use fallback set.
-        if name in _FALLBACK_PROTECTED_NAMES:
-            return True
-        return (
-            name.startswith("AUXILIARY_")
-            and (name.endswith("_API_KEY") or name.endswith("_BASE_URL"))
-        ) or (
-            name.startswith("GATEWAY_RELAY_")
-            and (name.endswith("_SECRET") or name.endswith("_KEY") or name.endswith("_TOKEN"))
-        )
 
 
 def _find_terminal_key(
@@ -267,35 +206,23 @@ def sync_terminal_env_passthrough(
 ) -> dict[str, Any]:
     requested = _clean_names(names)
     removals = _clean_names(remove_names)
-    registered: list[str] = []
-    skipped: list[dict[str, str]] = []
-    for name in requested:
-        if _hermes_blocks_passthrough(name):
-            skipped.append(
-                {
-                    "name": name,
-                    "reason": "hermes_protected_credential",
-                    "message": (
-                        "Hermes keeps this provider/tool credential in the main "
-                        "agent process and refuses terminal env passthrough."
-                    ),
-                }
-            )
-        else:
-            registered.append(name)
-
     config = _update_config_list(
         key="env_passthrough",
-        add_items=registered,
+        add_items=requested,
         remove_items=removals,
+    )
+    aliases = sync_terminal_secret_aliases(
+        requested,
+        remove_names=removals,
     )
     return {
         "schema": PASSTHROUGH_SCHEMA,
         "requested_names": requested,
-        "registered_names": registered,
-        "skipped_names": skipped,
+        "registered_names": requested,
+        "skipped_names": [],
         "removed_names": removals,
         "config": config,
+        "terminal_secret_aliases": aliases,
     }
 
 

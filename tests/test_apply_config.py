@@ -165,10 +165,15 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert platform.gets == ["/hapi/v1/computers/me/runtime-secrets"]
     assert 'EXA_API_KEY="exa-secret"' in env_text
     assert 'SECOND_SECRET="two"' in env_text
+    assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in env_text
+    assert '_HERMES_FORCE_SECOND_SECRET="two"' in env_text
+    assert "# tinyhat terminal secret aliases start" in env_text
+    assert "# tinyhat terminal secret aliases end" in env_text
     assert 'TELEGRAM_HOME_CHANNEL="123"' in env_text
     assert "# tinyhat runtime secrets start" in env_text
     assert "# tinyhat runtime secrets end" in env_text
     assert 'EXA_API_KEY="exa-secret"' in project_env_text
+    assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in project_env_text
     assert len(events) == 2
     assert events[0][0] == "notice"
     assert events[0][1].startswith("2 secrets are saved.")
@@ -183,11 +188,14 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert result["secret_names"] == ["EXA_API_KEY", "SECOND_SECRET"]
     assert result["removed_secret_names"] == []
     assert result["env_reload"]["keys"] == ["EXA_API_KEY", "SECOND_SECRET"]
-    assert result["terminal_env_passthrough"]["registered_names"] == ["SECOND_SECRET"]
-    assert result["terminal_env_passthrough"]["skipped_names"][0]["name"] == "EXA_API_KEY"
-    assert result["terminal_env_passthrough"]["skipped_names"][0]["reason"] == (
-        "hermes_protected_credential"
-    )
+    assert result["terminal_env_passthrough"]["registered_names"] == [
+        "EXA_API_KEY",
+        "SECOND_SECRET",
+    ]
+    assert result["terminal_env_passthrough"]["skipped_names"] == []
+    assert result["terminal_env_passthrough"]["terminal_secret_aliases"][
+        "alias_names"
+    ] == ["_HERMES_FORCE_EXA_API_KEY", "_HERMES_FORCE_SECOND_SECRET"]
     assert "terminal_env_hook" not in result
     assert result["secret_available_notice"]["ok"] is True
     assert result["secret_available_notice"]["sent"] is True
@@ -287,15 +295,20 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
             os.environ.update(old_env)
 
     assert 'EXA_API_KEY="rotated-secret"' in env_text
+    assert '_HERMES_FORCE_EXA_API_KEY="rotated-secret"' in env_text
     assert "OLD_SECRET" not in env_text
+    assert "_HERMES_FORCE_OLD_SECRET" not in env_text
     assert events[0][0] == "notice"
     assert "restarting my Telegram gateway" in events[0][1]
     assert "before your next message" in events[0][1]
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
-    assert result["terminal_env_passthrough"]["registered_names"] == []
-    assert result["terminal_env_passthrough"]["skipped_names"][0]["name"] == "EXA_API_KEY"
+    assert result["terminal_env_passthrough"]["registered_names"] == ["EXA_API_KEY"]
+    assert result["terminal_env_passthrough"]["skipped_names"] == []
+    assert result["terminal_env_passthrough"]["terminal_secret_aliases"][
+        "alias_names"
+    ] == ["_HERMES_FORCE_EXA_API_KEY"]
     assert result["secret_available_notice"]["ok"] is None
     assert result["secret_available_notice"]["sent"] is False
     assert result["secret_available_notice"]["http_status"] is None
