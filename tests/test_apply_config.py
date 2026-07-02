@@ -173,7 +173,7 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert "# tinyhat runtime secrets start" in env_text
     assert "# tinyhat runtime secrets end" in env_text
     assert 'EXA_API_KEY="exa-secret"' in project_env_text
-    assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in project_env_text
+    assert "_HERMES_FORCE_EXA_API_KEY" not in project_env_text
     assert len(events) == 2
     assert events[0][0] == "notice"
     assert events[0][1].startswith("2 secrets are saved.")

@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hermes_runtime import terminal_env_passthrough  # noqa: E402
+from hermes_runtime import terminal_env_passthrough, terminal_secret_aliases  # noqa: E402
 
 
 def load_tests(
@@ -93,7 +93,64 @@ def test_register_records_provider_names_for_hermes_to_enforce() -> None:
         assert "    - EXA_API_KEY\n" in text
         assert "# tinyhat terminal secret aliases start" in env_text
         assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in env_text
+        assert os.environ.get("_HERMES_FORCE_EXA_API_KEY") is None
         assert "exa-secret" not in str(result)
+
+    _with_home(run)
+
+
+def test_aliases_write_only_first_env_file_that_defines_secret() -> None:
+    def run(home: Path) -> None:
+        home_env = home / ".hermes" / ".env"
+        project_env = home / "project" / ".env"
+        _write(home_env, 'EXA_API_KEY="home-secret"\n')
+        _write(
+            project_env,
+            "\n".join(
+                [
+                    'EXA_API_KEY="project-secret"',
+                    "",
+                    "# tinyhat terminal secret aliases start",
+                    '_HERMES_FORCE_EXA_API_KEY="old-project-secret"',
+                    "# tinyhat terminal secret aliases end",
+                ]
+            )
+            + "\n",
+        )
+
+        result = terminal_secret_aliases.sync_terminal_secret_aliases(
+            ["EXA_API_KEY"],
+            env_paths=[home_env, project_env],
+        )
+
+        home_text = home_env.read_text(encoding="utf-8")
+        project_text = project_env.read_text(encoding="utf-8")
+        assert '_HERMES_FORCE_EXA_API_KEY="home-secret"' in home_text
+        assert "_HERMES_FORCE_EXA_API_KEY" not in project_text
+        assert result["aliased_names"] == ["EXA_API_KEY"]
+        assert [item["count"] for item in result["env_files"]] == [1, 0]
+
+    _with_home(run)
+
+
+def test_aliases_fall_back_to_later_env_file_when_home_lacks_secret() -> None:
+    def run(home: Path) -> None:
+        home_env = home / ".hermes" / ".env"
+        project_env = home / "project" / ".env"
+        _write(home_env, 'OTHER_SECRET="home-secret"\n')
+        _write(project_env, 'EXA_API_KEY="project-secret"\n')
+
+        result = terminal_secret_aliases.sync_terminal_secret_aliases(
+            ["EXA_API_KEY"],
+            env_paths=[home_env, project_env],
+        )
+
+        home_text = home_env.read_text(encoding="utf-8")
+        project_text = project_env.read_text(encoding="utf-8")
+        assert "_HERMES_FORCE_EXA_API_KEY" not in home_text
+        assert '_HERMES_FORCE_EXA_API_KEY="project-secret"' in project_text
+        assert result["aliased_names"] == ["EXA_API_KEY"]
+        assert [item["count"] for item in result["env_files"]] == [0, 1]
 
     _with_home(run)
 

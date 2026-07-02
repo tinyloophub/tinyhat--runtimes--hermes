@@ -1,23 +1,31 @@
 """Maintain Tinyhat-managed Hermes terminal secret aliases.
 
 Hermes intentionally strips provider/tool credentials such as ``EXA_API_KEY``
-from terminal child processes. Its local terminal backend has an audited
+from terminal child processes. Its local terminal backend has a tested
 ``_HERMES_FORCE_<NAME>`` caller opt-in: the alias is consumed by Hermes and the
-child receives only ``<NAME>``.
+child receives only ``<NAME>``. This contract is pinned to upstream Hermes
+source commit ``88d1d6206f399c134d1f4c0b7db27733aaa3c50c``:
+``tools/environments/local.py`` consumes the prefix, and
+``tests/tools/test_local_env_blocklist.py`` documents that callers can opt in
+to passing a blocked var with this prefix.
+
+Source:
+https://github.com/NousResearch/hermes-agent/blob/88d1d6206f399c134d1f4c0b7db27733aaa3c50c/tools/environments/local.py#L94-L96
+Test:
+https://github.com/NousResearch/hermes-agent/blob/88d1d6206f399c134d1f4c0b7db27733aaa3c50c/tests/tools/test_local_env_blocklist.py#L241-L253
 
 Tinyhat writes aliases only for env names saved through the encrypted secret
 handoff/runtime-secret flows, and stores them in the same Computer-local
-Hermes env files that already contain the plaintext secret.
+Hermes env file that first defines the plaintext secret in Hermes load order.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import re
 from typing import Any, Iterable
 
-from hermes_runtime.runtime_env import env_file_candidates, read_env_values
+from hermes_runtime.runtime_env import env_file_candidates, parse_env_value
 
 FORCE_PREFIX = "_HERMES_FORCE_"
 ALIAS_START = "# tinyhat terminal secret aliases start"
@@ -89,10 +97,8 @@ def _write_alias_block(path: Path, values: dict[str, str]) -> dict[str, Any]:
     changed = before != next_text
     if changed:
         path.write_text(next_text, encoding="utf-8")
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+    if changed or values:
+        path.chmod(0o600)
 
     return {
         "path": str(path),
@@ -101,6 +107,47 @@ def _write_alias_block(path: Path, values: dict[str, str]) -> dict[str, Any]:
         "alias_names": [force_alias_name(name) for name in sorted(values)],
         "count": len(values),
     }
+
+
+def _read_path_values(path: Path, names: set[str]) -> dict[str, str]:
+    try:
+        lines = path.expanduser().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in lines:
+        clean = line.strip()
+        if not clean or clean.startswith("#") or "=" not in clean:
+            continue
+        if clean.startswith("export "):
+            clean = clean[len("export ") :].lstrip()
+        key, raw_value = clean.split("=", 1)
+        key = key.strip()
+        if key in names:
+            values[key] = parse_env_value(raw_value)
+    return values
+
+
+def _alias_values_by_path(
+    paths: list[Path],
+    requested: list[str],
+) -> tuple[dict[Path, dict[str, str]], dict[str, str]]:
+    remaining = set(requested)
+    values_by_path: dict[Path, dict[str, str]] = {}
+    aliased_values: dict[str, str] = {}
+    for path in paths:
+        if not remaining:
+            values_by_path[path] = {}
+            continue
+        file_values = _read_path_values(path, remaining)
+        if file_values:
+            values_by_path[path] = file_values
+            for name, value in file_values.items():
+                remaining.discard(name)
+                aliased_values[name] = value
+        else:
+            values_by_path[path] = {}
+    return values_by_path, aliased_values
 
 
 def sync_terminal_secret_aliases(
@@ -112,20 +159,15 @@ def sync_terminal_secret_aliases(
     requested = _clean_names(names)
     removals = _clean_names(remove_names)
     paths = list(env_paths or env_file_candidates())
-    values = read_env_values(paths, names=requested)
+    values_by_path, aliased_values = _alias_values_by_path(paths, requested)
 
-    for removed in removals:
-        os.environ.pop(force_alias_name(removed), None)
-    for name, value in values.items():
-        os.environ[force_alias_name(name)] = value
-
-    files = [_write_alias_block(path, values) for path in paths]
+    files = [_write_alias_block(path, values_by_path[path]) for path in paths]
     return {
         "schema": ALIAS_SCHEMA,
         "requested_names": requested,
-        "aliased_names": sorted(values),
-        "alias_names": [force_alias_name(name) for name in sorted(values)],
-        "missing_names": [name for name in requested if name not in values],
+        "aliased_names": sorted(aliased_values),
+        "alias_names": [force_alias_name(name) for name in sorted(aliased_values)],
+        "missing_names": [name for name in requested if name not in aliased_values],
         "removed_names": removals,
         "env_files": files,
     }

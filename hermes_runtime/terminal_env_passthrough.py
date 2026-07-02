@@ -2,10 +2,9 @@
 
 Hermes owns the security boundary for values that enter terminal/code
 subprocesses. Tinyhat records names in Hermes' ``terminal.env_passthrough``
-config for non-provider/custom names, and stores Tinyhat-managed force aliases
-in the same local Hermes env files that already contain the saved plaintext
-secret. Hermes consumes ``_HERMES_FORCE_<NAME>`` and exposes only ``<NAME>`` to
-terminal children.
+config and stores Tinyhat-managed force aliases only in the first local Hermes
+env file that already defines each saved plaintext secret. Hermes consumes
+``_HERMES_FORCE_<NAME>`` and exposes only ``<NAME>`` to terminal children.
 """
 
 from __future__ import annotations
