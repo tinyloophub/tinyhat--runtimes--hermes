@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.29 - 2026-07-02
+
 - Let the OpenRouter STT command bridge resolve credentials from Hermes env
   files when the gateway process has not exported them, and switch the fresh
   Computer STT primary to `openai/gpt-4o-transcribe` with explicit sequential
