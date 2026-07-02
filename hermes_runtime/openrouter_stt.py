@@ -18,13 +18,17 @@ from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 DEFAULT_MODEL = "openai/gpt-4o-transcribe"
 DEFAULT_FALLBACK_MODELS = (
     "openai/gpt-4o-mini-transcribe",
+    "microsoft/mai-transcribe-1.5",
     "mistralai/voxtral-mini-transcribe",
     "qwen/qwen3-asr-flash-2026-02-10",
+    "google/chirp-3",
+    "openai/whisper-large-v3",
+    "openai/whisper-large-v3-turbo",
     "openai/whisper-1",
 )
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT_SECONDS = 120.0
-DEFAULT_LOCAL_FALLBACK_MODEL = "medium"
+DEFAULT_LOCAL_FALLBACK_MODEL = "small"
 DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS = 240.0
 LANGUAGE_AUTO_VALUES = {"", "auto", "detect", "none", "null", "und", "undefined"}
 AUDIO_FORMAT_BY_SUFFIX = {
@@ -69,7 +73,7 @@ def _extract_error_message(payload: Any) -> str:
     return ""
 
 
-def _get_env_value(name: str, default: str = "") -> str:
+def get_env_value(name: str, default: str = "") -> str:
     process_value = (os.environ.get(name) or "").strip()
     if process_value:
         return process_value
@@ -78,6 +82,9 @@ def _get_env_value(name: str, default: str = "") -> str:
     except Exception:
         return default
     return (value or default).strip()
+
+
+_get_env_value = get_env_value
 
 
 def _parse_model_list(raw: str) -> list[str]:
@@ -95,7 +102,7 @@ def _fallback_models(primary_model: str, explicit: str = "") -> list[str]:
     candidates = (
         _parse_model_list(explicit)
         or _parse_model_list(
-            _get_env_value("TINYHAT_HERMES_OPENROUTER_STT_FALLBACK_MODELS")
+            get_env_value("TINYHAT_HERMES_OPENROUTER_STT_FALLBACK_MODELS")
         )
         or list(DEFAULT_FALLBACK_MODELS)
     )
@@ -120,7 +127,7 @@ def _as_bool(raw: str, *, default: bool) -> bool:
 
 def _local_fallback_enabled() -> bool:
     return _as_bool(
-        _get_env_value("TINYHAT_HERMES_OPENROUTER_STT_LOCAL_FALLBACK", "true"),
+        get_env_value("TINYHAT_HERMES_OPENROUTER_STT_LOCAL_FALLBACK", "true"),
         default=True,
     )
 
@@ -128,13 +135,13 @@ def _local_fallback_enabled() -> bool:
 def _local_fallback_model(explicit: str = "") -> str:
     return (
         explicit.strip()
-        or _get_env_value("TINYHAT_HERMES_LOCAL_STT_MODEL")
+        or get_env_value("TINYHAT_HERMES_LOCAL_STT_MODEL")
         or DEFAULT_LOCAL_FALLBACK_MODEL
     )
 
 
 def _local_fallback_timeout_seconds() -> float:
-    raw = _get_env_value("TINYHAT_HERMES_LOCAL_STT_FALLBACK_TIMEOUT_SECONDS")
+    raw = get_env_value("TINYHAT_HERMES_LOCAL_STT_FALLBACK_TIMEOUT_SECONDS")
     if not raw:
         return DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS
     try:
@@ -144,17 +151,40 @@ def _local_fallback_timeout_seconds() -> float:
     return max(30.0, timeout)
 
 
-def _hermes_project_dir() -> Path:
-    return Path(
-        _get_env_value("HERMES_PROJECT_DIR", "/usr/local/lib/hermes-agent")
-    ).expanduser()
+def _hermes_project_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    explicit = get_env_value("HERMES_PROJECT_DIR")
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.extend(
+        [
+            Path("/usr/local/lib/hermes-agent"),
+            Path.home() / ".hermes" / "hermes-agent",
+        ]
+    )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.expanduser())
+        if key not in seen:
+            unique.append(candidate.expanduser())
+            seen.add(key)
+    return unique
 
 
 def _hermes_python() -> Path:
-    configured = _get_env_value("TINYHAT_HERMES_AGENT_PYTHON")
+    configured = get_env_value("TINYHAT_HERMES_AGENT_PYTHON")
     if configured:
         return Path(configured).expanduser()
-    return _hermes_project_dir() / "venv" / "bin" / "python"
+    for project_dir in _hermes_project_candidates():
+        python_bin = project_dir / "venv" / "bin" / "python"
+        if python_bin.is_file():
+            return python_bin
+    return _hermes_project_candidates()[0] / "venv" / "bin" / "python"
+
+
+def hermes_python() -> Path:
+    return _hermes_python()
 
 
 def _request_local_transcript(
@@ -219,15 +249,14 @@ def _request_transcript(
     audio_path: Path,
     audio_format: str,
     model: str,
-    fallback_models: list[str],
     language: str,
     timeout_seconds: float,
 ) -> str:
-    api_key = _get_env_value("OPENROUTER_API_KEY")
+    api_key = get_env_value("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not available to Hermes STT.")
 
-    base_url = _get_env_value("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    base_url = get_env_value("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     audio_b64 = base64.b64encode(audio_path.read_bytes()).decode("ascii")
     payload: dict[str, Any] = {
         "model": model,
@@ -236,8 +265,6 @@ def _request_transcript(
             "format": audio_format,
         },
     }
-    if fallback_models:
-        payload["models"] = fallback_models
     if language.strip().lower() not in LANGUAGE_AUTO_VALUES:
         payload["language"] = language.strip()
 
@@ -288,30 +315,39 @@ def _request_transcript_with_fallbacks(
     timeout_seconds: float,
     local_fallback_model: str,
 ) -> str:
-    try:
-        return _request_transcript(
-            audio_path=audio_path,
-            audio_format=audio_format,
-            model=model,
-            fallback_models=fallback_models,
-            language=language,
-            timeout_seconds=timeout_seconds,
-        )
-    except Exception as openrouter_exc:
-        if not _local_fallback_enabled():
-            raise
+    openrouter_errors: list[str] = []
+    for candidate in [model, *fallback_models]:
         try:
-            return _request_local_transcript(
+            return _request_transcript(
                 audio_path=audio_path,
-                model=local_fallback_model,
+                audio_format=audio_format,
+                model=candidate,
                 language=language,
-                timeout_seconds=_local_fallback_timeout_seconds(),
+                timeout_seconds=timeout_seconds,
             )
-        except Exception as local_exc:
-            raise RuntimeError(
-                "OpenRouter STT failed and local Whisper fallback also failed: "
-                f"OpenRouter: {openrouter_exc}; local: {local_exc}"
-            ) from local_exc
+        except Exception as exc:
+            openrouter_errors.append(f"{candidate}: {exc}")
+
+    openrouter_message = (
+        "; ".join(openrouter_errors) or "no OpenRouter models attempted"
+    )
+    if not _local_fallback_enabled():
+        raise RuntimeError(
+            "OpenRouter STT failed for all configured models: "
+            f"{openrouter_message}"
+        )
+    try:
+        return _request_local_transcript(
+            audio_path=audio_path,
+            model=local_fallback_model,
+            language=language,
+            timeout_seconds=_local_fallback_timeout_seconds(),
+        )
+    except Exception as local_exc:
+        raise RuntimeError(
+            "OpenRouter STT failed for all configured models and local Whisper "
+            f"fallback also failed: OpenRouter: {openrouter_message}; local: {local_exc}"
+        ) from local_exc
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -344,14 +380,14 @@ def main(argv: list[str] | None = None) -> int:
 
     model = (
         str(args.model or "").strip()
-        or _get_env_value("TINYHAT_HERMES_OPENROUTER_STT_MODEL")
+        or get_env_value("TINYHAT_HERMES_OPENROUTER_STT_MODEL")
         or DEFAULT_MODEL
     )
     timeout_seconds = (
         float(args.timeout)
         if args.timeout is not None
         else float(
-            _get_env_value("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
+            get_env_value("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
             or DEFAULT_TIMEOUT_SECONDS
         )
     )

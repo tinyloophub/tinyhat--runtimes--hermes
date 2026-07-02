@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -14,14 +15,19 @@ from hermes_runtime.commands.configure_telegram import (
     DEFAULT_LOCAL_STT_MODEL,
     DEFAULT_OPENROUTER_STT_MODEL,
     DEFAULT_OPENROUTER_STT_FALLBACK_MODELS,
+    DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS,
     DEFAULT_VISION_MODEL,
     DEFAULT_VISION_PROVIDER,
     OPENROUTER_STT_PROVIDER,
+    openrouter_vision_fallback_models,
     _hermes_config_file,
 )
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.runtime_env import env_file_candidates
-from hermes_runtime.openrouter_stt import _get_env_value as _openrouter_stt_env_value
+from hermes_runtime.openrouter_stt import (
+    get_env_value as _openrouter_stt_env_value,
+    hermes_python,
+)
 
 SCHEMA = "tinyhat_hermes_multimodal_status_v1"
 MAX_CONFIG_SHOW_CHARS = 12_000
@@ -156,9 +162,71 @@ def _redact_text(text: str) -> str:
     return SECRET_ASSIGNMENT_RE.sub(r"\1[redacted]", text)
 
 
+_READ_STRUCTURED_CONFIG_SCRIPT = r"""
+import json
+from pathlib import Path
+import sys
+
+import yaml
+
+path = Path(sys.argv[1]).expanduser()
+config = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+if not isinstance(config, dict):
+    config = {}
+vision = config.get("auxiliary", {}).get("vision", {})
+if not isinstance(vision, dict):
+    vision = {}
+print(json.dumps({
+    "auxiliary": {
+        "vision": {
+            "extra_body": vision.get("extra_body") if isinstance(vision.get("extra_body"), dict) else {},
+            "fallback_chain": vision.get("fallback_chain") if isinstance(vision.get("fallback_chain"), list) else [],
+        }
+    }
+}))
+"""
+
+
+async def _read_structured_config(config_file: Path) -> dict[str, Any]:
+    python_bin = hermes_python()
+    if not python_bin.is_file():
+        return {}
+    result = await run_process(
+        [
+            str(python_bin),
+            "-c",
+            _READ_STRUCTURED_CONFIG_SCRIPT,
+            str(config_file),
+        ],
+        timeout_seconds=30,
+    )
+    if not result.get("ok"):
+        return {}
+    try:
+        parsed = json.loads(str(result.get("stdout") or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _sanitize_fallback_chain(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    entries: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider") or "").strip()
+        model = str(entry.get("model") or "").strip()
+        if provider and model:
+            entries.append({"provider": provider, "model": model})
+    return entries
+
+
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     config_file = _hermes_config_file()
     values, config = _read_config_values(config_file)
+    structured_config = await _read_structured_config(config_file)
     hermes_bin = find_hermes_binary()
     config_show: dict[str, Any] | None = None
     if hermes_bin is not None:
@@ -182,6 +250,27 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         DEFAULT_CODEX_VISION_MODEL
         if vision_provider == CODEX_VISION_PROVIDER
         else DEFAULT_VISION_MODEL
+    )
+    vision_structured = (
+        structured_config.get("auxiliary", {})
+        .get("vision", {})
+        if isinstance(structured_config.get("auxiliary"), dict)
+        else {}
+    )
+    if not isinstance(vision_structured, dict):
+        vision_structured = {}
+    vision_extra_body = vision_structured.get("extra_body")
+    if not isinstance(vision_extra_body, dict):
+        vision_extra_body = {}
+    vision_openrouter_fallback_models = _parse_model_list(
+        ",".join(str(item) for item in vision_extra_body.get("models", []))
+        if isinstance(vision_extra_body.get("models"), list)
+        else str(vision_extra_body.get("models") or "")
+    ) or _parse_model_list(openrouter_vision_fallback_models()) or list(
+        DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS
+    )
+    vision_provider_fallback_chain = _sanitize_fallback_chain(
+        vision_structured.get("fallback_chain")
     )
     openrouter_key = _env_key_presence("OPENROUTER_API_KEY")
     openrouter_base_url = _env_key_presence("OPENROUTER_BASE_URL")
@@ -252,6 +341,17 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             "provider": vision_provider,
             "model": vision_model,
             "uses_codex_auth": vision_provider == CODEX_VISION_PROVIDER,
+            "openrouter": {
+                "provider": DEFAULT_VISION_PROVIDER,
+                "model": (
+                    vision_model
+                    if vision_provider == DEFAULT_VISION_PROVIDER
+                    else DEFAULT_VISION_MODEL
+                ),
+                "fallback_models": vision_openrouter_fallback_models,
+                "fallback_mechanism": "openrouter_chat_completions_models",
+            },
+            "provider_fallback_chain": vision_provider_fallback_chain,
         },
         "secrets": {
             "values_masked": True,

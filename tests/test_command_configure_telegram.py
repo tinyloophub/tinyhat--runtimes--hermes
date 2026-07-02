@@ -279,7 +279,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -313,7 +313,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "stt.providers.openrouter.local_fallback_model",
-            "medium",
+            "small",
         ],
         [
             "/usr/local/bin/hermes",
@@ -348,7 +348,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -413,7 +413,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.local.model",
-            "value": "medium",
+            "value": "small",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -458,7 +458,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.providers.openrouter.local_fallback_model",
-            "value": "medium",
+            "value": "small",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -503,7 +503,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "auxiliary.vision.model",
-            "value": "google/gemini-2.5-flash-lite",
+            "value": "google/gemini-2.5-flash",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -720,7 +720,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -754,7 +754,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "stt.providers.openrouter.local_fallback_model",
-            "medium",
+            "small",
         ],
         [
             "/usr/local/bin/hermes",
@@ -789,7 +789,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -837,6 +837,7 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             fake_run_process,
         ),
     ):
+        expected_stt_command = configure_telegram.openrouter_stt_command()
         result = asyncio.run(
             configure_telegram._configure_day_one_multimedia(Path("/bin/hermes"))
         )
@@ -852,7 +853,7 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             "config",
             "set",
             "stt.providers.openrouter.command",
-            configure_telegram.openrouter_stt_command(),
+            expected_stt_command,
         ],
         [
             "/bin/hermes",
@@ -1127,7 +1128,7 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
         result["openrouter_stt_fallback_models"]
         == configure_telegram.openrouter_stt_fallback_models()
     )
-    assert result["local_stt_fallback_model"] == "medium"
+    assert result["local_stt_fallback_model"] == "small"
     assert result["codex_stt_provider"] == "openai-codex-stt"
     assert result["auto_selected_codex_stt"] is False
     assert result["vision_provider"] == "openai-codex"

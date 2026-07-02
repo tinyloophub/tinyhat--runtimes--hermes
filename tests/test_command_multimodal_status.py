@@ -60,21 +60,21 @@ def test_multimodal_status_reports_models_without_values() -> None:
                     "  enabled: true",
                     "  provider: openrouter",
                     "  local:",
-                    "    model: medium",
+                    "    model: small",
                     "  providers:",
                     "    openrouter:",
                     "      type: command",
                     "      command: python3 -m hermes_runtime.openrouter_stt --input {input_path}",
                     "      model: openai/gpt-4o-transcribe",
-                    "      fallback_models: openai/gpt-4o-mini-transcribe,mistralai/voxtral-mini-transcribe,qwen/qwen3-asr-flash-2026-02-10,openai/whisper-1",
-                    "      local_fallback_model: medium",
+                    "      fallback_models: openai/gpt-4o-mini-transcribe,microsoft/mai-transcribe-1.5,mistralai/voxtral-mini-transcribe,qwen/qwen3-asr-flash-2026-02-10,google/chirp-3,openai/whisper-large-v3,openai/whisper-large-v3-turbo,openai/whisper-1",
+                    "      local_fallback_model: small",
                     "      language: auto",
                     "      timeout: 375",
                     "      output_format: txt",
                     "auxiliary:",
                     "  vision:",
                     "    provider: openrouter",
-                    "    model: google/gemini-2.5-flash-lite",
+                    "    model: google/gemini-2.5-flash",
                     "",
                 ]
             ),
@@ -116,8 +116,12 @@ def test_multimodal_status_reports_models_without_values() -> None:
     assert result["stt"]["openrouter"]["command_provider_configured"] is True
     assert result["stt"]["openrouter"]["fallback_models"] == [
         "openai/gpt-4o-mini-transcribe",
+        "microsoft/mai-transcribe-1.5",
         "mistralai/voxtral-mini-transcribe",
         "qwen/qwen3-asr-flash-2026-02-10",
+        "google/chirp-3",
+        "openai/whisper-large-v3",
+        "openai/whisper-large-v3-turbo",
         "openai/whisper-1",
     ]
     assert result["stt"]["openrouter"]["api_key_present"] is True
@@ -125,16 +129,28 @@ def test_multimodal_status_reports_models_without_values() -> None:
     assert result["stt"]["openrouter"]["command_base_url_resolvable"] is True
     assert result["stt"]["local_model"] == {
         "provider": "local",
-        "model": "medium",
+        "model": "small",
         "prepared_for_provider": "local",
         "automatic_fallback_from_openrouter": True,
     }
-    assert result["stt"]["local_fallback"]["model"] == "medium"
+    assert result["stt"]["local_fallback"]["model"] == "small"
     assert result["stt"]["local_fallback"]["automatic"] is True
     assert result["vision"] == {
         "provider": "openrouter",
-        "model": "google/gemini-2.5-flash-lite",
+        "model": "google/gemini-2.5-flash",
         "uses_codex_auth": False,
+        "openrouter": {
+            "provider": "openrouter",
+            "model": "google/gemini-2.5-flash",
+            "fallback_models": [
+                "google/gemini-2.5-flash-lite",
+                "openai/gpt-4o-mini",
+                "qwen/qwen2.5-vl-72b-instruct",
+                "meta-llama/llama-4-maverick",
+            ],
+            "fallback_mechanism": "openrouter_chat_completions_models",
+        },
+        "provider_fallback_chain": [],
     }
     assert result["secrets"]["values_masked"] is True
     assert "sk-or-v1-secret" not in str(result)
