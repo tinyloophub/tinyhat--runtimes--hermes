@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.30 - 2026-07-02
+
 - Cap OpenRouter vision `extra_body.models` fallbacks at three entries so
   fresh Computers do not hit OpenRouter's `models array must have 3 items or
   fewer` validation error.
