@@ -82,6 +82,26 @@ def test_register_appends_validates_and_dedupes() -> None:
     _with_home(run)
 
 
+def test_register_refreshes_terminal_env_hook() -> None:
+    def run(home: Path) -> None:
+        profile_d = home / "profile.d"
+        profile_d.mkdir()
+        os.environ["TINYHAT_PROFILE_D_DIR"] = str(profile_d)
+
+        result = terminal_env_export.register_name("EXA_API_KEY")
+
+        hook = home / ".hermes" / "tinyhat" / "terminal-env.sh"
+        config = home / ".hermes" / "config.yaml"
+        profile = profile_d / "tinyhat-hermes-env.sh"
+        assert result["terminal_env_hook"]["installed"] is True
+        assert hook.exists()
+        assert config.exists()
+        assert profile.exists()
+        assert "terminal_env_export" in hook.read_text(encoding="utf-8")
+
+    _with_home(run)
+
+
 def test_manifest_names_skip_comments_and_invalid_lines() -> None:
     def run(home: Path) -> None:
         manifest = home / ".hermes" / "tinyhat" / "terminal-env-names"

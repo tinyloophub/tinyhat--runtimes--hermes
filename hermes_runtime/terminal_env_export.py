@@ -90,7 +90,28 @@ def register_name(name: str) -> dict[str, object]:
         "added": added,
         "manifest": str(manifest),
         "names": read_manifest_names(manifest),
+        "terminal_env_hook": _refresh_terminal_env_hook(),
     }
+
+
+def _refresh_terminal_env_hook() -> dict[str, object]:
+    """Refresh the login-shell hook after a private-handoff registration.
+
+    Fresh Computers install this hook during ``configure_telegram``. Calling it
+    here as well covers upgraded Computers whose runtime is newer than the hook
+    file already on disk. Registration must remain best-effort because older
+    or non-root installs may not be able to write every activation path.
+    """
+    try:
+        from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
+
+        return install_terminal_env_reload_hook()
+    except Exception as exc:  # noqa: BLE001 - registration itself should survive.
+        return {
+            "installed": False,
+            "error": str(exc)[:200],
+            "failure_code": exc.__class__.__name__,
+        }
 
 
 def exportable_names() -> list[str]:
