@@ -89,6 +89,33 @@ def test_configure_telegram_uses_canonical_hermes_home_override() -> None:
     assert env_files[0] == hermes_home / ".env"
 
 
+def test_openrouter_vision_fallback_models_are_capped_for_openrouter() -> None:
+    with patch.dict(
+        os.environ,
+        {
+            "TINYHAT_HERMES_OPENROUTER_VISION_FALLBACK_MODELS": (
+                "model/primary, model/one, model/two, model/three, model/four"
+            )
+        },
+    ):
+        assert configure_telegram.openrouter_vision_fallback_model_list() == [
+            "model/primary",
+            "model/one",
+            "model/two",
+        ]
+        patch_payload = configure_telegram._vision_fallback_patch(
+            active_provider=configure_telegram.DEFAULT_VISION_PROVIDER,
+            active_model="model/primary",
+        )
+
+    assert patch_payload["openrouter_models"] == [
+        "model/one",
+        "model/two",
+        "model/three",
+    ]
+    assert len(patch_payload["openrouter_models"]) == 3
+
+
 def _yaml_block_list(text: str, key: str) -> list[str]:
     lines = text.splitlines()
     for index, line in enumerate(lines):

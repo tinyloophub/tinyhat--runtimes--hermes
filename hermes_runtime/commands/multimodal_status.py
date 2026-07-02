@@ -18,8 +18,9 @@ from hermes_runtime.commands.configure_telegram import (
     DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS,
     DEFAULT_VISION_MODEL,
     DEFAULT_VISION_PROVIDER,
+    MAX_OPENROUTER_VISION_FALLBACK_MODELS,
     OPENROUTER_STT_PROVIDER,
-    openrouter_vision_fallback_models,
+    openrouter_vision_fallback_model_list,
     _hermes_config_file,
 )
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
@@ -266,9 +267,23 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         ",".join(str(item) for item in vision_extra_body.get("models", []))
         if isinstance(vision_extra_body.get("models"), list)
         else str(vision_extra_body.get("models") or "")
-    ) or _parse_model_list(openrouter_vision_fallback_models()) or list(
-        DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS
     )
+    vision_openrouter_model = (
+        vision_model
+        if vision_provider == DEFAULT_VISION_PROVIDER
+        else DEFAULT_VISION_MODEL
+    )
+    if not vision_openrouter_fallback_models:
+        vision_openrouter_fallback_models = (
+            openrouter_vision_fallback_model_list(
+                exclude_model=vision_openrouter_model
+            )
+            or list(
+                DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS[
+                    :MAX_OPENROUTER_VISION_FALLBACK_MODELS
+                ]
+            )
+        )
     vision_provider_fallback_chain = _sanitize_fallback_chain(
         vision_structured.get("fallback_chain")
     )
@@ -343,11 +358,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             "uses_codex_auth": vision_provider == CODEX_VISION_PROVIDER,
             "openrouter": {
                 "provider": DEFAULT_VISION_PROVIDER,
-                "model": (
-                    vision_model
-                    if vision_provider == DEFAULT_VISION_PROVIDER
-                    else DEFAULT_VISION_MODEL
-                ),
+                "model": vision_openrouter_model,
                 "fallback_models": vision_openrouter_fallback_models,
                 "fallback_mechanism": "openrouter_chat_completions_models",
             },

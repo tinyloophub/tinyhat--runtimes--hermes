@@ -134,6 +134,7 @@ DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS = (
     "qwen/qwen2.5-vl-72b-instruct",
     "meta-llama/llama-4-maverick",
 )
+MAX_OPENROUTER_VISION_FALLBACK_MODELS = 3
 
 
 def local_stt_model() -> str:
@@ -208,6 +209,29 @@ def openrouter_vision_fallback_models() -> str:
         os.getenv("TINYHAT_HERMES_OPENROUTER_VISION_FALLBACK_MODELS")
         or ",".join(DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS)
     ).strip()
+
+
+def openrouter_vision_fallback_model_list(
+    limit: int | None = MAX_OPENROUTER_VISION_FALLBACK_MODELS,
+    exclude_model: str = "",
+) -> list[str]:
+    models: list[str] = []
+    seen: set[str] = set()
+    exclude_model = exclude_model.strip()
+    for model in (
+        openrouter_vision_fallback_models()
+        .replace("\n", ",")
+        .replace(";", ",")
+        .split(",")
+    ):
+        model = model.strip()
+        if not model or model == exclude_model or model in seen:
+            continue
+        seen.add(model)
+        models.append(model)
+        if limit is not None and len(models) >= limit:
+            break
+    return models
 
 
 def codex_vision_model(codex_chat_model: str = "") -> str:
@@ -1135,18 +1159,9 @@ def _vision_fallback_patch(*, active_provider: str, active_model: str) -> dict[s
         if active_provider == DEFAULT_VISION_PROVIDER
         else vision_model()
     )
-    fallback_models = [
-        model
-        for model in openrouter_vision_fallback_models()
-        .replace("\n", ",")
-        .replace(";", ",")
-        .split(",")
-        if model.strip()
-    ]
-    fallback_models = [model.strip() for model in fallback_models if model.strip()]
-    fallback_models = [
-        model for model in fallback_models if model != openrouter_model
-    ]
+    fallback_models = openrouter_vision_fallback_model_list(
+        exclude_model=openrouter_model
+    )
     provider_fallback_chain = []
     if active_provider != DEFAULT_VISION_PROVIDER:
         provider_fallback_chain = [
