@@ -13,8 +13,9 @@ What it does:
        - ``/usr/local/lib/hermes-agent/.env`` when that project directory
          exists.
     3. Applies the platform-selected model/base URL, OpenRouter-backed
-       multilingual STT, a warmed local STT fallback, and auxiliary vision
-       model through Hermes' public ``hermes config set`` command.
+       multilingual STT, a warmed local STT model for local/operator-selected
+       mode, and auxiliary vision model through Hermes' public
+       ``hermes config set`` command.
     4. Installs Tinyhat-managed Hermes quick commands and a tiny Hermes plugin
        for the agent settings Mini App and OpenAI Codex device-code auth:
        ``/tinyhat_settings`` opens the Tinyhat settings Mini App.
@@ -87,6 +88,9 @@ from hermes_runtime.hermes_cli import (
     probe_hermes_status,
     run_process,
 )
+from hermes_runtime.openrouter_stt import (
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS,
+)
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
 from hermes_runtime.runtime_env import env_file_candidates
@@ -113,7 +117,7 @@ CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
 OPENROUTER_STT_PROVIDER = "openrouter"
 DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-large-v3-turbo"
-DEFAULT_OPENROUTER_STT_TIMEOUT_SECONDS = "120"
+OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS = 15
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
 CODEX_VISION_PROVIDER = "openai-codex"
@@ -137,16 +141,18 @@ def openrouter_stt_model() -> str:
     ).strip() or DEFAULT_OPENROUTER_STT_MODEL
 
 
-def openrouter_stt_timeout_seconds() -> str:
+def openrouter_stt_command_timeout_seconds() -> str:
     raw = (
         os.getenv("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
-        or DEFAULT_OPENROUTER_STT_TIMEOUT_SECONDS
+        or str(int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS))
     ).strip()
     try:
         timeout = int(raw)
     except ValueError:
-        timeout = int(DEFAULT_OPENROUTER_STT_TIMEOUT_SECONDS)
-    return str(max(30, timeout))
+        timeout = int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS)
+    return str(
+        max(45, timeout + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS)
+    )
 
 
 def openrouter_stt_command() -> str:
@@ -1088,12 +1094,11 @@ async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
         ("stt.enabled", "true"),
         ("stt.provider", OPENROUTER_STT_PROVIDER),
         ("stt.local.model", local_stt_model()),
-        ("stt.openrouter.model", openrouter_stt_model()),
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
-        ("stt.providers.openrouter.timeout", openrouter_stt_timeout_seconds()),
+        ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
         ("auxiliary.vision.provider", vision_provider()),
         ("auxiliary.vision.model", vision_model()),
@@ -1152,12 +1157,11 @@ def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
     commands = [
         ("stt.enabled", "true"),
         ("stt.provider", OPENROUTER_STT_PROVIDER),
-        ("stt.openrouter.model", openrouter_stt_model()),
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
-        ("stt.providers.openrouter.timeout", openrouter_stt_timeout_seconds()),
+        ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
         (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
         ("auxiliary.vision.provider", CODEX_VISION_PROVIDER),

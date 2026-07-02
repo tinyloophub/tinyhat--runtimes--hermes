@@ -130,8 +130,7 @@ def _as_bool(value: str | None) -> bool | None:
 def _active_stt_model(provider: str, values: dict[str, str]) -> str | None:
     if provider == OPENROUTER_STT_PROVIDER:
         return (
-            values.get("stt.openrouter.model")
-            or values.get("stt.providers.openrouter.model")
+            values.get("stt.providers.openrouter.model")
             or DEFAULT_OPENROUTER_STT_MODEL
         )
     if provider == "local":
@@ -176,10 +175,10 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     openrouter_base_url = _env_key_presence("OPENROUTER_BASE_URL")
     openrouter_command = values.get("stt.providers.openrouter.command") or ""
     openrouter_model = (
-        values.get("stt.openrouter.model")
-        or values.get("stt.providers.openrouter.model")
+        values.get("stt.providers.openrouter.model")
         or DEFAULT_OPENROUTER_STT_MODEL
     )
+    local_model = values.get("stt.local.model") or DEFAULT_LOCAL_STT_MODEL
 
     return {
         "schema": SCHEMA,
@@ -202,9 +201,21 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
                 "api_key_present": bool(openrouter_key["present"]),
                 "base_url_present": bool(openrouter_base_url["present"]),
             },
+            "local_model": {
+                "provider": "local",
+                "model": local_model,
+                "prepared_for_provider": "local",
+                "automatic_fallback_from_openrouter": False,
+            },
             "local_fallback": {
                 "provider": "local",
-                "model": values.get("stt.local.model") or DEFAULT_LOCAL_STT_MODEL,
+                "model": local_model,
+                "automatic": False,
+                "note": (
+                    "Kept for compatibility. Hermes only uses this model when "
+                    "stt.provider is local; it is not an automatic fallback "
+                    "from the OpenRouter command provider."
+                ),
             },
             "codex": {
                 "provider": CODEX_STT_PROVIDER,

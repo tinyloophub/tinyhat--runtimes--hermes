@@ -61,8 +61,6 @@ def test_multimodal_status_reports_models_without_values() -> None:
                     "  provider: openrouter",
                     "  local:",
                     "    model: medium",
-                    "  openrouter:",
-                    "    model: openai/whisper-large-v3-turbo",
                     "  providers:",
                     "    openrouter:",
                     "      type: command",
@@ -115,7 +113,14 @@ def test_multimodal_status_reports_models_without_values() -> None:
     assert result["stt"]["active_model"] == "openai/whisper-large-v3-turbo"
     assert result["stt"]["openrouter"]["command_provider_configured"] is True
     assert result["stt"]["openrouter"]["api_key_present"] is True
+    assert result["stt"]["local_model"] == {
+        "provider": "local",
+        "model": "medium",
+        "prepared_for_provider": "local",
+        "automatic_fallback_from_openrouter": False,
+    }
     assert result["stt"]["local_fallback"]["model"] == "medium"
+    assert result["stt"]["local_fallback"]["automatic"] is False
     assert result["vision"] == {
         "provider": "openrouter",
         "model": "google/gemini-2.5-flash-lite",

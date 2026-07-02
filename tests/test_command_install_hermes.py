@@ -643,6 +643,6 @@ def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
     assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["ok"] is False
     assert result["local_stt_model_prefetch_warning"] == (
-        "Hermes local STT fallback model prefetch failed; provisioning "
+        "Hermes local STT model prefetch failed; provisioning "
         "continues because OpenRouter STT is the active provider."
     )

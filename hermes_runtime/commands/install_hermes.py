@@ -17,9 +17,9 @@ What it does:
     it installs Hermes' official ``messaging`` and ``voice`` extras into the same
     Hermes project venv. This keeps Tinyhat Computers warm: the later
     agent-assignment step only writes the bot settings and starts the gateway.
-    It also warms faster-whisper's selected local STT fallback model cache so a
-    Computer still has an on-box multilingual fallback if OpenRouter STT is not
-    available.
+    It also warms faster-whisper's selected local STT model cache so a Computer
+    still has an on-box multilingual model ready if an operator switches Hermes
+    to the local STT provider.
 
     The command also preinstalls Tinyhat's OpenAI Codex auth quick commands and
     matching Hermes plugin slash-command registrations in ``~/.hermes``. They
@@ -54,7 +54,7 @@ Side effects:
     Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
     ``messaging``/``voice`` extras into the Hermes venv and download the selected
-    local STT fallback model weights. Prefetch failures are reported but do not
+    local STT model weights. Prefetch failures are reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
     Does not configure Tinyhat platform state.
 """
@@ -334,7 +334,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     local_stt_model_prefetch_warning = None
     if not local_stt_model_prefetch.get("ok"):
         local_stt_model_prefetch_warning = (
-            "Hermes local STT fallback model prefetch failed; provisioning "
+            "Hermes local STT model prefetch failed; provisioning "
             "continues because OpenRouter STT is the active provider."
         )
     codex_auth = {

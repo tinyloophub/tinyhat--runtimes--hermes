@@ -4,8 +4,8 @@
 
 - Configure fresh installs and Telegram assignments with OpenRouter
   `openai/whisper-large-v3-turbo` command-provider STT, a warmed local `medium`
-  faster-whisper fallback, and OpenRouter `google/gemini-2.5-flash-lite`
-  auxiliary vision.
+  faster-whisper model prepared for explicit local-mode selection, and
+  OpenRouter `google/gemini-2.5-flash-lite` auxiliary vision.
 - After `/codex_auth`, switch image understanding to the Codex/GPT vision
   provider while keeping OpenRouter Whisper STT active.
 - Add `multimodal_status`, a read-only runtime command that reports the active
