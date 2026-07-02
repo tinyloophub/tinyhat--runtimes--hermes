@@ -13,6 +13,7 @@ from hermes_runtime.commands.configure_telegram import (
     DEFAULT_CODEX_VISION_MODEL,
     DEFAULT_LOCAL_STT_MODEL,
     DEFAULT_OPENROUTER_STT_MODEL,
+    DEFAULT_OPENROUTER_STT_FALLBACK_MODELS,
     DEFAULT_VISION_MODEL,
     DEFAULT_VISION_PROVIDER,
     OPENROUTER_STT_PROVIDER,
@@ -20,6 +21,7 @@ from hermes_runtime.commands.configure_telegram import (
 )
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.runtime_env import env_file_candidates
+from hermes_runtime.openrouter_stt import _get_env_value as _openrouter_stt_env_value
 
 SCHEMA = "tinyhat_hermes_multimodal_status_v1"
 MAX_CONFIG_SHOW_CHARS = 12_000
@@ -127,6 +129,16 @@ def _as_bool(value: str | None) -> bool | None:
     return None
 
 
+def _parse_model_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        item.strip()
+        for item in value.replace("\n", ",").replace(";", ",").split(",")
+        if item.strip()
+    ]
+
+
 def _active_stt_model(provider: str, values: dict[str, str]) -> str | None:
     if provider == OPENROUTER_STT_PROVIDER:
         return (
@@ -173,12 +185,23 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     )
     openrouter_key = _env_key_presence("OPENROUTER_API_KEY")
     openrouter_base_url = _env_key_presence("OPENROUTER_BASE_URL")
+    openrouter_command_key = bool(_openrouter_stt_env_value("OPENROUTER_API_KEY"))
+    openrouter_command_base_url = bool(
+        _openrouter_stt_env_value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    )
     openrouter_command = values.get("stt.providers.openrouter.command") or ""
     openrouter_model = (
         values.get("stt.providers.openrouter.model")
         or DEFAULT_OPENROUTER_STT_MODEL
     )
+    openrouter_fallback_models = _parse_model_list(
+        values.get("stt.providers.openrouter.fallback_models")
+    ) or list(DEFAULT_OPENROUTER_STT_FALLBACK_MODELS)
     local_model = values.get("stt.local.model") or DEFAULT_LOCAL_STT_MODEL
+    local_fallback_model = (
+        values.get("stt.providers.openrouter.local_fallback_model")
+        or local_model
+    )
 
     return {
         "schema": SCHEMA,
@@ -194,27 +217,29 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             "openrouter": {
                 "provider": OPENROUTER_STT_PROVIDER,
                 "model": openrouter_model,
+                "fallback_models": openrouter_fallback_models,
                 "command_provider_configured": bool(openrouter_command.strip()),
                 "language": values.get("stt.providers.openrouter.language") or "auto",
                 "timeout_seconds": values.get("stt.providers.openrouter.timeout"),
                 "output_format": values.get("stt.providers.openrouter.output_format") or "txt",
                 "api_key_present": bool(openrouter_key["present"]),
                 "base_url_present": bool(openrouter_base_url["present"]),
+                "command_api_key_resolvable": openrouter_command_key,
+                "command_base_url_resolvable": openrouter_command_base_url,
             },
             "local_model": {
                 "provider": "local",
                 "model": local_model,
                 "prepared_for_provider": "local",
-                "automatic_fallback_from_openrouter": False,
+                "automatic_fallback_from_openrouter": True,
             },
             "local_fallback": {
                 "provider": "local",
-                "model": local_model,
-                "automatic": False,
+                "model": local_fallback_model,
+                "automatic": True,
                 "note": (
-                    "Kept for compatibility. Hermes only uses this model when "
-                    "stt.provider is local; it is not an automatic fallback "
-                    "from the OpenRouter command provider."
+                    "Used only after the OpenRouter command provider fails "
+                    "after its configured model fallback chain."
                 ),
             },
             "codex": {

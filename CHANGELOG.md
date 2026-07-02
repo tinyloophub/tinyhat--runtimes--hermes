@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let the OpenRouter STT command bridge resolve credentials from Hermes env
+  files when the gateway process has not exported them, and switch the fresh
+  Computer STT primary to `openai/gpt-4o-transcribe` with OpenRouter model
+  fallbacks and local Whisper final fallback.
+
 ## 0.0.28 - 2026-07-02
 
 - Configure fresh installs and Telegram assignments with OpenRouter

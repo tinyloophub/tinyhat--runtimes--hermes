@@ -89,6 +89,8 @@ from hermes_runtime.hermes_cli import (
     run_process,
 )
 from hermes_runtime.openrouter_stt import (
+    DEFAULT_FALLBACK_MODELS as DEFAULT_OPENROUTER_STT_FALLBACK_MODELS,
+    DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS as DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS,
 )
 from hermes_runtime.platform_paths import context_computer_api_path
@@ -116,7 +118,7 @@ TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
 CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
 OPENROUTER_STT_PROVIDER = "openrouter"
-DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-large-v3-turbo"
+DEFAULT_OPENROUTER_STT_MODEL = "openai/gpt-4o-transcribe"
 OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS = 15
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
@@ -141,6 +143,13 @@ def openrouter_stt_model() -> str:
     ).strip() or DEFAULT_OPENROUTER_STT_MODEL
 
 
+def openrouter_stt_fallback_models() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_FALLBACK_MODELS")
+        or ",".join(DEFAULT_OPENROUTER_STT_FALLBACK_MODELS)
+    ).strip()
+
+
 def openrouter_stt_command_timeout_seconds() -> str:
     raw = (
         os.getenv("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
@@ -151,16 +160,25 @@ def openrouter_stt_command_timeout_seconds() -> str:
     except ValueError:
         timeout = int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS)
     return str(
-        max(45, timeout + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS)
+        max(
+            45,
+            timeout
+            + int(DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS)
+            + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS,
+        )
     )
 
 
 def openrouter_stt_command() -> str:
+    fallback_models_arg = shlex.quote(openrouter_stt_fallback_models())
+    local_fallback_model_arg = shlex.quote(local_stt_model())
     return (
         'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
         "python3 -m hermes_runtime.openrouter_stt "
         "--input {input_path} --output {output_path} --format {format} "
-        "--language {language} --model {model}"
+        "--language {language} --model {model} "
+        f"--fallback-models {fallback_models_arg} "
+        f"--local-fallback-model {local_fallback_model_arg}"
     )
 
 
@@ -1097,6 +1115,8 @@ async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.fallback_models", openrouter_stt_fallback_models()),
+        ("stt.providers.openrouter.local_fallback_model", local_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
         ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
@@ -1160,6 +1180,8 @@ def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.fallback_models", openrouter_stt_fallback_models()),
+        ("stt.providers.openrouter.local_fallback_model", local_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
         ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
@@ -1173,6 +1195,8 @@ def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
             "active_provider": OPENROUTER_STT_PROVIDER,
             "openrouter_stt_provider": OPENROUTER_STT_PROVIDER,
             "openrouter_stt_model": openrouter_stt_model(),
+            "openrouter_stt_fallback_models": openrouter_stt_fallback_models(),
+            "local_stt_fallback_model": local_stt_model(),
             "codex_stt_provider": CODEX_STT_PROVIDER,
             "codex_stt_model": CODEX_STT_MODEL,
             "auto_selected_codex_stt": False,

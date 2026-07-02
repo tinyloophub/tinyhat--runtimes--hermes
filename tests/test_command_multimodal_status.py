@@ -65,9 +65,11 @@ def test_multimodal_status_reports_models_without_values() -> None:
                     "    openrouter:",
                     "      type: command",
                     "      command: python3 -m hermes_runtime.openrouter_stt --input {input_path}",
-                    "      model: openai/whisper-large-v3-turbo",
+                    "      model: openai/gpt-4o-transcribe",
+                    "      fallback_models: openai/gpt-4o-mini-transcribe,mistralai/voxtral-mini-transcribe,qwen/qwen3-asr-flash-2026-02-10,openai/whisper-1",
+                    "      local_fallback_model: medium",
                     "      language: auto",
-                    "      timeout: 120",
+                    "      timeout: 375",
                     "      output_format: txt",
                     "auxiliary:",
                     "  vision:",
@@ -110,17 +112,25 @@ def test_multimodal_status_reports_models_without_values() -> None:
 
     assert result["schema"] == "tinyhat_hermes_multimodal_status_v1"
     assert result["stt"]["provider"] == "openrouter"
-    assert result["stt"]["active_model"] == "openai/whisper-large-v3-turbo"
+    assert result["stt"]["active_model"] == "openai/gpt-4o-transcribe"
     assert result["stt"]["openrouter"]["command_provider_configured"] is True
+    assert result["stt"]["openrouter"]["fallback_models"] == [
+        "openai/gpt-4o-mini-transcribe",
+        "mistralai/voxtral-mini-transcribe",
+        "qwen/qwen3-asr-flash-2026-02-10",
+        "openai/whisper-1",
+    ]
     assert result["stt"]["openrouter"]["api_key_present"] is True
+    assert result["stt"]["openrouter"]["command_api_key_resolvable"] is True
+    assert result["stt"]["openrouter"]["command_base_url_resolvable"] is True
     assert result["stt"]["local_model"] == {
         "provider": "local",
         "model": "medium",
         "prepared_for_provider": "local",
-        "automatic_fallback_from_openrouter": False,
+        "automatic_fallback_from_openrouter": True,
     }
     assert result["stt"]["local_fallback"]["model"] == "medium"
-    assert result["stt"]["local_fallback"]["automatic"] is False
+    assert result["stt"]["local_fallback"]["automatic"] is True
     assert result["vision"] == {
         "provider": "openrouter",
         "model": "google/gemini-2.5-flash-lite",
