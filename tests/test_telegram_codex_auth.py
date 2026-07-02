@@ -386,6 +386,7 @@ def test_start_uses_start_lock_to_avoid_duplicate_workers() -> None:
 def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     sent: list[str] = []
     hermes_auth_fallback = Mock(return_value=(0, True))
+    multimedia_config = Mock(return_value={"ok": True, "commands": []})
 
     def fake_gateway_restart(_hermes_bin: Path) -> dict[str, bool]:
         sent.append("__gateway_restart__")
@@ -414,7 +415,11 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._run_config_switch",
-                    return_value={"ok": True, "model_provider": "openai-codex"},
+                    return_value={
+                        "ok": True,
+                        "model_provider": "openai-codex",
+                        "model_default": "gpt-5.5",
+                    },
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._restart_gateway_after_auth",
@@ -422,7 +427,7 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
-                    return_value={"ok": True, "commands": []},
+                    multimedia_config,
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
@@ -454,6 +459,10 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     assert status["gateway_restart_notice"]["ok"] is True
     assert status["gateway_restart"]["healthy"] is True
     hermes_auth_fallback.assert_not_called()
+    multimedia_config.assert_called_once_with(
+        Path("/usr/local/bin/hermes"),
+        codex_chat_model="gpt-5.5",
+    )
     assert any("restarted my Telegram gateway" in text for text in sent)
     notice_index = next(
         index
@@ -465,7 +474,7 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
         index for index, text in enumerate(sent) if "restarted my Telegram gateway" in text
     )
     assert notice_index < gateway_index < completion_index
-    assert any("Voice transcription stays on OpenRouter Whisper" in text for text in sent)
+    assert any("Voice transcription stays on OpenRouter" in text for text in sent)
     assert not any(
         "Voice transcription is now set to OpenAI Codex STT" in text
         for text in sent
@@ -536,6 +545,7 @@ def test_worker_stops_when_codex_cli_auth_fails_before_touching_hermes_auth() ->
 
 def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> None:
     switch_calls: list[Path] = []
+    multimedia_config = Mock(return_value={"ok": True, "commands": []})
 
     def fake_auth_once(_hermes_bin: Path, provider: str) -> tuple[int, bool]:
         if provider == "openai-codex":
@@ -546,7 +556,11 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
         switch_calls.append(hermes_bin)
         if len(switch_calls) == 1:
             return {"ok": False, "model_provider": "openai-codex"}
-        return {"ok": True, "model_provider": "openai-codex"}
+        return {
+            "ok": True,
+            "model_provider": "openai-codex",
+            "model_default": "gpt-5.5",
+        }
 
     with tempfile.TemporaryDirectory() as tmp:
         old_env = os.environ.copy()
@@ -579,7 +593,7 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
-                    return_value={"ok": True, "commands": []},
+                    multimedia_config,
                 ),
                 patch(
                     "hermes_runtime.telegram_codex_auth._auth_status",
@@ -598,6 +612,10 @@ def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> 
 
     assert exit_code == 0
     assert switch_calls == [Path("/usr/local/bin/hermes"), Path("/usr/local/bin/hermes")]
+    multimedia_config.assert_called_once_with(
+        Path("/usr/local/bin/hermes"),
+        codex_chat_model="gpt-5.5",
+    )
     assert status is not None
     assert status["provider"] == "codex-oauth"
     assert status["model_provider"] == "openai-codex"

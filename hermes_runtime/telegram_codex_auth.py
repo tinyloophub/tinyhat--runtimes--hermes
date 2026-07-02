@@ -674,13 +674,20 @@ def _send_auth_restart_notice() -> dict[str, Any]:
         }
 
 
-def _configure_multimedia_after_auth(hermes_bin: Path) -> dict[str, Any]:
+def _configure_multimedia_after_auth(
+    hermes_bin: Path,
+    *,
+    codex_chat_model: str = "",
+) -> dict[str, Any]:
     """Switch Hermes media config after Codex auth is connected."""
 
     try:
         from hermes_runtime.commands.configure_telegram import configure_codex_multimedia
 
-        return configure_codex_multimedia(hermes_bin)
+        return configure_codex_multimedia(
+            hermes_bin,
+            codex_chat_model=codex_chat_model,
+        )
     except Exception as exc:  # noqa: BLE001 - auth worker reports best-effort status.
         return {
             "ok": False,
@@ -700,8 +707,9 @@ def _completion_message(
         if multimedia is not None:
             if multimedia.get("ok"):
                 media_sentence = (
-                    " Image understanding now uses the Codex/GPT provider. "
-                    "Voice transcription stays on OpenRouter Whisper Large V3 Turbo."
+                    " Image understanding now uses the selected Codex/OpenAI "
+                    "chat model when it supports images, with OpenRouter as "
+                    "fallback. Voice transcription stays on OpenRouter."
                 )
             else:
                 media_sentence = " I could not confirm the image/voice model config; send /codex_auth_status if media still fails."
@@ -950,7 +958,10 @@ def worker() -> int:
 
     switch = _run_config_switch(hermes_bin)
     if switch.get("ok"):
-        multimedia = _configure_multimedia_after_auth(hermes_bin)
+        multimedia = _configure_multimedia_after_auth(
+            hermes_bin,
+            codex_chat_model=str(switch.get("model_default") or ""),
+        )
         restart_notice = _send_auth_restart_notice()
         gateway = _restart_gateway_after_auth(hermes_bin)
         status = _auth_status(hermes_bin)
@@ -982,7 +993,10 @@ def worker() -> int:
             saw_material = False
         if last_returncode == 0:
             switch = _run_config_switch(hermes_bin)
-            multimedia = _configure_multimedia_after_auth(hermes_bin)
+            multimedia = _configure_multimedia_after_auth(
+                hermes_bin,
+                codex_chat_model=str(switch.get("model_default") or ""),
+            )
             restart_notice = _send_auth_restart_notice()
             gateway = _restart_gateway_after_auth(hermes_bin)
             status = _auth_status(hermes_bin)

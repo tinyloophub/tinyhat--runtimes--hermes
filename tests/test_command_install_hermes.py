@@ -52,7 +52,7 @@ async def _fake_local_stt_model_prefetch() -> dict[str, object]:
         "ok": True,
         "changed": True,
         "skipped": False,
-        "model": "medium",
+        "model": "small",
         "project_dir": "/usr/local/lib/hermes-agent",
     }
 
@@ -236,7 +236,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
     assert result["multimodal_defaults"]["ok"] is True
-    assert result["local_stt_model_prefetch"]["model"] == "medium"
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["local_stt_model_prefetch_warning"] is None
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
@@ -294,7 +294,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["changed"] is True
     assert result["multimodal_defaults"]["ok"] is True
-    assert result["local_stt_model_prefetch"]["model"] == "medium"
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
 
@@ -374,7 +374,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
     assert result["multimodal_defaults"]["ok"] is True
-    assert result["local_stt_model_prefetch"]["model"] == "medium"
+    assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["prerequisites"]["attempted"] is True

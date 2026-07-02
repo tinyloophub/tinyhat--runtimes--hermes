@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Let the OpenRouter STT command bridge resolve credentials from Hermes env
+  files when the gateway process has not exported them, and switch the fresh
+  Computer STT primary to `openai/gpt-4o-transcribe` with explicit sequential
+  OpenRouter model fallbacks before local `small` faster-whisper.
+- Configure fresh Computer image understanding with OpenRouter
+  `google/gemini-2.5-flash`, OpenRouter same-provider model fallbacks, and an
+  OpenRouter provider fallback chain for Codex-auth vision.
+- After `/codex_auth`, use the selected Codex chat model for image
+  understanding by default, with OpenRouter vision as the fallback.
+
 ## 0.0.28 - 2026-07-02
 
 - Configure fresh installs and Telegram assignments with OpenRouter

@@ -89,7 +89,10 @@ from hermes_runtime.hermes_cli import (
     run_process,
 )
 from hermes_runtime.openrouter_stt import (
+    DEFAULT_FALLBACK_MODELS as DEFAULT_OPENROUTER_STT_FALLBACK_MODELS,
+    DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS,
     DEFAULT_TIMEOUT_SECONDS as DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS,
+    hermes_python,
 )
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
@@ -116,15 +119,21 @@ TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
 CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
 OPENROUTER_STT_PROVIDER = "openrouter"
-DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-large-v3-turbo"
+DEFAULT_OPENROUTER_STT_MODEL = "openai/gpt-4o-transcribe"
 OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS = 15
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
 CODEX_VISION_PROVIDER = "openai-codex"
-DEFAULT_CODEX_VISION_MODEL = "gpt-5.4-mini"
-DEFAULT_LOCAL_STT_MODEL = "medium"
+DEFAULT_CODEX_VISION_MODEL = "gpt-5.5"
+DEFAULT_LOCAL_STT_MODEL = "small"
 DEFAULT_VISION_PROVIDER = "openrouter"
-DEFAULT_VISION_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_VISION_MODEL = "google/gemini-2.5-flash"
+DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS = (
+    "google/gemini-2.5-flash-lite",
+    "openai/gpt-4o-mini",
+    "qwen/qwen2.5-vl-72b-instruct",
+    "meta-llama/llama-4-maverick",
+)
 
 
 def local_stt_model() -> str:
@@ -141,6 +150,13 @@ def openrouter_stt_model() -> str:
     ).strip() or DEFAULT_OPENROUTER_STT_MODEL
 
 
+def openrouter_stt_fallback_models() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_FALLBACK_MODELS")
+        or ",".join(DEFAULT_OPENROUTER_STT_FALLBACK_MODELS)
+    ).strip()
+
+
 def openrouter_stt_command_timeout_seconds() -> str:
     raw = (
         os.getenv("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
@@ -151,16 +167,25 @@ def openrouter_stt_command_timeout_seconds() -> str:
     except ValueError:
         timeout = int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS)
     return str(
-        max(45, timeout + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS)
+        max(
+            45,
+            timeout
+            + int(DEFAULT_LOCAL_FALLBACK_TIMEOUT_SECONDS)
+            + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS,
+        )
     )
 
 
 def openrouter_stt_command() -> str:
+    fallback_models_arg = shlex.quote(openrouter_stt_fallback_models())
+    local_fallback_model_arg = shlex.quote(local_stt_model())
     return (
         'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
         "python3 -m hermes_runtime.openrouter_stt "
         "--input {input_path} --output {output_path} --format {format} "
-        "--language {language} --model {model}"
+        "--language {language} --model {model} "
+        f"--fallback-models {fallback_models_arg} "
+        f"--local-fallback-model {local_fallback_model_arg}"
     )
 
 
@@ -178,9 +203,24 @@ def vision_model() -> str:
     ).strip() or DEFAULT_VISION_MODEL
 
 
-def codex_vision_model() -> str:
+def openrouter_vision_fallback_models() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_OPENROUTER_VISION_FALLBACK_MODELS")
+        or ",".join(DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS)
+    ).strip()
+
+
+def codex_vision_model(codex_chat_model: str = "") -> str:
+    """Return the Codex-auth vision model.
+
+    By default, image understanding should use the same Codex/OpenAI model that
+    Hermes selected for chat. Keep an env override as an operator escape hatch
+    for accounts whose selected chat model is not image-capable.
+    """
+
     return (
         os.getenv("TINYHAT_HERMES_CODEX_VISION_MODEL")
+        or codex_chat_model
         or DEFAULT_CODEX_VISION_MODEL
     ).strip() or DEFAULT_CODEX_VISION_MODEL
 
@@ -1089,7 +1129,205 @@ async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str,
     return await _run_config_set_commands(hermes_bin, commands)
 
 
+def _vision_fallback_patch(*, active_provider: str, active_model: str) -> dict[str, Any]:
+    openrouter_model = (
+        active_model
+        if active_provider == DEFAULT_VISION_PROVIDER
+        else vision_model()
+    )
+    fallback_models = [
+        model
+        for model in openrouter_vision_fallback_models()
+        .replace("\n", ",")
+        .replace(";", ",")
+        .split(",")
+        if model.strip()
+    ]
+    fallback_models = [model.strip() for model in fallback_models if model.strip()]
+    fallback_models = [
+        model for model in fallback_models if model != openrouter_model
+    ]
+    provider_fallback_chain = []
+    if active_provider != DEFAULT_VISION_PROVIDER:
+        provider_fallback_chain = [
+            {"provider": DEFAULT_VISION_PROVIDER, "model": openrouter_model}
+        ]
+    return {
+        "openrouter_models": fallback_models,
+        "provider_fallback_chain": provider_fallback_chain,
+    }
+
+
+_PATCH_AUXILIARY_VISION_SCRIPT = r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+import yaml
+
+config_path = Path(sys.argv[1]).expanduser()
+patch = json.loads(sys.argv[2])
+
+if config_path.exists():
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+else:
+    config = {}
+if not isinstance(config, dict):
+    config = {}
+
+auxiliary = config.setdefault("auxiliary", {})
+if not isinstance(auxiliary, dict):
+    auxiliary = {}
+    config["auxiliary"] = auxiliary
+vision = auxiliary.setdefault("vision", {})
+if not isinstance(vision, dict):
+    vision = {}
+    auxiliary["vision"] = vision
+
+extra_body = vision.get("extra_body")
+if not isinstance(extra_body, dict):
+    extra_body = {}
+models = patch.get("openrouter_models") or []
+if models:
+    extra_body["models"] = [str(model) for model in models if str(model).strip()]
+elif "models" in extra_body:
+    extra_body.pop("models", None)
+if extra_body:
+    vision["extra_body"] = extra_body
+else:
+    vision.pop("extra_body", None)
+
+chain = patch.get("provider_fallback_chain") or []
+vision["fallback_chain"] = [
+    {
+        "provider": str(entry.get("provider") or "").strip(),
+        "model": str(entry.get("model") or "").strip(),
+    }
+    for entry in chain
+    if isinstance(entry, dict)
+    and str(entry.get("provider") or "").strip()
+    and str(entry.get("model") or "").strip()
+]
+
+tmp_path = config_path.with_name(config_path.name + ".tmp")
+tmp_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+os.replace(tmp_path, config_path)
+print(json.dumps({
+    "ok": True,
+    "openrouter_models": vision.get("extra_body", {}).get("models", []),
+    "provider_fallback_chain": vision.get("fallback_chain", []),
+}))
+"""
+
+
+async def _configure_vision_fallbacks(
+    hermes_bin: Path,
+    *,
+    active_provider: str,
+    active_model: str,
+) -> dict[str, Any]:
+    del hermes_bin
+    python_bin = hermes_python()
+    if not python_bin.is_file():
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "Hermes Python was not found.",
+            "python": str(python_bin),
+        }
+    patch = _vision_fallback_patch(
+        active_provider=active_provider,
+        active_model=active_model,
+    )
+    result = await run_process(
+        [
+            str(python_bin),
+            "-c",
+            _PATCH_AUXILIARY_VISION_SCRIPT,
+            str(_hermes_config_file()),
+            json.dumps(patch),
+        ],
+        timeout_seconds=45,
+    )
+    output: dict[str, Any] = {
+        "ok": bool(result.get("ok")),
+        "returncode": result.get("returncode"),
+        "duration_ms": result.get("duration_ms"),
+        "stdout": str(result.get("stdout") or "")[:1000],
+        "stderr": str(result.get("stderr") or "")[:1000],
+        "python": str(python_bin),
+    }
+    if result.get("ok"):
+        try:
+            output["applied"] = json.loads(str(result.get("stdout") or "{}"))
+        except json.JSONDecodeError:
+            output["applied"] = {}
+    return output
+
+
+def _configure_vision_fallbacks_sync(
+    *,
+    active_provider: str,
+    active_model: str,
+) -> dict[str, Any]:
+    python_bin = hermes_python()
+    if not python_bin.is_file():
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "Hermes Python was not found.",
+            "python": str(python_bin),
+        }
+    patch = _vision_fallback_patch(
+        active_provider=active_provider,
+        active_model=active_model,
+    )
+    started = time.monotonic()
+    try:
+        process = subprocess.run(
+            [
+                str(python_bin),
+                "-c",
+                _PATCH_AUXILIARY_VISION_SCRIPT,
+                str(_hermes_config_file()),
+                json.dumps(patch),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ok": False,
+            "returncode": None,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "stdout": "",
+            "stderr": str(exc)[:1000],
+            "python": str(python_bin),
+        }
+    output: dict[str, Any] = {
+        "ok": process.returncode == 0,
+        "returncode": process.returncode,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "stdout": process.stdout[:1000],
+        "stderr": process.stderr[:1000],
+        "python": str(python_bin),
+    }
+    if process.returncode == 0:
+        try:
+            output["applied"] = json.loads(process.stdout or "{}")
+        except json.JSONDecodeError:
+            output["applied"] = {}
+    return output
+
+
 async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
+    active_vision_provider = vision_provider()
+    active_vision_model = vision_model()
     commands = [
         ("stt.enabled", "true"),
         ("stt.provider", OPENROUTER_STT_PROVIDER),
@@ -1097,13 +1335,21 @@ async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.fallback_models", openrouter_stt_fallback_models()),
+        ("stt.providers.openrouter.local_fallback_model", local_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
         ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
-        ("auxiliary.vision.provider", vision_provider()),
-        ("auxiliary.vision.model", vision_model()),
+        ("auxiliary.vision.provider", active_vision_provider),
+        ("auxiliary.vision.model", active_vision_model),
     ]
-    return await _run_config_set_commands(hermes_bin, commands)
+    result = await _run_config_set_commands(hermes_bin, commands)
+    result["vision_fallbacks"] = await _configure_vision_fallbacks(
+        hermes_bin,
+        active_provider=active_vision_provider,
+        active_model=active_vision_model,
+    )
+    return result
 
 
 def _run_config_set_commands_sync(
@@ -1149,35 +1395,57 @@ def _run_config_set_commands_sync(
     return {"ok": True, "commands": results}
 
 
-def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
+def configure_codex_multimedia(
+    hermes_bin: Path,
+    *,
+    codex_chat_model: str = "",
+) -> dict[str, Any]:
     # Codex subscription auth improves Hermes' chat and vision route, but it
     # should not become the active STT provider: Codex subscription auth may not
     # include API-billed audio transcription. Keep the OpenRouter STT command
     # provider active and leave the Codex STT plugin as an opt-in provider.
+    active_codex_vision_model = codex_vision_model(codex_chat_model)
     commands = [
         ("stt.enabled", "true"),
         ("stt.provider", OPENROUTER_STT_PROVIDER),
         ("stt.providers.openrouter.type", "command"),
         ("stt.providers.openrouter.command", openrouter_stt_command()),
         ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.fallback_models", openrouter_stt_fallback_models()),
+        ("stt.providers.openrouter.local_fallback_model", local_stt_model()),
         ("stt.providers.openrouter.language", "auto"),
         ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
         ("stt.providers.openrouter.output_format", "txt"),
         (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
         ("auxiliary.vision.provider", CODEX_VISION_PROVIDER),
-        ("auxiliary.vision.model", codex_vision_model()),
+        ("auxiliary.vision.model", active_codex_vision_model),
     ]
     result = _run_config_set_commands_sync(hermes_bin, commands)
+    result["vision_fallbacks"] = _configure_vision_fallbacks_sync(
+        active_provider=CODEX_VISION_PROVIDER,
+        active_model=active_codex_vision_model,
+    )
     result.update(
         {
             "active_provider": OPENROUTER_STT_PROVIDER,
             "openrouter_stt_provider": OPENROUTER_STT_PROVIDER,
             "openrouter_stt_model": openrouter_stt_model(),
+            "openrouter_stt_fallback_models": openrouter_stt_fallback_models(),
+            "local_stt_fallback_model": local_stt_model(),
             "codex_stt_provider": CODEX_STT_PROVIDER,
             "codex_stt_model": CODEX_STT_MODEL,
             "auto_selected_codex_stt": False,
             "vision_provider": CODEX_VISION_PROVIDER,
-            "vision_model": codex_vision_model(),
+            "vision_model": active_codex_vision_model,
+            "codex_chat_model": codex_chat_model.strip(),
+            "vision_model_source": (
+                "TINYHAT_HERMES_CODEX_VISION_MODEL"
+                if (os.getenv("TINYHAT_HERMES_CODEX_VISION_MODEL") or "").strip()
+                else "codex_chat_model"
+                if codex_chat_model.strip()
+                else "default"
+            ),
+            "openrouter_vision_fallback_models": openrouter_vision_fallback_models(),
         }
     )
     if result.get("ok"):

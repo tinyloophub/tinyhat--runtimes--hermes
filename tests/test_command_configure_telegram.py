@@ -279,7 +279,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -299,7 +299,21 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "stt.providers.openrouter.model",
-            "openai/whisper-large-v3-turbo",
+            "openai/gpt-4o-transcribe",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.fallback_models",
+            configure_telegram.openrouter_stt_fallback_models(),
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.local_fallback_model",
+            "small",
         ],
         [
             "/usr/local/bin/hermes",
@@ -313,7 +327,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "stt.providers.openrouter.timeout",
-            "135",
+            "375",
         ],
         [
             "/usr/local/bin/hermes",
@@ -334,7 +348,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -399,7 +413,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.local.model",
-            "value": "medium",
+            "value": "small",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -426,7 +440,25 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.providers.openrouter.model",
-            "value": "openai/whisper-large-v3-turbo",
+            "value": "openai/gpt-4o-transcribe",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.fallback_models",
+            "value": configure_telegram.openrouter_stt_fallback_models(),
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.local_fallback_model",
+            "value": "small",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -444,7 +476,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.providers.openrouter.timeout",
-            "value": "135",
+            "value": "375",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -471,7 +503,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "auxiliary.vision.model",
-            "value": "google/gemini-2.5-flash-lite",
+            "value": "google/gemini-2.5-flash",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -688,7 +720,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
         ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -708,7 +740,21 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "stt.providers.openrouter.model",
-            "openai/whisper-large-v3-turbo",
+            "openai/gpt-4o-transcribe",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.fallback_models",
+            configure_telegram.openrouter_stt_fallback_models(),
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.local_fallback_model",
+            "small",
         ],
         [
             "/usr/local/bin/hermes",
@@ -722,7 +768,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "stt.providers.openrouter.timeout",
-            "135",
+            "375",
         ],
         [
             "/usr/local/bin/hermes",
@@ -743,7 +789,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash-lite",
+            "google/gemini-2.5-flash",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -791,6 +837,7 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             fake_run_process,
         ),
     ):
+        expected_stt_command = configure_telegram.openrouter_stt_command()
         result = asyncio.run(
             configure_telegram._configure_day_one_multimedia(Path("/bin/hermes"))
         )
@@ -806,7 +853,7 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             "config",
             "set",
             "stt.providers.openrouter.command",
-            configure_telegram.openrouter_stt_command(),
+            expected_stt_command,
         ],
         [
             "/bin/hermes",
@@ -815,8 +862,22 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             "stt.providers.openrouter.model",
             "openai/whisper-large-v3",
         ],
+        [
+            "/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.fallback_models",
+            configure_telegram.openrouter_stt_fallback_models(),
+        ],
+        [
+            "/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.local_fallback_model",
+            "medium",
+        ],
         ["/bin/hermes", "config", "set", "stt.providers.openrouter.language", "auto"],
-        ["/bin/hermes", "config", "set", "stt.providers.openrouter.timeout", "105"],
+        ["/bin/hermes", "config", "set", "stt.providers.openrouter.timeout", "345"],
         ["/bin/hermes", "config", "set", "stt.providers.openrouter.output_format", "txt"],
         ["/bin/hermes", "config", "set", "auxiliary.vision.provider", "openai"],
         ["/bin/hermes", "config", "set", "auxiliary.vision.model", "gpt-4o-mini"],
@@ -1052,7 +1113,10 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
         )
         hermes_bin.chmod(0o755)
 
-        result = configure_telegram.configure_codex_multimedia(hermes_bin)
+        result = configure_telegram.configure_codex_multimedia(
+            hermes_bin,
+            codex_chat_model="gpt-5.5",
+        )
         calls = [
             json.loads(line)
             for line in log.read_text(encoding="utf-8").splitlines()
@@ -1062,17 +1126,29 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
 
     assert result["ok"] is True
     assert result["active_provider"] == "openrouter"
-    assert result["openrouter_stt_model"] == "openai/whisper-large-v3-turbo"
+    assert result["openrouter_stt_model"] == "openai/gpt-4o-transcribe"
+    assert (
+        result["openrouter_stt_fallback_models"]
+        == configure_telegram.openrouter_stt_fallback_models()
+    )
+    assert result["local_stt_fallback_model"] == "small"
     assert result["codex_stt_provider"] == "openai-codex-stt"
     assert result["auto_selected_codex_stt"] is False
     assert result["vision_provider"] == "openai-codex"
-    assert result["vision_model"] == "gpt-5.4-mini"
+    assert result["vision_model"] == "gpt-5.5"
+    assert result["codex_chat_model"] == "gpt-5.5"
+    assert result["vision_model_source"] == "codex_chat_model"
+    assert any(
+        call[-2:] == ["auxiliary.vision.model", "gpt-5.5"] for call in calls
+    )
     assert keys == [
         "stt.enabled",
         "stt.provider",
         "stt.providers.openrouter.type",
         "stt.providers.openrouter.command",
         "stt.providers.openrouter.model",
+        "stt.providers.openrouter.fallback_models",
+        "stt.providers.openrouter.local_fallback_model",
         "stt.providers.openrouter.language",
         "stt.providers.openrouter.timeout",
         "stt.providers.openrouter.output_format",
