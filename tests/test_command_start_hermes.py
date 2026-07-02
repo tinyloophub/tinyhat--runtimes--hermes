@@ -81,10 +81,6 @@ def test_start_hermes_noops_when_gateway_is_already_healthy() -> None:
         patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
         patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
         patch(
-            "hermes_runtime.commands.start_hermes.install_terminal_env_reload_hook",
-            return_value={"installed": True},
-        ),
-        patch(
             "hermes_runtime.commands.start_hermes.load_env_files_into_process",
             return_value={"loaded": True, "keys": []},
         ),
@@ -136,10 +132,6 @@ def test_start_hermes_runs_gateway_start_when_not_healthy() -> None:
         ),
         patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
         patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
-        patch(
-            "hermes_runtime.commands.start_hermes.install_terminal_env_reload_hook",
-            return_value={"installed": True},
-        ),
         patch(
             "hermes_runtime.commands.start_hermes.load_env_files_into_process",
             return_value={"loaded": True, "keys": ["EXA_API_KEY"]},

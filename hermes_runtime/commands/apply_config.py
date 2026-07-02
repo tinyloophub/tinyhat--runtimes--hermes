@@ -22,14 +22,17 @@ from hermes_runtime.commands.configure_telegram import (
 )
 from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.platform_paths import context_computer_api_path
-from hermes_runtime.runtime_env import load_env_files_into_process
+from hermes_runtime.runtime_env import (
+    RUNTIME_SECRETS_END,
+    RUNTIME_SECRETS_START,
+    load_env_files_into_process,
+    read_managed_secret_names,
+)
 from hermes_runtime.telegram_codex_auth import _telegram_send
-from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
+from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthrough
 
 
 SCHEMA = "tinyhat_hermes_apply_config_v1"
-RUNTIME_SECRETS_START = "# tinyhat runtime secrets start"
-RUNTIME_SECRETS_END = "# tinyhat runtime secrets end"
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -49,23 +52,9 @@ def _clean_secret_map(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def _read_managed_secret_keys(lines: list[str]) -> set[str]:
-    keys: set[str] = set()
-    in_managed_block = False
-    for line in lines:
-        clean = line.strip()
-        if clean == RUNTIME_SECRETS_START:
-            in_managed_block = True
-            continue
-        if clean == RUNTIME_SECRETS_END:
-            in_managed_block = False
-            continue
-        if not in_managed_block or not clean or clean.startswith("#") or "=" not in clean:
-            continue
-        key, _raw_value = clean.split("=", 1)
-        key = key.strip()
-        if key and ENV_NAME_RE.fullmatch(key):
-            keys.add(key)
-    return keys
+    return {
+        key for key in read_managed_secret_names(lines) if ENV_NAME_RE.fullmatch(key)
+    }
 
 
 def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[str, Any]:
@@ -199,7 +188,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         os.environ.pop(key, None)
     env_paths = [Path(str(item["path"])) for item in env_files]
     env_reload = load_env_files_into_process(env_paths, keys=secret_names)
-    terminal_env_hook = install_terminal_env_reload_hook()
+    terminal_env_passthrough = sync_terminal_env_passthrough(
+        secret_names,
+        remove_names=removed_keys,
+    )
 
     restart_required = bool(secret_names or removed_keys)
     if restart_required:
@@ -232,7 +224,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "removed_secret_names": removed_keys,
         "env_files": env_files,
         "env_reload": env_reload,
-        "terminal_env_hook": terminal_env_hook,
+        "terminal_env_passthrough": terminal_env_passthrough,
         "secret_available_notice": _notice_result(
             sent=restart_required and not bool(removed_keys),
             notice=notice,

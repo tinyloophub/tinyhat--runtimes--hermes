@@ -37,6 +37,7 @@ class InstallScriptTests(TestCase):
             prefix = base / "prefix"
             state_dir = base / "state"
             env = _env_with_fake_codex(base / "fake-bin")
+            env["TINYHAT_COMPUTER_TOKEN_AUDIENCE"] = "https://dapii.tinyloop.co"
             ref = "v0.20.0-dev.20260625T173000Z.install-test"
 
             subprocess.run(
@@ -51,6 +52,8 @@ class InstallScriptTests(TestCase):
                     str(state_dir),
                     "--ref",
                     ref,
+                    "--platform-url",
+                    "https://caddevapi.tinyloop.co",
                     "--no-systemd",
                 ],
                 check=True,
@@ -66,6 +69,13 @@ class InstallScriptTests(TestCase):
                 (prefix / "tinyhat_hermes_runtime_bootstrap.py").is_file()
             )
             self.assertTrue((prefix / "bin" / "tinyhat-hermes-runtime").is_file())
+            env_file_text = (prefix / "env" / "runtime.env").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("TINYHAT_PLATFORM_URL=", env_file_text)
+            self.assertIn("caddevapi.tinyloop.co", env_file_text)
+            self.assertIn("TINYHAT_COMPUTER_TOKEN_AUDIENCE=", env_file_text)
+            self.assertIn("dapii.tinyloop.co", env_file_text)
             self.assertIn(
                 "tinyhat_hermes_runtime_bootstrap.py",
                 (prefix / "bin" / "tinyhat-hermes-runtime").read_text(
@@ -89,6 +99,41 @@ class InstallScriptTests(TestCase):
                 (state_dir / "current" / "COMMIT_SHA").read_text().strip(),
                 expected_sha,
             )
+
+    def test_token_audience_flag_overrides_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            prefix = base / "prefix"
+            state_dir = base / "state"
+            env = _env_with_fake_codex(base / "fake-bin")
+            env["TINYHAT_COMPUTER_TOKEN_AUDIENCE"] = "https://env.example"
+
+            subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install.sh"),
+                    "--source-dir",
+                    str(ROOT),
+                    "--prefix",
+                    str(prefix),
+                    "--state-dir",
+                    str(state_dir),
+                    "--token-audience",
+                    "https://flag.example",
+                    "--no-systemd",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+
+            env_file_text = (prefix / "env" / "runtime.env").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("TINYHAT_COMPUTER_TOKEN_AUDIENCE=", env_file_text)
+            self.assertIn("flag.example", env_file_text)
+            self.assertNotIn("env.example", env_file_text)
 
     def test_installer_installs_codex_cli_from_npm_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

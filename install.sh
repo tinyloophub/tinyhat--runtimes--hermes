@@ -9,10 +9,11 @@
 #    /var/lib/tinyhat-hermes-runtime. You can override those with env vars or
 #    --prefix / --state-dir.
 # 3. Reads optional Tinyhat connection values: platform URL and computer id.
-#    It can also accept --local-dev-token for local Docker development only.
-#    The installer does not create, fetch, or store a production Tinyhat API
-#    token. Production machine authentication is handled by the runtime through
-#    cloud identity attestation after installation.
+#    It can also accept the production identity-token audience, and
+#    --local-dev-token for local Docker development only. The installer does
+#    not create, fetch, or store a production Tinyhat API token. Production
+#    machine authentication is handled by the runtime through cloud identity
+#    attestation after installation.
 # 4. Requires python3 and install. On apt-based Linux hosts running as root, it
 #    installs Tinyhat's recommended Hermes machine packages up front: Git,
 #    curl, xz-utils, build-essential, ffmpeg, ripgrep, xclip, and
@@ -105,6 +106,7 @@ prefix="${TINYHAT_RUNTIME_PREFIX:-$DEFAULT_PREFIX}"
 state_dir="${TINYHAT_RUNTIME_STATE_DIR:-$DEFAULT_STATE_DIR}"
 source_dir="${TINYHAT_RUNTIME_SOURCE_DIR:-}"
 platform_url="${TINYHAT_PLATFORM_URL:-}"
+token_audience="${TINYHAT_COMPUTER_TOKEN_AUDIENCE:-${TINYHAT_BACKEND_AUDIENCE:-}}"
 computer_id="${TINYHAT_COMPUTER_ID:-}"
 local_dev_token="${TINYHAT_LOCAL_DEV_TOKEN:-}"
 codex_npm_package="${TINYHAT_CODEX_NPM_PACKAGE:-$DEFAULT_CODEX_NPM_PACKAGE}"
@@ -129,6 +131,9 @@ Options:
   --prefix PATH             Install destination. Defaults to /opt/tinyhat-hermes-runtime.
   --state-dir PATH          Runtime state directory. Defaults to /var/lib/tinyhat-hermes-runtime.
   --platform-url URL        Tinyhat platform URL written to the runtime env file.
+  --token-audience URL      GCE identity-token audience written to the runtime
+                            env file. Defaults to TINYHAT_COMPUTER_TOKEN_AUDIENCE
+                            or TINYHAT_BACKEND_AUDIENCE when set.
   --computer-id ID          Computer id written to the runtime env file.
   --local-dev-token TOKEN   Local-dev bearer token written to the runtime env file.
   --no-systemd              Do not install or restart the systemd unit.
@@ -185,6 +190,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --platform-url)
       platform_url="${2:?--platform-url requires a value}"
+      shift 2
+      ;;
+    --token-audience)
+      token_audience="${2:?--token-audience requires a value}"
       shift 2
       ;;
     --computer-id)
@@ -458,6 +467,9 @@ umask 077
   printf 'TINYHAT_RUNTIME_STATE_DIR=%q\n' "$state_dir"
   if [[ -n "$platform_url" ]]; then
     printf 'TINYHAT_PLATFORM_URL=%q\n' "$platform_url"
+  fi
+  if [[ -n "$token_audience" ]]; then
+    printf 'TINYHAT_COMPUTER_TOKEN_AUDIENCE=%q\n' "$token_audience"
   fi
   if [[ -n "$computer_id" ]]; then
     printf 'TINYHAT_COMPUTER_ID=%q\n' "$computer_id"
