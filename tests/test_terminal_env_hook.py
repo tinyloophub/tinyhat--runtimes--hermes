@@ -52,9 +52,10 @@ def test_terminal_env_hook_creates_config_and_export_script() -> None:
         assert result["hook"]["path"] == str(hook_path)
         assert result["config"]["config_file"] == str(config_path)
         hook_text = hook_path.read_text(encoding="utf-8")
-        assert "set -a" in hook_text
-        assert "$__tinyhat_hermes_home/.env" in hook_text
-        assert "/usr/local/lib/hermes-agent" in hook_text
+        assert "hermes_runtime.terminal_env_export" in hook_text
+        assert "print-exports" in hook_text
+        assert "TINYHAT_RUNTIME_PREFIX" in hook_text
+        assert 'eval "$__tinyhat_exports"' in hook_text
         config_text = config_path.read_text(encoding="utf-8")
         assert "terminal:" in config_text
         assert "shell_init_files:" in config_text
@@ -76,7 +77,42 @@ def test_terminal_env_hook_honors_tinyhat_hermes_home() -> None:
         assert result["config"]["config_file"] == str(config_path)
         assert hook_path.exists()
         assert config_path.exists()
-        assert "TINYHAT_HERMES_HOME" in hook_path.read_text(encoding="utf-8")
+
+    _with_home(run)
+
+
+def test_terminal_env_hook_installs_profile_dropin_when_dir_exists() -> None:
+    def run(home: Path) -> None:
+        profile_d = home / "profile.d"
+        profile_d.mkdir()
+        os.environ["TINYHAT_PROFILE_D_DIR"] = str(profile_d)
+
+        first = install_terminal_env_reload_hook()
+        second = install_terminal_env_reload_hook()
+        dropin = profile_d / "tinyhat-hermes-env.sh"
+
+        assert first["profile"]["installed"] is True
+        assert first["profile"]["path"] == str(dropin)
+        assert first["profile"]["updated"] is True
+        assert second["profile"]["updated"] is False
+        dropin_text = dropin.read_text(encoding="utf-8")
+        assert dropin_text == (
+            home / ".hermes" / "tinyhat" / "terminal-env.sh"
+        ).read_text(encoding="utf-8")
+        assert (dropin.stat().st_mode & 0o777) == 0o644
+
+    _with_home(run)
+
+
+def test_terminal_env_hook_skips_profile_dropin_when_dir_missing() -> None:
+    def run(home: Path) -> None:
+        os.environ["TINYHAT_PROFILE_D_DIR"] = str(home / "no-such-profile.d")
+
+        result = install_terminal_env_reload_hook()
+
+        assert result["installed"] is True
+        assert result["profile"]["installed"] is False
+        assert result["profile"]["skipped_reason"] == "profile_d_dir_missing"
 
     _with_home(run)
 

@@ -11,6 +11,7 @@ from typing import Any
 from datetime import datetime, timezone
 
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
+from hermes_runtime.runtime_env import hermes_home
 
 DEFAULT_TINYHAT_PLUGIN_REPO_URL = "https://github.com/tinyhat-ai/tinyhat.git"
 DEFAULT_TINYHAT_PLUGIN_REF = "channels/lts"
@@ -54,15 +55,6 @@ def plugin_ref(command: dict[str, Any]) -> str:
         or DEFAULT_TINYHAT_PLUGIN_REF
     )
     return str(raw).strip() or DEFAULT_TINYHAT_PLUGIN_REF
-
-
-def hermes_home() -> Path:
-    raw = (
-        os.getenv("TINYHAT_HERMES_HOME")
-        or os.getenv("HERMES_HOME")
-        or str(Path.home() / ".hermes")
-    )
-    return Path(raw).expanduser()
 
 
 def plugin_dir(name: str) -> Path:

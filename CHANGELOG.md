@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Export Tinyhat-saved secrets into terminal sessions through a login-shell
+  hook that works on every Hermes version: a `/etc/profile.d` drop-in plus the
+  existing `terminal.shell_init_files` entry both eval
+  `hermes_runtime.terminal_env_export`, which exports only Tinyhat-managed
+  secret names (platform runtime secrets and private-handoff registrations)
+  instead of sourcing whole Hermes env files, so gateway-internal secrets such
+  as bot tokens stay out of shell environments.
+- Add `python3 -m hermes_runtime.terminal_env_export register <NAME>` so the
+  Tinyhat plugin can mark private-handoff secrets for terminal export.
+
 ## 0.0.26 - 2026-07-01
 
 - Export Hermes env files into fresh terminal sessions through Hermes'

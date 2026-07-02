@@ -88,6 +88,7 @@ from hermes_runtime.hermes_cli import (
 )
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
+from hermes_runtime.runtime_env import env_file_candidates
 from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
 
 
@@ -150,26 +151,7 @@ def _upsert_env_file(path: Path, values: dict[str, str]) -> dict[str, Any]:
 
 
 def _env_file_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    explicit = (os.getenv("HERMES_ENV_FILE") or "").strip()
-    if explicit:
-        candidates.append(Path(explicit))
-    candidates.append(hermes_home() / ".env")
-
-    project_dir = Path(
-        (os.getenv("HERMES_PROJECT_DIR") or "/usr/local/lib/hermes-agent").strip()
-    )
-    if project_dir.exists():
-        candidates.append(project_dir / ".env")
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for path in candidates:
-        key = str(path.expanduser())
-        if key not in seen:
-            unique.append(path)
-            seen.add(key)
-    return unique
+    return env_file_candidates()
 
 
 def _hermes_config_file() -> Path:
