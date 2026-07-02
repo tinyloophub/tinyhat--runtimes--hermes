@@ -89,7 +89,6 @@ from hermes_runtime.hermes_cli import (
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
 from hermes_runtime.runtime_env import env_file_candidates
-from hermes_runtime.terminal_env_hook import install_terminal_env_reload_hook
 
 
 TELEGRAM_TINYHAT_MENU_COMMANDS = {
@@ -1410,7 +1409,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         _upsert_env_file(env_path, env_values)
         for env_path in _env_file_candidates()
     ]
-    terminal_env_hook = install_terminal_env_reload_hook()
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
         "plugin_commands": _install_codex_auth_plugin_commands(),
@@ -1452,7 +1450,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "home_channel": env_values["TELEGRAM_HOME_CHANNEL"],
         "home_channel_name": env_values["TELEGRAM_HOME_CHANNEL_NAME"],
         "env_files": env_files,
-        "terminal_env_hook": terminal_env_hook,
         "codex_auth": codex_auth,
         "model_config": model_config,
         "multimedia_config": multimedia_config,

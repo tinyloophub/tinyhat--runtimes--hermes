@@ -183,7 +183,12 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert result["secret_names"] == ["EXA_API_KEY", "SECOND_SECRET"]
     assert result["removed_secret_names"] == []
     assert result["env_reload"]["keys"] == ["EXA_API_KEY", "SECOND_SECRET"]
-    assert result["terminal_env_hook"]["installed"] is True
+    assert result["terminal_env_passthrough"]["registered_names"] == ["SECOND_SECRET"]
+    assert result["terminal_env_passthrough"]["skipped_names"][0]["name"] == "EXA_API_KEY"
+    assert result["terminal_env_passthrough"]["skipped_names"][0]["reason"] == (
+        "hermes_protected_credential"
+    )
+    assert "terminal_env_hook" not in result
     assert result["secret_available_notice"]["ok"] is True
     assert result["secret_available_notice"]["sent"] is True
     assert result["secret_available_notice"]["http_status"] == 200
@@ -289,6 +294,8 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
+    assert result["terminal_env_passthrough"]["registered_names"] == []
+    assert result["terminal_env_passthrough"]["skipped_names"][0]["name"] == "EXA_API_KEY"
     assert result["secret_available_notice"]["ok"] is None
     assert result["secret_available_notice"]["sent"] is False
     assert result["secret_available_notice"]["http_status"] is None
