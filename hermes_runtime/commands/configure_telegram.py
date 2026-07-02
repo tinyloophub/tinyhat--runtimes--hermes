@@ -124,7 +124,7 @@ OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS = 15
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
 CODEX_VISION_PROVIDER = "openai-codex"
-DEFAULT_CODEX_VISION_MODEL = "gpt-5.4-mini"
+DEFAULT_CODEX_VISION_MODEL = "gpt-5.5"
 DEFAULT_LOCAL_STT_MODEL = "small"
 DEFAULT_VISION_PROVIDER = "openrouter"
 DEFAULT_VISION_MODEL = "google/gemini-2.5-flash"
@@ -210,9 +210,17 @@ def openrouter_vision_fallback_models() -> str:
     ).strip()
 
 
-def codex_vision_model() -> str:
+def codex_vision_model(codex_chat_model: str = "") -> str:
+    """Return the Codex-auth vision model.
+
+    By default, image understanding should use the same Codex/OpenAI model that
+    Hermes selected for chat. Keep an env override as an operator escape hatch
+    for accounts whose selected chat model is not image-capable.
+    """
+
     return (
         os.getenv("TINYHAT_HERMES_CODEX_VISION_MODEL")
+        or codex_chat_model
         or DEFAULT_CODEX_VISION_MODEL
     ).strip() or DEFAULT_CODEX_VISION_MODEL
 
@@ -1387,11 +1395,16 @@ def _run_config_set_commands_sync(
     return {"ok": True, "commands": results}
 
 
-def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
+def configure_codex_multimedia(
+    hermes_bin: Path,
+    *,
+    codex_chat_model: str = "",
+) -> dict[str, Any]:
     # Codex subscription auth improves Hermes' chat and vision route, but it
     # should not become the active STT provider: Codex subscription auth may not
     # include API-billed audio transcription. Keep the OpenRouter STT command
     # provider active and leave the Codex STT plugin as an opt-in provider.
+    active_codex_vision_model = codex_vision_model(codex_chat_model)
     commands = [
         ("stt.enabled", "true"),
         ("stt.provider", OPENROUTER_STT_PROVIDER),
@@ -1405,12 +1418,12 @@ def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
         ("stt.providers.openrouter.output_format", "txt"),
         (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
         ("auxiliary.vision.provider", CODEX_VISION_PROVIDER),
-        ("auxiliary.vision.model", codex_vision_model()),
+        ("auxiliary.vision.model", active_codex_vision_model),
     ]
     result = _run_config_set_commands_sync(hermes_bin, commands)
     result["vision_fallbacks"] = _configure_vision_fallbacks_sync(
         active_provider=CODEX_VISION_PROVIDER,
-        active_model=codex_vision_model(),
+        active_model=active_codex_vision_model,
     )
     result.update(
         {
@@ -1423,7 +1436,15 @@ def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
             "codex_stt_model": CODEX_STT_MODEL,
             "auto_selected_codex_stt": False,
             "vision_provider": CODEX_VISION_PROVIDER,
-            "vision_model": codex_vision_model(),
+            "vision_model": active_codex_vision_model,
+            "codex_chat_model": codex_chat_model.strip(),
+            "vision_model_source": (
+                "TINYHAT_HERMES_CODEX_VISION_MODEL"
+                if (os.getenv("TINYHAT_HERMES_CODEX_VISION_MODEL") or "").strip()
+                else "codex_chat_model"
+                if codex_chat_model.strip()
+                else "default"
+            ),
             "openrouter_vision_fallback_models": openrouter_vision_fallback_models(),
         }
     )

@@ -9,6 +9,8 @@
 - Configure fresh Computer image understanding with OpenRouter
   `google/gemini-2.5-flash`, OpenRouter same-provider model fallbacks, and an
   OpenRouter provider fallback chain for Codex-auth vision.
+- After `/codex_auth`, use the selected Codex chat model for image
+  understanding by default, with OpenRouter vision as the fallback.
 
 ## 0.0.28 - 2026-07-02
 

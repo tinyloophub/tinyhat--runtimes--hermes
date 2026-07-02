@@ -1113,7 +1113,10 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
         )
         hermes_bin.chmod(0o755)
 
-        result = configure_telegram.configure_codex_multimedia(hermes_bin)
+        result = configure_telegram.configure_codex_multimedia(
+            hermes_bin,
+            codex_chat_model="gpt-5.5",
+        )
         calls = [
             json.loads(line)
             for line in log.read_text(encoding="utf-8").splitlines()
@@ -1132,7 +1135,12 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
     assert result["codex_stt_provider"] == "openai-codex-stt"
     assert result["auto_selected_codex_stt"] is False
     assert result["vision_provider"] == "openai-codex"
-    assert result["vision_model"] == "gpt-5.4-mini"
+    assert result["vision_model"] == "gpt-5.5"
+    assert result["codex_chat_model"] == "gpt-5.5"
+    assert result["vision_model_source"] == "codex_chat_model"
+    assert any(
+        call[-2:] == ["auxiliary.vision.model", "gpt-5.5"] for call in calls
+    )
     assert keys == [
         "stt.enabled",
         "stt.provider",
