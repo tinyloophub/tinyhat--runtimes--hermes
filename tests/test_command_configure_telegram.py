@@ -278,8 +278,57 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "https://openrouter.ai/api/v1",
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.openrouter.model",
+            "openai/whisper-large-v3-turbo",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.type",
+            "command",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.command",
+            configure_telegram.openrouter_stt_command(),
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.model",
+            "openai/whisper-large-v3-turbo",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.language",
+            "auto",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.timeout",
+            "120",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.output_format",
+            "txt",
+        ],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -292,7 +341,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -348,7 +397,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.provider",
-            "value": "local",
+            "value": "openrouter",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -357,7 +406,70 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.local.model",
-            "value": "small",
+            "value": "medium",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.openrouter.model",
+            "value": "openai/whisper-large-v3-turbo",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.type",
+            "value": "command",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.command",
+            "value": configure_telegram.openrouter_stt_command(),
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.model",
+            "value": "openai/whisper-large-v3-turbo",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.language",
+            "value": "auto",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.timeout",
+            "value": "120",
+            "ok": True,
+            "returncode": 0,
+            "duration_ms": 21,
+            "stdout": "ok\n",
+            "stderr": "",
+        },
+        {
+            "key": "stt.providers.openrouter.output_format",
+            "value": "txt",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -375,7 +487,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "auxiliary.vision.model",
-            "value": "google/gemini-2.5-flash",
+            "value": "google/gemini-2.5-flash-lite",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -591,8 +703,57 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "https://openrouter.ai/api/v1",
         ],
         ["/usr/local/bin/hermes", "config", "set", "stt.enabled", "true"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "local"],
-        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "small"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.provider", "openrouter"],
+        ["/usr/local/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.openrouter.model",
+            "openai/whisper-large-v3-turbo",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.type",
+            "command",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.command",
+            configure_telegram.openrouter_stt_command(),
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.model",
+            "openai/whisper-large-v3-turbo",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.language",
+            "auto",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.timeout",
+            "120",
+        ],
+        [
+            "/usr/local/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.output_format",
+            "txt",
+        ],
         [
             "/usr/local/bin/hermes",
             "config",
@@ -605,7 +766,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "auxiliary.vision.model",
-            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
         ],
         ["/usr/local/bin/hermes", "gateway", "stop"],
         ["/usr/local/bin/hermes", "gateway", "start"],
@@ -642,6 +803,8 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
             os.environ,
             {
                 "TINYHAT_HERMES_LOCAL_STT_MODEL": "medium",
+                "TINYHAT_HERMES_OPENROUTER_STT_MODEL": "openai/whisper-large-v3",
+                "TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS": "90",
                 "TINYHAT_HERMES_VISION_PROVIDER": "openai",
                 "TINYHAT_HERMES_VISION_MODEL": "gpt-4o-mini",
             },
@@ -658,8 +821,33 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
     assert result["ok"] is True
     assert calls == [
         ["/bin/hermes", "config", "set", "stt.enabled", "true"],
-        ["/bin/hermes", "config", "set", "stt.provider", "local"],
+        ["/bin/hermes", "config", "set", "stt.provider", "openrouter"],
         ["/bin/hermes", "config", "set", "stt.local.model", "medium"],
+        [
+            "/bin/hermes",
+            "config",
+            "set",
+            "stt.openrouter.model",
+            "openai/whisper-large-v3",
+        ],
+        ["/bin/hermes", "config", "set", "stt.providers.openrouter.type", "command"],
+        [
+            "/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.command",
+            configure_telegram.openrouter_stt_command(),
+        ],
+        [
+            "/bin/hermes",
+            "config",
+            "set",
+            "stt.providers.openrouter.model",
+            "openai/whisper-large-v3",
+        ],
+        ["/bin/hermes", "config", "set", "stt.providers.openrouter.language", "auto"],
+        ["/bin/hermes", "config", "set", "stt.providers.openrouter.timeout", "90"],
+        ["/bin/hermes", "config", "set", "stt.providers.openrouter.output_format", "txt"],
         ["/bin/hermes", "config", "set", "auxiliary.vision.provider", "openai"],
         ["/bin/hermes", "config", "set", "auxiliary.vision.model", "gpt-4o-mini"],
     ]
@@ -880,7 +1068,7 @@ def test_codex_auth_plugin_source_compiles_and_maps_stt_errors() -> None:
     assert provider.default_model() == "gpt-4o-transcribe"
 
 
-def test_configure_codex_multimedia_does_not_auto_select_codex_stt() -> None:
+def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "calls.jsonl"
         hermes_bin = Path(tmp) / "hermes"
@@ -903,14 +1091,25 @@ def test_configure_codex_multimedia_does_not_auto_select_codex_stt() -> None:
     keys = [call[2] for call in calls]
 
     assert result["ok"] is True
-    assert result["active_provider"] == "unchanged"
+    assert result["active_provider"] == "openrouter"
+    assert result["openrouter_stt_model"] == "openai/whisper-large-v3-turbo"
     assert result["codex_stt_provider"] == "openai-codex-stt"
     assert result["auto_selected_codex_stt"] is False
-    assert "stt.provider" not in keys
+    assert result["vision_provider"] == "openai-codex"
+    assert result["vision_model"] == "gpt-5.4-mini"
     assert keys == [
         "stt.enabled",
+        "stt.provider",
+        "stt.openrouter.model",
+        "stt.providers.openrouter.type",
+        "stt.providers.openrouter.command",
+        "stt.providers.openrouter.model",
+        "stt.providers.openrouter.language",
+        "stt.providers.openrouter.timeout",
+        "stt.providers.openrouter.output_format",
         "stt.openai-codex-stt.model",
         "auxiliary.vision.provider",
+        "auxiliary.vision.model",
     ]
 
 

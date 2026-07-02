@@ -17,8 +17,9 @@ What it does:
     it installs Hermes' official ``messaging`` and ``voice`` extras into the same
     Hermes project venv. This keeps Tinyhat Computers warm: the later
     agent-assignment step only writes the bot settings and starts the gateway.
-    It also warms faster-whisper's selected local STT model cache so the first
-    user voice note does not have to wait for a model download.
+    It also warms faster-whisper's selected local STT fallback model cache so a
+    Computer still has an on-box multilingual fallback if OpenRouter STT is not
+    available.
 
     The command also preinstalls Tinyhat's OpenAI Codex auth quick commands and
     matching Hermes plugin slash-command registrations in ``~/.hermes``. They
@@ -53,7 +54,9 @@ Side effects:
     Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
     ``messaging``/``voice`` extras into the Hermes venv and download the selected
-    local STT model weights. Does not configure Tinyhat platform state.
+    local STT fallback model weights. Prefetch failures are reported but do not
+    fail provisioning because OpenRouter is the active day-one STT provider.
+    Does not configure Tinyhat platform state.
 """
 
 from __future__ import annotations
@@ -317,8 +320,12 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if not messaging.get("ok"):
         raise RuntimeError("Hermes messaging dependencies are not available.")
     local_stt_model_prefetch = await _prefetch_local_stt_model()
+    local_stt_model_prefetch_warning = None
     if not local_stt_model_prefetch.get("ok"):
-        raise RuntimeError("Hermes local STT model prefetch failed.")
+        local_stt_model_prefetch_warning = (
+            "Hermes local STT fallback model prefetch failed; provisioning "
+            "continues because OpenRouter STT is the active provider."
+        )
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
         "plugin_commands": _install_codex_auth_plugin_commands(),
@@ -340,6 +347,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "install": install_result,
         "messaging": messaging,
         "local_stt_model_prefetch": local_stt_model_prefetch,
+        "local_stt_model_prefetch_warning": local_stt_model_prefetch_warning,
         "codex_auth": codex_auth,
         "status": status,
     }

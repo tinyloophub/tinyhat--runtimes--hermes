@@ -52,7 +52,7 @@ async def _fake_local_stt_model_prefetch() -> dict[str, object]:
         "ok": True,
         "changed": True,
         "skipped": False,
-        "model": "small",
+        "model": "medium",
         "project_dir": "/usr/local/lib/hermes-agent",
     }
 
@@ -213,7 +213,8 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
-    assert result["local_stt_model_prefetch"]["model"] == "small"
+    assert result["local_stt_model_prefetch"]["model"] == "medium"
+    assert result["local_stt_model_prefetch_warning"] is None
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["status"]["ok"] is True
@@ -265,7 +266,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
     assert result["installed_now"] is False
     assert result["changed"] is False
     assert result["messaging"]["changed"] is True
-    assert result["local_stt_model_prefetch"]["model"] == "small"
+    assert result["local_stt_model_prefetch"]["model"] == "medium"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
 
@@ -340,7 +341,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["already_installed"] is False
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
-    assert result["local_stt_model_prefetch"]["model"] == "small"
+    assert result["local_stt_model_prefetch"]["model"] == "medium"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["prerequisites"]["attempted"] is True
@@ -571,7 +572,7 @@ def test_prefetch_local_stt_model_can_be_skipped() -> None:
     }
 
 
-def test_install_hermes_raises_when_prefetch_fails() -> None:
+def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
     async def fake_status() -> dict[str, object]:
         return _status()
 
@@ -579,7 +580,7 @@ def test_install_hermes_raises_when_prefetch_fails() -> None:
         return {"ok": True, "changed": False}
 
     async def fake_prefetch() -> dict[str, object]:
-        return {"ok": False, "changed": False, "model": "small"}
+        return {"ok": False, "changed": False, "model": "medium"}
 
     with (
         patch(
@@ -599,5 +600,11 @@ def test_install_hermes_raises_when_prefetch_fails() -> None:
             fake_prefetch,
         ),
     ):
-        with _raises_runtime("local STT model prefetch"):
-            asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
+        result = asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
+
+    assert result["installed_after"] is True
+    assert result["local_stt_model_prefetch"]["ok"] is False
+    assert result["local_stt_model_prefetch_warning"] == (
+        "Hermes local STT fallback model prefetch failed; provisioning "
+        "continues because OpenRouter STT is the active provider."
+    )

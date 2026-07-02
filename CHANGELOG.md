@@ -2,9 +2,14 @@
 
 ## Unreleased
 
-- Warm the default local `small` faster-whisper model during Hermes
-  provisioning, and configure fresh Telegram assignments with that multilingual
-  STT model plus explicit OpenRouter `google/gemini-2.5-flash` auxiliary vision.
+- Configure fresh Telegram assignments with OpenRouter
+  `openai/whisper-large-v3-turbo` command-provider STT, a warmed local `medium`
+  faster-whisper fallback, and OpenRouter `google/gemini-2.5-flash-lite`
+  auxiliary vision.
+- After `/codex_auth`, switch image understanding to the Codex/GPT vision
+  provider while keeping OpenRouter Whisper STT active.
+- Add `multimodal_status`, a read-only runtime command that reports the active
+  Hermes voice and image providers/models without exposing secret values.
 
 ## 0.0.27 - 2026-07-02
 
