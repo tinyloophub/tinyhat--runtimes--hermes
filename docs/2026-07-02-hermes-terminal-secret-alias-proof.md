@@ -4,7 +4,10 @@ Date: 2026-07-02
 
 Purpose: prove that a Tinyhat encrypted secret save can make a provider-style
 secret name immediately available to Hermes local terminal/code children without
-returning or printing the plaintext value.
+returning or printing the plaintext value. `EXA_API_KEY` is the real external
+API used for this proof; the runtime code generates `_HERMES_FORCE_<ENV_NAME>`
+aliases dynamically for every valid secret name returned by the Tinyhat
+platform, not only for Exa.
 
 Hermes source under test:
 `NousResearch/hermes-agent@88d1d6206f399c134d1f4c0b7db27733aaa3c50c`

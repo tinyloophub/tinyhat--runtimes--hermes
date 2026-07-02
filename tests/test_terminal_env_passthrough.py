@@ -99,6 +99,57 @@ def test_register_records_provider_names_for_hermes_to_enforce() -> None:
     _with_home(run)
 
 
+def test_passthrough_aliases_every_platform_secret_name() -> None:
+    def run(home: Path) -> None:
+        env_path = home / ".hermes" / ".env"
+        _write(
+            env_path,
+            "\n".join(
+                [
+                    'EXA_API_KEY="exa-secret"',
+                    'BRAVE_SEARCH_API_KEY="brave-secret"',
+                    'CUSTOM_WEBHOOK_SECRET="webhook-secret"',
+                ]
+            )
+            + "\n",
+        )
+
+        result = terminal_env_passthrough.sync_terminal_env_passthrough(
+            [
+                "BRAVE_SEARCH_API_KEY",
+                "CUSTOM_WEBHOOK_SECRET",
+                "EXA_API_KEY",
+            ],
+        )
+        env_text = env_path.read_text(encoding="utf-8")
+        config_text = (home / ".hermes" / "config.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        assert result["registered_names"] == [
+            "BRAVE_SEARCH_API_KEY",
+            "CUSTOM_WEBHOOK_SECRET",
+            "EXA_API_KEY",
+        ]
+        assert result["terminal_secret_aliases"]["alias_names"] == [
+            "_HERMES_FORCE_BRAVE_SEARCH_API_KEY",
+            "_HERMES_FORCE_CUSTOM_WEBHOOK_SECRET",
+            "_HERMES_FORCE_EXA_API_KEY",
+        ]
+        assert '_HERMES_FORCE_BRAVE_SEARCH_API_KEY="brave-secret"' in env_text
+        assert '_HERMES_FORCE_CUSTOM_WEBHOOK_SECRET="webhook-secret"' in env_text
+        assert '_HERMES_FORCE_EXA_API_KEY="exa-secret"' in env_text
+        assert "    - BRAVE_SEARCH_API_KEY\n" in config_text
+        assert "    - CUSTOM_WEBHOOK_SECRET\n" in config_text
+        assert "    - EXA_API_KEY\n" in config_text
+        serialized = str(result)
+        assert "brave-secret" not in serialized
+        assert "webhook-secret" not in serialized
+        assert "exa-secret" not in serialized
+
+    _with_home(run)
+
+
 def test_aliases_write_only_first_env_file_that_defines_secret() -> None:
     def run(home: Path) -> None:
         home_env = home / ".hermes" / ".env"

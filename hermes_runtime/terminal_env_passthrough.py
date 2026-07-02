@@ -77,7 +77,8 @@ def _clean_names(names: Iterable[str]) -> list[str]:
             continue
         if not ENV_NAME_RE.fullmatch(name):
             raise ValueError(
-                "Secret names must look like EXA_API_KEY (letters, digits, underscores)."
+                "Secret names must be valid environment variable names "
+                "(letters, digits, underscores; start with a letter or underscore)."
             )
         if name not in clean:
             clean.append(name)
