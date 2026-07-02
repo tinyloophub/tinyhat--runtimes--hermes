@@ -456,14 +456,16 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     hermes_auth_fallback.assert_not_called()
     assert any("restarted my Telegram gateway" in text for text in sent)
     notice_index = next(
-        index for index, text in enumerate(sent) if "new OpenAI model is available" in text
+        index
+        for index, text in enumerate(sent)
+        if "new OpenAI chat and vision model settings" in text
     )
     gateway_index = sent.index("__gateway_restart__")
     completion_index = next(
         index for index, text in enumerate(sent) if "restarted my Telegram gateway" in text
     )
     assert notice_index < gateway_index < completion_index
-    assert any("Voice remains on the local STT fallback" in text for text in sent)
+    assert any("Voice transcription stays on OpenRouter Whisper" in text for text in sent)
     assert not any(
         "Voice transcription is now set to OpenAI Codex STT" in text
         for text in sent

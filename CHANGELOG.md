@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Configure fresh installs and Telegram assignments with OpenRouter
+  `openai/whisper-large-v3-turbo` command-provider STT, a warmed local `medium`
+  faster-whisper model prepared for explicit local-mode selection, and
+  OpenRouter `google/gemini-2.5-flash-lite` auxiliary vision.
+- After `/codex_auth`, switch image understanding to the Codex/GPT vision
+  provider while keeping OpenRouter Whisper STT active.
+- Add `multimodal_status`, a read-only runtime command that reports the active
+  Hermes voice and image providers/models without exposing secret values.
+
 ## 0.0.27 - 2026-07-02
 
 - Stop exporting Hermes env-file secrets through login-shell hooks. Tinyhat now

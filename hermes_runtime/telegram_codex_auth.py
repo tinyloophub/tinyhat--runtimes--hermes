@@ -658,8 +658,8 @@ def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
 def _auth_restart_notice_message() -> str:
     return (
         "OpenAI Codex auth is connected. I'm restarting my Telegram gateway now "
-        "so the new OpenAI model is available in chat. I'll send a confirmation "
-        "once it is back."
+        "so the new OpenAI chat and vision model settings are available in chat. "
+        "Voice transcription stays on Tinyhat's OpenRouter Whisper route."
     )
 
 
@@ -675,7 +675,7 @@ def _send_auth_restart_notice() -> dict[str, Any]:
 
 
 def _configure_multimedia_after_auth(hermes_bin: Path) -> dict[str, Any]:
-    """Switch Hermes voice/image config to the Codex-backed media route."""
+    """Switch Hermes media config after Codex auth is connected."""
 
     try:
         from hermes_runtime.commands.configure_telegram import configure_codex_multimedia
@@ -700,12 +700,11 @@ def _completion_message(
         if multimedia is not None:
             if multimedia.get("ok"):
                 media_sentence = (
-                    " Voice remains on the local STT fallback by default; "
-                    "OpenAI Codex STT is registered for opt-in accounts that "
-                    "can use OpenAI audio transcription."
+                    " Image understanding now uses the Codex/GPT provider. "
+                    "Voice transcription stays on OpenRouter Whisper Large V3 Turbo."
                 )
             else:
-                media_sentence = " I could not confirm the voice transcription config; send /codex_auth_status if voice still fails."
+                media_sentence = " I could not confirm the image/voice model config; send /codex_auth_status if media still fails."
         return (
             "OpenAI Codex auth is connected ✅\n\n"
             "I switched Hermes to OpenAI Codex and restarted my Telegram gateway, "

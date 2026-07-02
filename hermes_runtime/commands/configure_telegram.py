@@ -12,7 +12,9 @@ What it does:
        - ``~/.hermes/.env``
        - ``/usr/local/lib/hermes-agent/.env`` when that project directory
          exists.
-    3. Applies the platform-selected model/base URL through Hermes' public
+    3. Applies the platform-selected model/base URL, OpenRouter-backed
+       multilingual STT, a warmed local STT model for local/operator-selected
+       mode, and auxiliary vision model through Hermes' public
        ``hermes config set`` command.
     4. Installs Tinyhat-managed Hermes quick commands and a tiny Hermes plugin
        for the agent settings Mini App and OpenAI Codex device-code auth:
@@ -86,6 +88,9 @@ from hermes_runtime.hermes_cli import (
     probe_hermes_status,
     run_process,
 )
+from hermes_runtime.openrouter_stt import (
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS,
+)
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
 from hermes_runtime.runtime_env import env_file_candidates
@@ -110,9 +115,74 @@ TELEGRAM_MENU_START_MARKER = "# tinyhat managed telegram command menu start"
 TELEGRAM_MENU_END_MARKER = "# tinyhat managed telegram command menu end"
 CODEX_PLUGIN_NAME = "tinyhat-codex"
 CODEX_PLUGIN_DIR_NAME = "tinyhat-codex"
+OPENROUTER_STT_PROVIDER = "openrouter"
+DEFAULT_OPENROUTER_STT_MODEL = "openai/whisper-large-v3-turbo"
+OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS = 15
 CODEX_STT_PROVIDER = "openai-codex-stt"
 CODEX_STT_MODEL = "gpt-4o-transcribe"
-LOCAL_STT_MODEL = "base"
+CODEX_VISION_PROVIDER = "openai-codex"
+DEFAULT_CODEX_VISION_MODEL = "gpt-5.4-mini"
+DEFAULT_LOCAL_STT_MODEL = "medium"
+DEFAULT_VISION_PROVIDER = "openrouter"
+DEFAULT_VISION_MODEL = "google/gemini-2.5-flash-lite"
+
+
+def local_stt_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL")
+        or DEFAULT_LOCAL_STT_MODEL
+    ).strip() or DEFAULT_LOCAL_STT_MODEL
+
+
+def openrouter_stt_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_MODEL")
+        or DEFAULT_OPENROUTER_STT_MODEL
+    ).strip() or DEFAULT_OPENROUTER_STT_MODEL
+
+
+def openrouter_stt_command_timeout_seconds() -> str:
+    raw = (
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_TIMEOUT_SECONDS")
+        or str(int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS))
+    ).strip()
+    try:
+        timeout = int(raw)
+    except ValueError:
+        timeout = int(DEFAULT_OPENROUTER_STT_BRIDGE_TIMEOUT_SECONDS)
+    return str(
+        max(45, timeout + OPENROUTER_STT_COMMAND_TIMEOUT_MARGIN_SECONDS)
+    )
+
+
+def openrouter_stt_command() -> str:
+    return (
+        'PYTHONPATH="${TINYHAT_RUNTIME_PREFIX:-/opt/tinyhat-hermes-runtime}:${PYTHONPATH:-}" '
+        "python3 -m hermes_runtime.openrouter_stt "
+        "--input {input_path} --output {output_path} --format {format} "
+        "--language {language} --model {model}"
+    )
+
+
+def vision_provider() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_VISION_PROVIDER")
+        or DEFAULT_VISION_PROVIDER
+    ).strip() or DEFAULT_VISION_PROVIDER
+
+
+def vision_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_VISION_MODEL")
+        or DEFAULT_VISION_MODEL
+    ).strip() or DEFAULT_VISION_MODEL
+
+
+def codex_vision_model() -> str:
+    return (
+        os.getenv("TINYHAT_HERMES_CODEX_VISION_MODEL")
+        or DEFAULT_CODEX_VISION_MODEL
+    ).strip() or DEFAULT_CODEX_VISION_MODEL
 
 
 def _quote_env(value: str) -> str:
@@ -1022,9 +1092,16 @@ async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str,
 async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
     commands = [
         ("stt.enabled", "true"),
-        ("stt.provider", "local"),
-        ("stt.local.model", LOCAL_STT_MODEL),
-        ("auxiliary.vision.provider", "auto"),
+        ("stt.provider", OPENROUTER_STT_PROVIDER),
+        ("stt.local.model", local_stt_model()),
+        ("stt.providers.openrouter.type", "command"),
+        ("stt.providers.openrouter.command", openrouter_stt_command()),
+        ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.language", "auto"),
+        ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
+        ("stt.providers.openrouter.output_format", "txt"),
+        ("auxiliary.vision.provider", vision_provider()),
+        ("auxiliary.vision.model", vision_model()),
     ]
     return await _run_config_set_commands(hermes_bin, commands)
 
@@ -1073,27 +1150,40 @@ def _run_config_set_commands_sync(
 
 
 def configure_codex_multimedia(hermes_bin: Path) -> dict[str, Any]:
-    # Register provider-specific settings but do not make Codex STT active by
-    # default. Codex subscription auth may not include API-billed transcription,
-    # so day-one local STT remains the safe active provider.
+    # Codex subscription auth improves Hermes' chat and vision route, but it
+    # should not become the active STT provider: Codex subscription auth may not
+    # include API-billed audio transcription. Keep the OpenRouter STT command
+    # provider active and leave the Codex STT plugin as an opt-in provider.
     commands = [
         ("stt.enabled", "true"),
+        ("stt.provider", OPENROUTER_STT_PROVIDER),
+        ("stt.providers.openrouter.type", "command"),
+        ("stt.providers.openrouter.command", openrouter_stt_command()),
+        ("stt.providers.openrouter.model", openrouter_stt_model()),
+        ("stt.providers.openrouter.language", "auto"),
+        ("stt.providers.openrouter.timeout", openrouter_stt_command_timeout_seconds()),
+        ("stt.providers.openrouter.output_format", "txt"),
         (f"stt.{CODEX_STT_PROVIDER}.model", CODEX_STT_MODEL),
-        ("auxiliary.vision.provider", "auto"),
+        ("auxiliary.vision.provider", CODEX_VISION_PROVIDER),
+        ("auxiliary.vision.model", codex_vision_model()),
     ]
     result = _run_config_set_commands_sync(hermes_bin, commands)
     result.update(
         {
-            "active_provider": "unchanged",
+            "active_provider": OPENROUTER_STT_PROVIDER,
+            "openrouter_stt_provider": OPENROUTER_STT_PROVIDER,
+            "openrouter_stt_model": openrouter_stt_model(),
             "codex_stt_provider": CODEX_STT_PROVIDER,
             "codex_stt_model": CODEX_STT_MODEL,
             "auto_selected_codex_stt": False,
+            "vision_provider": CODEX_VISION_PROVIDER,
+            "vision_model": codex_vision_model(),
         }
     )
     if result.get("ok"):
         result["message"] = (
-            "Registered OpenAI Codex STT settings without changing the active "
-            "Hermes STT provider."
+            "Switched Hermes vision to the Codex provider and kept OpenRouter "
+            "Whisper STT active."
         )
     return result
 
