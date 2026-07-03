@@ -46,6 +46,15 @@ SECRET_VALUE_RE = re.compile(
     r"(\s*[:=]\s*)(['\"]?)[^'\"\s]+"
 )
 OPENAI_SECRET_RE = re.compile(r"\b(?:sk|sess|eyJ)[A-Za-z0-9._-]{20,}\b")
+AUTH_LOGGED_OUT_MARKERS = (
+    "logged out",
+    "not logged in",
+    "not authenticated",
+    "no codex credentials",
+    "no credentials stored",
+    "run 'hermes auth'",
+    "run `hermes auth`",
+)
 
 
 def _state_dir() -> Path:
@@ -575,6 +584,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
 
 def _auth_status(hermes_bin: Path) -> dict[str, Any]:
     providers = (PRIMARY_PROVIDER, FALLBACK_PROVIDER)
+    last: dict[str, Any] | None = None
     for provider in providers:
         started = time.monotonic()
         try:
@@ -590,14 +600,26 @@ def _auth_status(hermes_bin: Path) -> dict[str, Any]:
         except (OSError, subprocess.SubprocessError) as exc:
             return {"ok": False, "provider": provider, "message": str(exc)}
         text = f"{process.stdout}\n{process.stderr}".strip()
-        if process.returncode == 0:
+        redacted = _redact_sensitive_text(text[-2000:])
+        logged_out = any(
+            marker in text.lower() for marker in AUTH_LOGGED_OUT_MARKERS
+        )
+        if process.returncode == 0 and not logged_out:
             return {
                 "ok": True,
                 "provider": provider,
                 "duration_ms": int((time.monotonic() - started) * 1000),
-                "output": text[-2000:],
+                "output": redacted,
             }
-    return {"ok": False, "provider": providers[-1], "output": text[-2000:]}
+        last = {
+            "ok": False,
+            "provider": provider,
+            "returncode": process.returncode,
+            "logged_out": logged_out,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+            "output": redacted,
+        }
+    return last or {"ok": False, "provider": providers[-1]}
 
 
 def _codex_cli_status(codex_bin: Path) -> dict[str, Any]:
@@ -1069,6 +1091,47 @@ def start() -> str:
     return (
         "I am starting OpenAI Codex auth now. I will send the authorization link and code here in a moment."
     )
+
+
+def start_openclaw_migration_reconnect() -> dict[str, Any]:
+    try:
+        notice = _telegram_send(
+            (
+                "OpenAI Codex needs one quick reconnect for Hermes. I found "
+                "that this Computer had Codex/OpenAI auth before the Hermes "
+                "upgrade, but that old login cannot be safely reused by "
+                "Hermes directly.\n\n"
+                "I am starting the secure OpenAI Codex sign-in now. Use the "
+                "button and code I send next; once it is approved, I will "
+                "switch Hermes to your Codex chat and vision models."
+            )
+        )
+    except RuntimeError as exc:
+        return {
+            "started": False,
+            "reason": "telegram_not_configured",
+            "message": str(exc),
+        }
+    if not notice.get("ok"):
+        return {
+            "started": False,
+            "reason": "telegram_notice_failed",
+            "notice": notice,
+        }
+    try:
+        start_message = start()
+    except Exception as exc:  # noqa: BLE001 - return structured command result.
+        return {
+            "started": False,
+            "reason": "codex_auth_start_failed",
+            "notice": notice,
+            "message": str(exc),
+        }
+    return {
+        "started": True,
+        "notice": notice,
+        "message": start_message,
+    }
 
 
 def status() -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -128,6 +129,52 @@ def test_auth_command_uses_no_browser_device_flow_flags() -> None:
         "--timeout",
         "900",
     ]
+
+
+def test_auth_status_treats_zero_exit_logged_out_output_as_not_connected() -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        provider = args[-1]
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=f"{provider}: logged out (No Codex credentials stored.)",
+            stderr="",
+        )
+
+    with patch("hermes_runtime.telegram_codex_auth.subprocess.run", fake_run):
+        result = codex_auth._auth_status(Path("/usr/local/bin/hermes"))
+
+    assert result["ok"] is False
+    assert result["provider"] == "codex-oauth"
+    assert result["logged_out"] is True
+    assert calls == [
+        ["/usr/local/bin/hermes", "auth", "status", "openai-codex"],
+        ["/usr/local/bin/hermes", "auth", "status", "codex-oauth"],
+    ]
+
+
+def test_openclaw_migration_reconnect_sends_notice_then_starts_codex_auth() -> None:
+    sent: list[str] = []
+    started = Mock(return_value="I am starting OpenAI Codex auth now.")
+
+    with (
+        patch(
+            "hermes_runtime.telegram_codex_auth._telegram_send",
+            side_effect=lambda text, **_kwargs: sent.append(text) or {"ok": True},
+        ),
+        patch("hermes_runtime.telegram_codex_auth.start", started),
+    ):
+        result = codex_auth.start_openclaw_migration_reconnect()
+
+    assert result["started"] is True
+    assert "starting OpenAI Codex auth" in result["message"]
+    assert len(sent) == 1
+    assert "needs one quick reconnect for Hermes" in sent[0]
+    assert "cannot be safely reused by Hermes directly" in sent[0]
+    started.assert_called_once_with()
 
 
 def test_codex_cli_login_command_uses_device_auth() -> None:
