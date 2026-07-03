@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.34 - 2026-07-03
+
 - Treat logged-out OpenAI Codex auth status as unavailable during OpenClaw to
   Hermes migration, detect legacy OpenClaw OpenAI auth without returning token
   values, and start the normal Hermes Codex reconnect flow when the user needs
