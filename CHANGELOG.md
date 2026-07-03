@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Treat logged-out OpenAI Codex auth status as unavailable during OpenClaw to
+  Hermes migration, detect legacy OpenClaw OpenAI auth without returning token
+  values, and start the normal Hermes Codex reconnect flow when the user needs
+  to sign in again.
+
 ## 0.0.33 - 2026-07-03
 
 - Add `activate_codex_auth_models`, a non-interactive runtime command that
