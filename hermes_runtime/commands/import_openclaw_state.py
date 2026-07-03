@@ -105,7 +105,12 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         args.append("--dry-run")
     else:
         args.append("--yes")
-    if _bool_spec(spec, "migrate_secrets", False):
+    migrate_secrets = _bool_spec(spec, "migrate_secrets", False) or _bool_spec(
+        spec,
+        "include_private_values",
+        False,
+    )
+    if migrate_secrets:
         args.append("--migrate-secrets")
 
     process = await run_process(args, timeout_seconds=_timeout(spec))
@@ -123,7 +128,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "checked_sources": checked_sources,
         "preset": preset,
         "overwrite": overwrite,
-        "migrate_secrets": _bool_spec(spec, "migrate_secrets", False),
+        "migrate_secrets": migrate_secrets,
         "hermes": {
             "command": "hermes claw migrate",
             "returncode": process.get("returncode"),
