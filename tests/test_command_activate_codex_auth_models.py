@@ -127,6 +127,62 @@ def test_activate_codex_auth_models_skips_without_existing_auth() -> None:
     config_switch.assert_not_called()
 
 
+def test_activate_codex_auth_models_uses_imported_codex_cli_auth() -> None:
+    codex_cli_status = Mock(return_value={"ok": True, "source": "codex-cli"})
+    config_switch = Mock(
+        return_value={
+            "ok": True,
+            "model_provider": "openai-codex",
+            "model_default": "gpt-5.5",
+        }
+    )
+
+    with (
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._auth_status",
+            return_value={"ok": False, "provider": "openai-codex"},
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models.find_codex_binary",
+            return_value=Path("/usr/local/bin/codex"),
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._codex_cli_status",
+            codex_cli_status,
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._run_config_switch",
+            config_switch,
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._configure_multimedia_after_auth",
+            return_value={"ok": True},
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._restart_gateway_after_auth",
+            Mock(return_value={"healthy": True}),
+        ) as gateway_restart,
+    ):
+        result = asyncio.run(
+            run_command(
+                SimpleNamespace(),
+                {"kind": "activate_codex_auth_models", "spec": {}},
+            )
+        )
+
+    assert result["activated"] is True
+    assert result["status"] == "applied"
+    assert result["codex_cli_status"]["ok"] is True
+    assert result["codex_cli_status"]["codex_bin"] == "/usr/local/bin/codex"
+    codex_cli_status.assert_called_once_with(Path("/usr/local/bin/codex"))
+    config_switch.assert_called_once_with(Path("/usr/local/bin/hermes"))
+    gateway_restart.assert_not_called()
+
+
 def test_activate_codex_auth_models_can_restart_gateway_when_requested() -> None:
     gateway_restart = Mock(return_value={"healthy": True, "started": True})
 

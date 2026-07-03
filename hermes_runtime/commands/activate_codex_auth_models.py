@@ -7,7 +7,6 @@ already present on the Computer. It never starts a fresh device-code flow.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from hermes_runtime.codex_limits import find_codex_binary
@@ -94,7 +93,7 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
 
     codex_chat_model = str(switch.get("model_default") or "").strip()
     multimedia = _configure_multimedia_after_auth(
-        Path(hermes_bin),
+        hermes_bin,
         codex_chat_model=codex_chat_model,
     )
     if not multimedia.get("ok"):
@@ -105,7 +104,7 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
 
     gateway: dict[str, Any] | None = None
     if _bool_spec(spec, "restart_gateway", False):
-        gateway = _restart_gateway_after_auth(Path(hermes_bin))
+        gateway = _restart_gateway_after_auth(hermes_bin)
 
     result: dict[str, Any] = {
         "schema": SCHEMA,
@@ -119,7 +118,7 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "hermes_bin": str(hermes_bin),
             "auth_status": _auth_status(hermes_bin),
         },
-        "codex_cli_status": _codex_cli_status_if_available(),
+        "codex_cli_status": codex_cli_status,
         "gateway_restart_requested": _bool_spec(spec, "restart_gateway", False),
     }
     if gateway is not None:
