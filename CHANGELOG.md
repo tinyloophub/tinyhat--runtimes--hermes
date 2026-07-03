@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `activate_codex_auth_models`, a non-interactive runtime command that
+  reuses the `/codex_auth` Hermes model picker and multimedia configuration
+  when OpenClaw migration imported existing OpenAI Codex auth.
+
 ## 0.0.32 - 2026-07-03
 
 - Accept the redaction-safe `include_private_values` OpenClaw migration flag as

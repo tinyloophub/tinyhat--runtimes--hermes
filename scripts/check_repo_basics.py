@@ -42,6 +42,7 @@ REQUIRED_FILES = (
     "hermes_runtime/commands/install_tinyhat_plugin.py",
     "hermes_runtime/commands/update_tinyhat_plugin.py",
     "hermes_runtime/commands/configure_telegram.py",
+    "hermes_runtime/commands/activate_codex_auth_models.py",
     "hermes_runtime/commands/start_hermes.py",
     "hermes_runtime/commands/stop_hermes.py",
     "hermes_runtime/commands/stage_update.py",
