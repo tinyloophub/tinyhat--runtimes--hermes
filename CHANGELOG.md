@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.31 - 2026-07-03
+
+- Add runtime commands for OpenClaw to Hermes in-place migration, including
+  verified OpenClaw state import and legacy Tinyhat secret-name import so the
+  monorepo takeover flow can preserve migration data without exposing
+  plaintext secrets.
+
 ## 0.0.30 - 2026-07-02
 
 - Cap OpenRouter vision `extra_body.models` fallbacks at three entries so
