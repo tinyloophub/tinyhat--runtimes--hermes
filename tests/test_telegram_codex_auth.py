@@ -177,6 +177,48 @@ def test_openclaw_migration_reconnect_sends_notice_then_starts_codex_auth() -> N
     started.assert_called_once_with()
 
 
+def test_openclaw_migration_reconnect_without_telegram_does_not_start_auth() -> None:
+    started = Mock()
+
+    with (
+        patch(
+            "hermes_runtime.telegram_codex_auth._telegram_send",
+            side_effect=RuntimeError("Telegram is not configured."),
+        ),
+        patch("hermes_runtime.telegram_codex_auth.start", started),
+    ):
+        result = codex_auth.start_openclaw_migration_reconnect()
+
+    assert result == {
+        "started": False,
+        "reason": "telegram_not_configured",
+        "message": "Telegram is not configured.",
+    }
+    started.assert_not_called()
+
+
+def test_openclaw_migration_reconnect_does_not_duplicate_notice_when_worker_runs() -> None:
+    telegram_send = Mock(return_value={"ok": True})
+    started = Mock(
+        return_value=(
+            "OpenAI Codex auth is already running. I will send the auth link "
+            "and completion message here."
+        )
+    )
+
+    with (
+        patch("hermes_runtime.telegram_codex_auth._running_worker_pid", return_value=1234),
+        patch("hermes_runtime.telegram_codex_auth._telegram_send", telegram_send),
+        patch("hermes_runtime.telegram_codex_auth.start", started),
+    ):
+        result = codex_auth.start_openclaw_migration_reconnect()
+
+    assert result["started"] is True
+    assert result["reason"] == "already_running"
+    telegram_send.assert_not_called()
+    started.assert_called_once_with()
+
+
 def test_codex_cli_login_command_uses_device_auth() -> None:
     command = codex_auth._codex_cli_login_command(Path("/usr/local/bin/codex"))
 

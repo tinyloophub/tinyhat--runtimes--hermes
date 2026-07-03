@@ -1094,6 +1094,12 @@ def start() -> str:
 
 
 def start_openclaw_migration_reconnect() -> dict[str, Any]:
+    if _running_worker_pid():
+        return {
+            "started": True,
+            "reason": "already_running",
+            "message": start(),
+        }
     try:
         notice = _telegram_send(
             (

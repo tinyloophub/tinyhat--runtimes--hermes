@@ -149,6 +149,9 @@ def _sqlite_has_openai_oauth(path: Path) -> bool:
 def _openclaw_codex_auth_summary(
     source_roots: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    # Migration-only, read-only legacy inspection. The public OpenClaw migrator
+    # does not expose "had OpenAI OAuth" as a separate signal, so this keeps the
+    # platform on the supported Hermes reconnect path without returning values.
     candidates = _openclaw_auth_db_candidates(source_roots)
     matches = sum(1 for path in candidates if _sqlite_has_openai_oauth(path))
     return {
@@ -181,12 +184,20 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         openclaw_auth = _openclaw_codex_auth_summary()
         codex_reconnect = _maybe_start_openclaw_reconnect(openclaw_auth)
         if openclaw_auth.get("present"):
-            message = (
-                "No reusable Hermes OpenAI Codex auth was found, but an older "
-                "OpenClaw Codex/OpenAI login exists on this Computer. Hermes "
-                "needs a fresh Codex sign-in, so the reconnect flow was "
-                "started when Telegram was available."
-            )
+            if codex_reconnect.get("started"):
+                message = (
+                    "No reusable Hermes OpenAI Codex auth was found, but an older "
+                    "OpenClaw Codex/OpenAI login exists on this Computer. Hermes "
+                    "needs a fresh Codex sign-in, so the reconnect flow was "
+                    "started."
+                )
+            else:
+                message = (
+                    "No reusable Hermes OpenAI Codex auth was found, but an older "
+                    "OpenClaw Codex/OpenAI login exists on this Computer. Hermes "
+                    "needs a fresh Codex sign-in, but the reconnect flow could "
+                    "not be started yet."
+                )
         else:
             message = (
                 "No existing OpenAI Codex auth was found on this Computer; "

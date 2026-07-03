@@ -198,6 +198,55 @@ def test_activate_codex_auth_models_starts_reconnect_for_legacy_openclaw_auth() 
     reconnect.assert_called_once_with()
 
 
+def test_activate_codex_auth_models_reports_when_reconnect_cannot_start() -> None:
+    reconnect = Mock(
+        return_value={
+            "started": False,
+            "reason": "telegram_not_configured",
+        }
+    )
+
+    with (
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._auth_status",
+            return_value={"ok": False, "provider": "codex-oauth"},
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models.find_codex_binary",
+            return_value=None,
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models._openclaw_codex_auth_summary",
+            return_value={
+                "present": True,
+                "source": "openclaw_auth_profile_store",
+                "database_count_checked": 1,
+                "profile_store_match_count": 1,
+                "values_returned": False,
+            },
+        ),
+        patch(
+            "hermes_runtime.commands.activate_codex_auth_models.start_openclaw_migration_reconnect",
+            reconnect,
+        ),
+    ):
+        result = asyncio.run(
+            run_command(
+                SimpleNamespace(),
+                {"kind": "activate_codex_auth_models", "spec": {}},
+            )
+        )
+
+    assert result["activated"] is False
+    assert result["codex_reconnect"]["started"] is False
+    assert "could not be started yet" in result["message"]
+    reconnect.assert_called_once_with()
+
+
 def test_openclaw_codex_auth_summary_detects_oauth_without_returning_values() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         db_dir = Path(tmp) / "agents" / "main" / "agent"
