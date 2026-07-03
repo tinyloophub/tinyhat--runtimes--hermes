@@ -169,64 +169,66 @@ def test_import_openclaw_state_runs_hermes_claw_migrate() -> None:
     assert result["hermes"]["stdout"] == "migrated 3 items"
 
 
-def test_import_openclaw_state_private_values_flag_migrates_secrets() -> None:
-    calls: list[list[str]] = []
+def test_import_openclaw_state_private_value_flags_migrate_secrets() -> None:
+    for private_flag in ("include_private_values", "migrate_secrets"):
+        calls: list[list[str]] = []
 
-    async def fake_run_process(
-        args: list[str],
-        *,
-        timeout_seconds: int,
-        env: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        del timeout_seconds, env
-        calls.append(args)
-        return {
-            "ok": True,
-            "returncode": 0,
-            "timed_out": False,
-            "duration_ms": 123,
-            "stdout": "migrated 3 items",
-            "stderr": "",
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-        }
+        async def fake_run_process(
+            args: list[str],
+            *,
+            timeout_seconds: int,
+            env: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            del timeout_seconds, env
+            calls.append(args)
+            return {
+                "ok": True,
+                "returncode": 0,
+                "timed_out": False,
+                "duration_ms": 123,
+                "stdout": "migrated 3 items",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
 
-    with tempfile.TemporaryDirectory() as tmp:
-        source = Path(tmp) / "openclaw"
-        source.mkdir()
-        with (
-            patch.object(
-                import_openclaw_state,
-                "find_hermes_binary",
-                return_value=Path("/usr/local/bin/hermes"),
-            ),
-            patch.object(import_openclaw_state, "run_process", fake_run_process),
-        ):
-            result = asyncio.run(
-                run_command(
-                    SimpleNamespace(platform=None),
-                    {
-                        "kind": "import_openclaw_state",
-                        "spec": {
-                            "source": str(source),
-                            "include_private_values": True,
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "openclaw"
+            source.mkdir()
+            with (
+                patch.object(
+                    import_openclaw_state,
+                    "find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch.object(import_openclaw_state, "run_process", fake_run_process),
+            ):
+                result = asyncio.run(
+                    run_command(
+                        SimpleNamespace(platform=None),
+                        {
+                            "kind": "import_openclaw_state",
+                            "spec": {
+                                "source": str(source),
+                                private_flag: True,
+                            },
                         },
-                    },
+                    )
                 )
-            )
 
-    assert calls == [
-        [
-            "/usr/local/bin/hermes",
-            "claw",
-            "migrate",
-            "--source",
-            str(source),
-            "--preset",
-            "full",
-            "--overwrite",
-            "--yes",
-            "--migrate-secrets",
+        assert calls == [
+            [
+                "/usr/local/bin/hermes",
+                "claw",
+                "migrate",
+                "--source",
+                str(source),
+                "--preset",
+                "full",
+                "--overwrite",
+                "--yes",
+                "--migrate-secrets",
+            ]
         ]
-    ]
-    assert result["migrate_secrets"] is True
+        assert result["migrate_secrets"] is True
+        assert result["include_private_values"] is True

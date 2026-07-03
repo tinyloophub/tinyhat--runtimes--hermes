@@ -129,6 +129,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "preset": preset,
         "overwrite": overwrite,
         "migrate_secrets": migrate_secrets,
+        "include_private_values": migrate_secrets,
         "hermes": {
             "command": "hermes claw migrate",
             "returncode": process.get("returncode"),
