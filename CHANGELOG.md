@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.0.32 - 2026-07-03
+
+- Accept the redaction-safe `include_private_values` OpenClaw migration flag as
+  an alias for private-value import, while preserving the legacy
+  `migrate_secrets` flag and returning a redaction-safe confirmation field.
+
 ## 0.0.31 - 2026-07-03
 
 - Add runtime commands for OpenClaw to Hermes in-place migration, including
