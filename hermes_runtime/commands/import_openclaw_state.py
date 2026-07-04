@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -65,16 +67,76 @@ def _timeout(spec: dict[str, Any]) -> int:
         return DEFAULT_TIMEOUT_SECONDS
 
 
-def _looks_like_preview_only(stdout: str) -> bool:
+def _hermes_home_candidates() -> list[Path]:
+    raw_candidates = [
+        os.getenv("HERMES_HOME"),
+        str(Path.home() / ".hermes"),
+    ]
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        path_text = str(raw or "").strip()
+        if not path_text:
+            continue
+        path = Path(path_text).expanduser()
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(path)
+    return candidates
+
+
+def _latest_execute_report(source: Path, started_at: float) -> dict[str, Any] | None:
+    latest: tuple[float, dict[str, Any]] | None = None
+    source_key = str(source.resolve())
+    for home in _hermes_home_candidates():
+        reports_dir = home / "migration" / "openclaw"
+        if not reports_dir.is_dir():
+            continue
+        for report_path in reports_dir.glob("*/report.json"):
+            try:
+                stat = report_path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime < started_at - 2:
+                continue
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if report.get("mode") != "execute":
+                continue
+            if str(report.get("source_root") or "") != source_key:
+                continue
+            summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            try:
+                error_count = int(summary.get("error") or 0)
+            except (TypeError, ValueError):
+                error_count = 1
+            if error_count > 0:
+                continue
+            if latest is None or stat.st_mtime > latest[0]:
+                latest = (stat.st_mtime, report)
+    if latest is None:
+        return None
+    return latest[1]
+
+
+def _looks_like_preview_only(stdout: str, *, source: Path, started_at: float) -> bool:
     """Return true when Hermes printed only its non-mutating preview report.
 
     ``hermes claw migrate`` always prints a preview before applying changes.
-    When it actually stops before applying, the output includes the explicit
-    Dry Run Results section and "No files were modified" wording. Tinyhat must
-    not treat that as an import even if the process exits 0.
+    A real apply then prints a Migration Results section and writes a structured
+    execute-mode ``report.json``. Tinyhat must reject true preview-only exits
+    without false-failing successful applies that happen to include the preview.
     """
 
     normalized = " ".join(stdout.split()).lower()
+    if "migration results" in normalized:
+        return False
+    if _latest_execute_report(source=source, started_at=started_at) is not None:
+        return False
     return (
         "dry run results" in normalized
         or "no files were modified. this is a preview" in normalized
@@ -129,6 +191,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     if migrate_secrets:
         args.append("--migrate-secrets")
 
+    started_at = time.time()
     process = await run_process(args, timeout_seconds=_timeout(spec))
     ok = bool(process.get("ok"))
     if not ok:
@@ -137,7 +200,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             + str(process.get("stderr") or process.get("stdout") or "unknown error")[:1000]
         )
     stdout = str(process.get("stdout") or "")
-    preview_only = _looks_like_preview_only(stdout)
+    preview_only = _looks_like_preview_only(stdout, source=source, started_at=started_at)
     if preview_only and not dry_run:
         raise RuntimeError(
             "hermes claw migrate exited successfully but did not apply changes. "

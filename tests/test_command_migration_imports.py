@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -168,6 +169,127 @@ def test_import_openclaw_state_runs_hermes_claw_migrate() -> None:
     assert result["preview_only"] is False
     assert result["migrate_secrets"] is False
     assert result["hermes"]["stdout"] == "migrated 3 items"
+
+
+def test_import_openclaw_state_allows_preview_then_apply_stdout() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        del args, timeout_seconds, env
+        return {
+            "ok": True,
+            "returncode": 0,
+            "timed_out": False,
+            "duration_ms": 123,
+            "stdout": (
+                "◆ Migration Preview — 2 item(s) would be imported\n"
+                "No changes have been made yet. Review the list below:\n\n"
+                "◆ Dry Run Results\n"
+                "No files were modified. This is a preview of what would happen.\n\n"
+                "◆ Migration Results\n"
+                "  ✓ Migrated:\n"
+                "      soul                   → ~/.hermes/SOUL.md\n"
+            ),
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "openclaw"
+        source.mkdir()
+        with (
+            patch.object(
+                import_openclaw_state,
+                "find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch.object(import_openclaw_state, "run_process", fake_run_process),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(platform=None),
+                    {
+                        "kind": "import_openclaw_state",
+                        "spec": {"source": str(source)},
+                    },
+                )
+            )
+
+    assert result["imported"] is True
+    assert result["preview_only"] is False
+
+
+def test_import_openclaw_state_allows_execute_report_when_stdout_ambiguous() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "openclaw"
+        source.mkdir()
+        hermes_home = Path(tmp) / "hermes"
+        report_dir = hermes_home / "migration" / "openclaw" / "20260704T041357"
+        report_dir.mkdir(parents=True)
+
+        async def fake_run_process(
+            args: list[str],
+            *,
+            timeout_seconds: int,
+            env: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            del args, timeout_seconds, env
+            (report_dir / "report.json").write_text(
+                json.dumps(
+                    {
+                        "mode": "execute",
+                        "source_root": str(source.resolve()),
+                        "summary": {
+                            "migrated": 4,
+                            "archived": 4,
+                            "skipped": 32,
+                            "conflict": 0,
+                            "error": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {
+                "ok": True,
+                "returncode": 0,
+                "timed_out": False,
+                "duration_ms": 123,
+                "stdout": (
+                    "◆ Migration Preview — 2 item(s) would be imported\n"
+                    "◆ Dry Run Results\n"
+                    "No files were modified. This is a preview of what would happen.\n"
+                ),
+                "stderr": "",
+                "stdout_truncated": True,
+                "stderr_truncated": False,
+            }
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch.object(
+                import_openclaw_state,
+                "find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch.object(import_openclaw_state, "run_process", fake_run_process),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(platform=None),
+                    {
+                        "kind": "import_openclaw_state",
+                        "spec": {"source": str(source)},
+                    },
+                )
+            )
+
+    assert result["imported"] is True
+    assert result["preview_only"] is False
 
 
 def test_import_openclaw_state_private_value_flags_migrate_secrets() -> None:
