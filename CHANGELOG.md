@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Accept a real OpenClaw import when `hermes claw migrate` applies changes
+  after printing its preview / dry-run section, using the `Migration Results`
+  marker or a matching execute-mode `report.json` with zero errors so a
+  successful migration is not false-failed as preview-only.
+
 ## 0.0.35 - 2026-07-03
 
 - Make `import_openclaw_state` fail when Hermes exits 0 after printing only a
