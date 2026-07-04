@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.35 - 2026-07-03
+
 - Make `import_openclaw_state` fail when Hermes exits 0 after printing only a
   dry-run preview, so Tinyhat does not mark OpenClaw memory/persona import as
   completed when no Hermes files were written.
