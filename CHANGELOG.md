@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Make `import_openclaw_state` fail when Hermes exits 0 after printing only a
+  dry-run preview, so Tinyhat does not mark OpenClaw memory/persona import as
+  completed when no Hermes files were written.
+- Give apt-based provisioning a default dpkg lock timeout so a background
+  unattended upgrade does not immediately fail fresh Hermes installs or
+  OpenClaw takeover installs.
+
 ## 0.0.34 - 2026-07-03
 
 - Treat logged-out OpenAI Codex auth status as unavailable during OpenClaw to

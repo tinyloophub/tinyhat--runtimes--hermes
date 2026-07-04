@@ -65,6 +65,22 @@ def _timeout(spec: dict[str, Any]) -> int:
         return DEFAULT_TIMEOUT_SECONDS
 
 
+def _looks_like_preview_only(stdout: str) -> bool:
+    """Return true when Hermes printed only its non-mutating preview report.
+
+    ``hermes claw migrate`` always prints a preview before applying changes.
+    When it actually stops before applying, the output includes the explicit
+    Dry Run Results section and "No files were modified" wording. Tinyhat must
+    not treat that as an import even if the process exits 0.
+    """
+
+    normalized = " ".join(stdout.split()).lower()
+    return (
+        "dry run results" in normalized
+        or "no files were modified. this is a preview" in normalized
+    )
+
+
 async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     del ctx
     spec = command.get("spec") if isinstance(command.get("spec"), dict) else {}
@@ -120,10 +136,18 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "hermes claw migrate failed: "
             + str(process.get("stderr") or process.get("stdout") or "unknown error")[:1000]
         )
+    stdout = str(process.get("stdout") or "")
+    preview_only = _looks_like_preview_only(stdout)
+    if preview_only and not dry_run:
+        raise RuntimeError(
+            "hermes claw migrate exited successfully but did not apply changes. "
+            "Hermes reported a dry-run preview only; stop OpenClaw and retry."
+        )
     return {
         "schema": SCHEMA,
-        "imported": ok and not dry_run,
+        "imported": ok and not dry_run and not preview_only,
         "dry_run": dry_run,
+        "preview_only": preview_only,
         "source": str(source),
         "checked_sources": checked_sources,
         "preset": preset,

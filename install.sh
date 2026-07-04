@@ -114,6 +114,7 @@ codex_npm_version="${TINYHAT_CODEX_NPM_VERSION:-}"
 codex_node_major="${TINYHAT_CODEX_NODE_MAJOR:-$DEFAULT_CODEX_NODE_MAJOR}"
 skip_codex_cli="${TINYHAT_SKIP_CODEX_CLI:-0}"
 skip_recommended_packages="${TINYHAT_SKIP_RECOMMENDED_PACKAGES:-0}"
+apt_lock_timeout_seconds="${TINYHAT_APT_LOCK_TIMEOUT_SECONDS:-300}"
 install_systemd=1
 run_foreground=0
 
@@ -152,6 +153,9 @@ Environment:
                             Skip apt installation of Tinyhat's recommended
                             Hermes machine packages. Intended only for unusual
                             local development hosts.
+  TINYHAT_APT_LOCK_TIMEOUT_SECONDS
+                            Seconds apt should wait for another apt/dpkg
+                            process before failing. Defaults to 300.
 
 The installer installs the Tinyhat runtime process, Tinyhat's recommended
 Hermes Linux machine packages when it can, and the Codex CLI dependency used by
@@ -268,6 +272,10 @@ nodejs_npm_ready() {
 need_cmd python3
 need_cmd install
 
+apt_get() {
+  apt-get -o "DPkg::Lock::Timeout=${apt_lock_timeout_seconds}" "$@"
+}
+
 recommended_package_commands_missing() {
   local missing=()
   command -v git >/dev/null 2>&1 || missing+=("git")
@@ -306,8 +314,8 @@ install_recommended_debian_packages_if_possible() {
 
   echo "install.sh: installing recommended Hermes machine packages: ${RECOMMENDED_DEBIAN_PACKAGES[*]}"
   export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
-  apt-get update
-  apt-get install -y --no-install-recommends "${RECOMMENDED_DEBIAN_PACKAGES[@]}"
+  apt_get update
+  apt_get install -y --no-install-recommends "${RECOMMENDED_DEBIAN_PACKAGES[@]}"
 }
 
 install_recommended_debian_packages_if_possible
@@ -333,10 +341,10 @@ install_nodejs_npm_if_needed() {
 
   echo "install.sh: installing Node.js ${codex_node_major}.x for Codex CLI"
   export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
-  apt-get update
-  apt-get install -y ca-certificates curl gnupg
+  apt_get update
+  apt_get install -y ca-certificates curl gnupg
   curl -fsSL "https://deb.nodesource.com/setup_${codex_node_major}.x" | bash -
-  apt-get install -y nodejs
+  apt_get install -y nodejs
   if ! nodejs_npm_ready; then
     echo "install.sh: Node.js install finished, but recent node/npm is still unavailable" >&2
     exit 1
