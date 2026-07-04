@@ -261,7 +261,7 @@ chmod +x {fake_codex}
                 f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> {apt_args}
-if [[ "$1" == "install" && " $* " == *" nodejs "* ]]; then
+if [[ " $* " == *" install "* && " $* " == *" nodejs "* ]]; then
   cat > {fake_node} <<'NODE'
 #!/usr/bin/env bash
 printf 'v22.12.0\\n'
@@ -311,17 +311,19 @@ fi
                 "https://deb.nodesource.com/setup_22.x",
                 curl_args.read_text(encoding="utf-8"),
             )
+            apt_calls = apt_args.read_text(encoding="utf-8")
+            self.assertIn("DPkg::Lock::Timeout=300", apt_calls)
             self.assertIn(
                 "install -y --no-install-recommends ca-certificates curl git xz-utils build-essential ffmpeg ripgrep xclip wl-clipboard",
-                apt_args.read_text(encoding="utf-8"),
+                apt_calls,
             )
             self.assertIn(
                 "install -y ca-certificates curl gnupg",
-                apt_args.read_text(encoding="utf-8"),
+                apt_calls,
             )
             self.assertIn(
                 "install -y nodejs",
-                apt_args.read_text(encoding="utf-8"),
+                apt_calls,
             )
             self.assertEqual(npm_args.read_text(encoding="utf-8").splitlines(), [
                 "install",
@@ -339,6 +341,7 @@ fi
         self.assertIn("@openai/codex", script)
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", script)
         self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", script)
+        self.assertIn("TINYHAT_APT_LOCK_TIMEOUT_SECONDS", script)
         self.assertIn("setup_${codex_node_major}.x", script)
         self.assertIn("ffmpeg", script)
         self.assertIn("wl-clipboard", script)
@@ -356,6 +359,7 @@ fi
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", help_result.stdout)
         self.assertIn("TINYHAT_CODEX_NODE_MAJOR", help_result.stdout)
         self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", help_result.stdout)
+        self.assertIn("TINYHAT_APT_LOCK_TIMEOUT_SECONDS", help_result.stdout)
 
     def _run_foreground_until_signal(
         self,
