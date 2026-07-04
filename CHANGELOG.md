@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.36 - 2026-07-04
+
 - Accept a real OpenClaw import when `hermes claw migrate` applies changes
   after printing its preview / dry-run section, using the `Migration Results`
   marker or a matching execute-mode `report.json` with zero errors so a
