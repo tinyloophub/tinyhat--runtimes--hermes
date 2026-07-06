@@ -176,7 +176,7 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
 def test_install_hermes_is_noop_when_cli_exists() -> None:
     install_calls: list[str] = []
 
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
     async def fake_run_shell(
@@ -244,7 +244,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
 
 
 def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
     async def fake_messaging() -> dict[str, object]:
@@ -302,7 +302,7 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
 def test_install_hermes_runs_official_installer_when_missing() -> None:
     install_calls: list[tuple[str, dict[str, str] | None]] = []
 
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
     async def fake_prerequisites() -> dict[str, object]:
@@ -380,6 +380,91 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["prerequisites"]["attempted"] is True
 
 
+def test_install_hermes_retries_transient_status_failure_after_install() -> None:
+    install_calls: list[str] = []
+    sleep_calls: list[float] = []
+    status_timeouts: list[int] = []
+    statuses = [_status(installed=True, ok=False), _status()]
+
+    async def fake_prerequisites() -> dict[str, object]:
+        return {"missing_before": [], "attempted": False}
+
+    async def fake_run_shell(
+        script: str,
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        install_calls.append(script)
+        return {"ok": True, "returncode": 0, "stdout": "installed", "stderr": ""}
+
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
+        status_timeouts.append(timeout_seconds)
+        return statuses.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    async def fake_messaging() -> dict[str, object]:
+        return {"ok": True, "changed": True}
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "3",
+                "TINYHAT_HERMES_STATUS_PROBE_RETRY_DELAY_SECONDS": "1",
+                "TINYHAT_HERMES_STATUS_PROBE_TIMEOUT_SECONDS": "45",
+            },
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=None,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.maybe_install_debian_prerequisites",
+            fake_prerequisites,
+        ),
+        patch("hermes_runtime.commands.install_hermes.run_shell", fake_run_shell),
+        patch(
+            "hermes_runtime.commands.install_hermes.probe_hermes_status",
+            fake_status,
+        ),
+        patch("hermes_runtime.commands.install_hermes.asyncio.sleep", fake_sleep),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
+            fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            _fake_local_stt_model_prefetch,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
+            _fake_day_one_multimedia,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_plugin_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
+    ):
+        result = asyncio.run(
+            run_command(SimpleNamespace(), {"kind": "install_hermes"})
+        )
+
+    assert len(install_calls) == 1
+    assert result["installed_now"] is True
+    assert result["status"]["ok"] is True
+    assert result["status"]["probe_attempt_count"] == 2
+    assert status_timeouts == [45, 45]
+    assert sleep_calls == [1]
+
+
 def test_install_hermes_raises_when_installer_fails() -> None:
     async def fake_prerequisites() -> dict[str, object]:
         return {"missing_before": [], "attempted": False}
@@ -394,6 +479,7 @@ def test_install_hermes_raises_when_installer_fails() -> None:
         return {"ok": False, "returncode": 1, "stdout": "", "stderr": "boom"}
 
     with (
+        patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -421,13 +507,14 @@ def test_install_hermes_raises_when_cli_missing_after_install() -> None:
         del script, timeout_seconds, env
         return {"ok": True, "returncode": 0, "stdout": "installed", "stderr": ""}
 
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status(installed=False, ok=False)
 
     async def fake_messaging() -> dict[str, object]:
         return {"ok": True, "changed": False}
 
     with (
+        patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -463,13 +550,14 @@ def test_install_hermes_raises_when_status_check_fails_after_install() -> None:
         del script, timeout_seconds, env
         return {"ok": True, "returncode": 0, "stdout": "installed", "stderr": ""}
 
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status(installed=True, ok=False)
 
     async def fake_messaging() -> dict[str, object]:
         return {"ok": True, "changed": False}
 
     with (
+        patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -493,7 +581,7 @@ def test_install_hermes_raises_when_status_check_fails_after_install() -> None:
 
 
 def test_install_hermes_raises_when_messaging_is_unavailable() -> None:
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
     async def fake_messaging() -> dict[str, object]:
@@ -606,7 +694,7 @@ def test_prefetch_local_stt_model_can_be_skipped() -> None:
 
 
 def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
-    async def fake_status() -> dict[str, object]:
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
     async def fake_messaging() -> dict[str, object]:

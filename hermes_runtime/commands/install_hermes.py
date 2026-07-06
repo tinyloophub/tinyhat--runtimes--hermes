@@ -61,6 +61,7 @@ Side effects:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import shutil
@@ -225,6 +226,90 @@ def _skip_local_stt_model_prefetch() -> bool:
     }
 
 
+def _status_probe_attempts() -> int:
+    raw = (os.getenv("TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS") or "").strip()
+    if not raw:
+        return 5
+    try:
+        attempts = int(raw)
+    except ValueError:
+        return 5
+    return max(1, min(attempts, 10))
+
+
+def _status_probe_timeout_seconds() -> int:
+    raw = (os.getenv("TINYHAT_HERMES_STATUS_PROBE_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return 90
+    try:
+        timeout = int(raw)
+    except ValueError:
+        return 90
+    return max(30, min(timeout, 300))
+
+
+def _status_probe_retry_delay_seconds(attempt: int) -> int:
+    raw = (os.getenv("TINYHAT_HERMES_STATUS_PROBE_RETRY_DELAY_SECONDS") or "").strip()
+    if not raw:
+        base = 5
+    else:
+        try:
+            base = int(raw)
+        except ValueError:
+            base = 5
+    return max(1, min(base * attempt, 30))
+
+
+def _failed_status_command_summary(status: dict[str, Any]) -> str:
+    commands = status.get("commands")
+    if not isinstance(commands, dict):
+        return str(status.get("message") or "status probe failed")
+
+    failures: list[str] = []
+    for name, result in commands.items():
+        if not isinstance(result, dict) or result.get("ok"):
+            continue
+        detail = str(result.get("stderr") or result.get("stdout") or "").strip()
+        if detail:
+            detail = detail.splitlines()[0][:240]
+        elif result.get("timed_out"):
+            detail = "timed out"
+        else:
+            detail = f"returncode={result.get('returncode')}"
+        failures.append(f"{name}: {detail}")
+    if failures:
+        return "; ".join(failures)
+    return str(status.get("message") or "status probe failed")
+
+
+async def _probe_hermes_status_with_retries() -> dict[str, Any]:
+    attempts = _status_probe_attempts()
+    timeout_seconds = _status_probe_timeout_seconds()
+    probe_attempts: list[dict[str, Any]] = []
+    status: dict[str, Any] = {}
+    for attempt in range(1, attempts + 1):
+        status = await probe_hermes_status(timeout_seconds=timeout_seconds)
+        probe_attempts.append(
+            {
+                "attempt": attempt,
+                "ok": bool(status.get("ok")),
+                "installed": bool(status.get("installed")),
+                "message": status.get("message"),
+                "failure_summary": (
+                    None if status.get("ok") else _failed_status_command_summary(status)
+                ),
+            }
+        )
+        if status.get("installed") and status.get("ok"):
+            break
+        if attempt < attempts:
+            await asyncio.sleep(_status_probe_retry_delay_seconds(attempt))
+    status["probe_attempts"] = probe_attempts
+    status["probe_attempt_count"] = len(probe_attempts)
+    status["probe_timeout_seconds"] = timeout_seconds
+    return status
+
+
 def _local_stt_model_prefetch_timeout_seconds() -> int:
     raw = (os.getenv("TINYHAT_HERMES_STT_MODEL_PREFETCH_TIMEOUT_SECONDS") or "").strip()
     if not raw:
@@ -311,11 +396,15 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
                 f"{install_result.get('returncode')}"
             )
 
-    status = await probe_hermes_status()
+    status = await _probe_hermes_status_with_retries()
     if not status.get("installed"):
         raise RuntimeError("Hermes installer completed, but hermes CLI was not found.")
     if not status.get("ok"):
-        raise RuntimeError("Hermes CLI is installed, but status checks failed.")
+        attempts = status.get("probe_attempt_count") or _status_probe_attempts()
+        raise RuntimeError(
+            "Hermes CLI is installed, but status checks failed after "
+            f"{attempts} attempt(s): {_failed_status_command_summary(status)}"
+        )
 
     hermes_bin_value = status.get("hermes_bin")
     hermes_bin = (
