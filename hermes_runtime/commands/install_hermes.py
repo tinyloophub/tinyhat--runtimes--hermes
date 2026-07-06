@@ -248,6 +248,17 @@ def _status_probe_timeout_seconds() -> int:
     return max(30, min(timeout, 300))
 
 
+def _status_probe_total_timeout_seconds() -> int:
+    raw = (os.getenv("TINYHAT_HERMES_STATUS_PROBE_TOTAL_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return 300
+    try:
+        timeout = int(raw)
+    except ValueError:
+        return 300
+    return max(60, min(timeout, 900))
+
+
 def _status_probe_retry_delay_seconds(attempt: int) -> int:
     raw = (os.getenv("TINYHAT_HERMES_STATUS_PROBE_RETRY_DELAY_SECONDS") or "").strip()
     if not raw:
@@ -282,9 +293,22 @@ def _failed_status_command_summary(status: dict[str, Any]) -> str:
     return str(status.get("message") or "status probe failed")
 
 
+def _status_probe_timed_out(status: dict[str, Any]) -> bool:
+    commands = status.get("commands")
+    if not isinstance(commands, dict):
+        return False
+    return any(
+        isinstance(result, dict) and bool(result.get("timed_out"))
+        for result in commands.values()
+    )
+
+
 async def _probe_hermes_status_with_retries() -> dict[str, Any]:
     attempts = _status_probe_attempts()
     timeout_seconds = _status_probe_timeout_seconds()
+    total_timeout_seconds = _status_probe_total_timeout_seconds()
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
     probe_attempts: list[dict[str, Any]] = []
     status: dict[str, Any] = {}
     for attempt in range(1, attempts + 1):
@@ -302,11 +326,23 @@ async def _probe_hermes_status_with_retries() -> dict[str, Any]:
         )
         if status.get("installed") and status.get("ok"):
             break
+        if _status_probe_timed_out(status):
+            status["probe_stopped_reason"] = "command_timeout"
+            break
+        elapsed_seconds = loop.time() - started_at
+        if elapsed_seconds >= total_timeout_seconds:
+            status["probe_stopped_reason"] = "total_timeout"
+            break
         if attempt < attempts:
-            await asyncio.sleep(_status_probe_retry_delay_seconds(attempt))
+            delay_seconds = _status_probe_retry_delay_seconds(attempt)
+            if elapsed_seconds + delay_seconds >= total_timeout_seconds:
+                status["probe_stopped_reason"] = "total_timeout"
+                break
+            await asyncio.sleep(delay_seconds)
     status["probe_attempts"] = probe_attempts
     status["probe_attempt_count"] = len(probe_attempts)
     status["probe_timeout_seconds"] = timeout_seconds
+    status["probe_total_timeout_seconds"] = total_timeout_seconds
     return status
 
 

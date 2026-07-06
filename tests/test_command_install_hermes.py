@@ -465,6 +465,71 @@ def test_install_hermes_retries_transient_status_failure_after_install() -> None
     assert sleep_calls == [1]
 
 
+def test_install_hermes_stops_retrying_status_timeouts_with_summary() -> None:
+    sleep_calls: list[float] = []
+    status_timeouts: list[int] = []
+    timed_out_status = {
+        **_status(installed=True, ok=False),
+        "commands": {
+            "version": {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "Hermes Agent 0.1.0",
+                "stderr": "",
+                "timed_out": False,
+            },
+            "status": {
+                "ok": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": "command timed out after 45s",
+                "timed_out": True,
+            },
+            "status_all": {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "ok",
+                "stderr": "",
+                "timed_out": False,
+            },
+        },
+    }
+
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
+        status_timeouts.append(timeout_seconds)
+        return timed_out_status
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "3",
+                "TINYHAT_HERMES_STATUS_PROBE_RETRY_DELAY_SECONDS": "1",
+                "TINYHAT_HERMES_STATUS_PROBE_TIMEOUT_SECONDS": "45",
+            },
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.probe_hermes_status",
+            fake_status,
+        ),
+        patch("hermes_runtime.commands.install_hermes.asyncio.sleep", fake_sleep),
+    ):
+        with _raises_runtime(
+            "failed after 1 attempt\\(s\\): status: command timed out after 45s"
+        ):
+            asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
+
+    assert status_timeouts == [45]
+    assert sleep_calls == []
+
+
 def test_install_hermes_raises_when_installer_fails() -> None:
     async def fake_prerequisites() -> dict[str, object]:
         return {"missing_before": [], "attempted": False}
