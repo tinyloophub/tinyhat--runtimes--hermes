@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.37 - 2026-07-06
+
 - Retry transient post-install Hermes status probes with bounded diagnostics so
   first-run lazy dependency setup does not falsely mark fresh provisioning as
   broken, while still surfacing command timeouts and permanent status failures.
