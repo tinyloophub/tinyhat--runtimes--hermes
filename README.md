@@ -214,6 +214,24 @@ it.
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
 
+### `install_hermes` status probe controls
+
+After the official Hermes installer completes, `install_hermes` verifies
+`hermes --version`, `hermes status`, and `hermes status --all`. Fresh installs
+can briefly return a fast non-zero status while Hermes finishes first-run lazy
+dependency setup, so Tinyhat retries that verification before marking
+provisioning broken. A real command timeout stops the retry loop and is reported
+as the failure summary instead of being retried.
+
+- `TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS`: retry count for non-timeout status
+  failures; default `5`, clamped to `1..10`.
+- `TINYHAT_HERMES_STATUS_PROBE_TIMEOUT_SECONDS`: timeout for each Hermes
+  status subcommand; default `90`, clamped to `30..300`.
+- `TINYHAT_HERMES_STATUS_PROBE_RETRY_DELAY_SECONDS`: linear retry-delay base in
+  seconds; default `5`, clamped to at least `1` and at most `30` per delay.
+- `TINYHAT_HERMES_STATUS_PROBE_TOTAL_TIMEOUT_SECONDS`: best-effort wall-clock
+  guard for the whole probe loop; default `300`, clamped to `60..900`.
+
 ## Telegram Codex auth quick commands
 
 `configure_telegram` also prepares Hermes quick commands in

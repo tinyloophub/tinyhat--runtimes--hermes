@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Retry transient post-install Hermes status probes with bounded diagnostics so
+  first-run lazy dependency setup does not falsely mark fresh provisioning as
+  broken, while still surfacing command timeouts and permanent status failures.
+
 ## 0.0.36 - 2026-07-04
 
 - Accept a real OpenClaw import when `hermes claw migrate` applies changes
