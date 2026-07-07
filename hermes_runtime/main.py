@@ -22,6 +22,7 @@ from hermes_runtime.client import (
 from hermes_runtime.commands import run_command
 from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
+from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 from hermes_runtime.update_check import (
     mark_scheduled_check_started,
     run_update_check,
@@ -51,6 +52,8 @@ class RuntimeContext:
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
     command_task: asyncio.Task[None] | None = None
+    gateway_reconcile_task: asyncio.Task[None] | None = None
+    gateway_reconciled: bool = False
     command_id: str | None = None
     command_kind: str | None = None
 
@@ -197,6 +200,53 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "runtime_generation": "tiny_runtime",
         "hermes_runtime": runtime,
     }
+
+
+def _telegram_env_configured() -> bool:
+    values = read_env_values(env_file_candidates(), names=["TELEGRAM_BOT_TOKEN"])
+    return bool((os.getenv("TELEGRAM_BOT_TOKEN") or values.get("TELEGRAM_BOT_TOKEN") or "").strip())
+
+
+async def _run_gateway_reconcile(ctx: RuntimeContext) -> None:
+    result = await run_command(
+        ctx,
+        {
+            "kind": "heal_hermes",
+            "spec": {"reason": "runtime_assigned_heartbeat_reconcile"},
+        },
+    )
+    if result.get("healthy"):
+        print("gateway reconcile complete: healthy", flush=True)
+    else:
+        print(
+            f"gateway reconcile incomplete: {result.get('reason') or 'unknown'}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _consume_gateway_reconcile_task(ctx: RuntimeContext) -> None:
+    task = ctx.gateway_reconcile_task
+    if task is None or not task.done():
+        return
+    ctx.gateway_reconcile_task = None
+    try:
+        task.result()
+    except Exception as exc:  # noqa: BLE001 - reconciliation must not stop heartbeat.
+        print(f"gateway reconcile failed: {exc}", file=sys.stderr, flush=True)
+
+
+def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
+    _consume_gateway_reconcile_task(ctx)
+    if ctx.gateway_reconciled or ctx.gateway_reconcile_task is not None:
+        return
+    state = (getattr(ctx, "platform_state", "") or "").strip().lower()
+    if state not in ASSIGNED_PLATFORM_STATES:
+        return
+    if not _telegram_env_configured():
+        return
+    ctx.gateway_reconciled = True
+    ctx.gateway_reconcile_task = asyncio.create_task(_run_gateway_reconcile(ctx))
 
 
 def _read_activation_error(ctx: RuntimeContext) -> dict[str, Any] | None:
@@ -425,6 +475,7 @@ def _maybe_start_scheduled_update_check(ctx: RuntimeContext) -> None:
 
 async def _heartbeat_once(ctx: RuntimeContext) -> None:
     _consume_command_task(ctx)
+    _consume_gateway_reconcile_task(ctx)
     _maybe_start_scheduled_update_check(ctx)
     response = await ctx.platform.post_json(
         context_computer_api_path(ctx, "heartbeat"),
@@ -433,6 +484,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     platform_state = response.get("state")
     if isinstance(platform_state, str) and platform_state.strip():
         ctx.platform_state = platform_state.strip()
+    _maybe_start_gateway_reconcile(ctx)
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
         return
@@ -479,6 +531,7 @@ async def run() -> int:
         except PlatformError as exc:
             print(f"heartbeat failed: {exc}", file=sys.stderr, flush=True)
         _consume_command_task(ctx)
+        _consume_gateway_reconcile_task(ctx)
         if ctx.restart_requested and ctx.command_task is None:
             print("restart requested after command settlement", flush=True)
             return 0

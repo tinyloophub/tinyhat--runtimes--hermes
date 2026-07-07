@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep the Tinyhat heartbeat loop alive when platform HTTP reads time out,
+  install the Hermes gateway service before falling back to a foreground
+  gateway, and add `heal_hermes` for repairing already-configured Computers
+  whose Telegram gateway stopped after a runtime restart.
+
 ## 0.0.39 - 2026-07-07
 
 - Restore OpenRouter `openai/gpt-4o-transcribe` as the default Computer /

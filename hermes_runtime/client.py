@@ -47,6 +47,8 @@ class CachedGoogleIdentityToken:
             raise PlatformError(
                 f"failed to fetch Google identity token: {exc.reason}"
             ) from exc
+        except TimeoutError as exc:
+            raise PlatformError("failed to fetch Google identity token: timed out") from exc
 
 
 def _jwt_exp(token: str) -> int | None:
@@ -113,6 +115,8 @@ class PlatformClient:
             ) from exc
         except error.URLError as exc:
             raise PlatformError(f"{method} {path} failed: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise PlatformError(f"{method} {path} timed out") from exc
         if not raw:
             return {}
         try:

@@ -46,6 +46,7 @@ from hermes_runtime.commands.configure_telegram import (
     _env_file_candidates,
     _gateway_log_has_adapter_failure,
     _gateway_needs_foreground_run,
+    _gateway_service_is_missing,
     _gateway_status_is_healthy,
     _start_gateway_foreground,
 )
@@ -83,8 +84,30 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
         [str(hermes_bin), "gateway", "status"],
         timeout_seconds=45,
     )
+    install: dict[str, Any] | None = None
+    if (
+        not _gateway_status_is_healthy(status_after)
+        and _gateway_service_is_missing(start, status_after)
+    ):
+        install = await run_process(
+            [str(hermes_bin), "gateway", "install"],
+            timeout_seconds=180,
+        )
+        if install.get("ok"):
+            start = await run_process(
+                [str(hermes_bin), "gateway", "start"],
+                timeout_seconds=180,
+            )
+            status_after = await run_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=45,
+            )
     foreground: dict[str, Any] | None = None
-    if _gateway_needs_foreground_run(start=start, status=status_after):
+    if _gateway_needs_foreground_run(
+        start=start,
+        status=status_after,
+        install=install,
+    ):
         foreground = await _start_gateway_foreground(hermes_bin)
         status_after = await run_process(
             [str(hermes_bin), "gateway", "status"],
@@ -110,6 +133,7 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
         "adapter_ready": not adapter_failure,
         "status_before": _compact_process(status_before),
         "start": _compact_process(start),
+        "install": _compact_process(install),
         "foreground": foreground,
         "status_after": _compact_process(status_after),
     }
