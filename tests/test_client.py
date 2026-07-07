@@ -14,7 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime import client as client_module  # noqa: E402
-from hermes_runtime.client import CachedGoogleIdentityToken  # noqa: E402
+from hermes_runtime.client import (  # noqa: E402
+    CachedGoogleIdentityToken,
+    PlatformClient,
+    PlatformError,
+)
 
 
 def load_tests(
@@ -84,3 +88,45 @@ def test_cached_google_identity_token_fetches_metadata_token_once() -> None:
     assert "audience=https%3A%2F%2Fplatform.example" in url
     assert "format=full" in url
     assert headers["Metadata-flavor"] == "Google"
+
+
+def test_platform_client_wraps_read_timeout_as_platform_error() -> None:
+    def fake_urlopen(req: Any, timeout: int | float | None = None) -> _FakeResponse:
+        del req, timeout
+        raise TimeoutError("The read operation timed out")
+
+    original_urlopen = client_module.request.urlopen
+    client_module.request.urlopen = fake_urlopen  # type: ignore[assignment]
+    try:
+        platform = PlatformClient(base_url="https://platform.example", token="token")
+        try:
+            asyncio_result = platform._request_json("POST", "/heartbeat", {})
+        except PlatformError as exc:
+            assert "POST /heartbeat timed out" in str(exc)
+        else:
+            raise AssertionError(f"expected PlatformError, got {asyncio_result!r}")
+    finally:
+        client_module.request.urlopen = original_urlopen  # type: ignore[assignment]
+
+
+def test_metadata_token_provider_wraps_timeout_as_platform_error() -> None:
+    def fake_urlopen(req: Any, timeout: int | float | None = None) -> _FakeResponse:
+        del req, timeout
+        raise TimeoutError("metadata read timed out")
+
+    original_urlopen = client_module.request.urlopen
+    client_module.request.urlopen = fake_urlopen  # type: ignore[assignment]
+    try:
+        provider = CachedGoogleIdentityToken(
+            audience="https://platform.example/",
+            timeout_seconds=3,
+        )
+        try:
+            provider()
+        except PlatformError as exc:
+            assert "Google identity token" in str(exc)
+            assert "timed out" in str(exc)
+        else:
+            raise AssertionError("expected PlatformError")
+    finally:
+        client_module.request.urlopen = original_urlopen  # type: ignore[assignment]

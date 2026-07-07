@@ -1632,12 +1632,18 @@ def _gateway_status_is_healthy(status: dict[str, Any] | None) -> bool:
     return True
 
 
+def _gateway_service_is_missing(*results: dict[str, Any] | None) -> bool:
+    text = "\n".join(_process_text(result) for result in results).lower()
+    return "gateway service is not installed" in text
+
+
 def _gateway_needs_foreground_run(
     *,
     start: dict[str, Any],
     status: dict[str, Any],
+    install: dict[str, Any] | None = None,
 ) -> bool:
-    text = f"{_process_text(start)}\n{_process_text(status)}"
+    text = f"{_process_text(start)}\n{_process_text(status)}\n{_process_text(install)}"
     if "not applicable inside a docker container" in text:
         return True
     if "run the gateway directly" in text:
@@ -1709,8 +1715,26 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
         [str(hermes_bin), "gateway", "status"],
         timeout_seconds=45,
     )
+    install: dict[str, Any] | None = None
+    if (
+        not _gateway_status_is_healthy(status)
+        and _gateway_service_is_missing(start, status)
+    ):
+        install = await run_process(
+            [str(hermes_bin), "gateway", "install"],
+            timeout_seconds=180,
+        )
+        if install.get("ok"):
+            start = await run_process(
+                [str(hermes_bin), "gateway", "start"],
+                timeout_seconds=180,
+            )
+            status = await run_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=45,
+            )
     foreground: dict[str, Any] | None = None
-    if _gateway_needs_foreground_run(start=start, status=status):
+    if _gateway_needs_foreground_run(start=start, status=status, install=install):
         foreground = await _start_gateway_foreground(hermes_bin)
         status = await run_process(
             [str(hermes_bin), "gateway", "status"],
@@ -1736,6 +1760,7 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
         "adapter_ready": not adapter_failure,
         "stop": _compact_process(stop),
         "start": _compact_process(start),
+        "install": _compact_process(install),
         "foreground": foreground,
         "status": _compact_process(status),
     }

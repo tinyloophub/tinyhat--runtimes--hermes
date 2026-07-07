@@ -134,6 +134,98 @@ class CommandTests(TestCase):
 
         self.assertEqual(ctx.platform_state, "assigned")
 
+    def test_assigned_heartbeat_starts_gateway_heal_when_telegram_configured(
+        self,
+    ) -> None:
+        async def scenario() -> list[dict[str, Any]]:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {"ok": True, "state": "assigned"}
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="ready",
+                )
+                started = asyncio.Event()
+                commands: list[dict[str, Any]] = []
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, Any]:
+                    commands.append(command)
+                    started.set()
+                    return {"healthy": True}
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "HOME": str(Path(tmp) / "home"),
+                            "TELEGRAM_BOT_TOKEN": "bot-token",
+                            "TINYHAT_HERMES_HOME": str(Path(tmp) / "hermes-home"),
+                        },
+                        clear=True,
+                    ),
+                    patch("hermes_runtime.main.run_command", fake_run_command),
+                ):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    await asyncio.wait_for(started.wait(), timeout=0.2)
+                    self.assertIsNotNone(ctx.gateway_reconcile_task)
+                    await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
+
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+
+                return commands
+
+        commands = asyncio.run(scenario())
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["kind"], "heal_hermes")
+        self.assertEqual(
+            commands[0]["spec"]["reason"],
+            "runtime_assigned_heartbeat_reconcile",
+        )
+
+    def test_assigned_heartbeat_skips_gateway_heal_without_telegram_config(
+        self,
+    ) -> None:
+        async def scenario() -> RuntimeContext:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {"ok": True, "state": "assigned"}
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="ready",
+                )
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, Any]:
+                    raise AssertionError(f"unexpected command: {command}")
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "HOME": str(Path(tmp) / "home"),
+                            "TELEGRAM_BOT_TOKEN": "",
+                            "TINYHAT_HERMES_HOME": str(Path(tmp) / "hermes-home"),
+                        },
+                        clear=True,
+                    ),
+                    patch("hermes_runtime.main.run_command", fake_run_command),
+                ):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                return ctx
+
+        ctx = asyncio.run(scenario())
+
+        self.assertIsNone(ctx.gateway_reconcile_task)
+        self.assertFalse(ctx.gateway_reconciled)
+
     def test_heartbeat_starts_any_command_without_blocking_loop(self) -> None:
         async def scenario() -> tuple[RuntimeContext, FakePlatform]:
             with tempfile.TemporaryDirectory() as tmp:

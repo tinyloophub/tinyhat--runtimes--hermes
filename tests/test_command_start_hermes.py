@@ -149,3 +149,76 @@ def test_start_hermes_runs_gateway_start_when_not_healthy() -> None:
     assert result["already_running"] is False
     assert result["gateway"]["mode"] == "service"
     assert result["env_reload"]["keys"] == ["EXA_API_KEY"]
+
+
+def test_start_hermes_installs_gateway_service_before_foreground_fallback() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        calls.append(args)
+        command = args[-1]
+        stdout = "ok\n"
+        ok = True
+        returncode = 0
+        status_calls = len([call for call in calls if call[-1] == "status"])
+        if command == "status" and status_calls <= 2:
+            stdout = "✗ Gateway is not running\n"
+        elif command == "start" and len([call for call in calls if call[-1] == "start"]) == 1:
+            ok = False
+            returncode = 1
+            stdout = "✗ Gateway service is not installed\n  Run: hermes gateway install\n"
+        elif command == "install":
+            stdout = "✓ Gateway service installed\n"
+        elif command == "status":
+            stdout = "✓ Gateway is running (PID: 123)\n"
+        return {
+            "args": args,
+            "returncode": returncode,
+            "ok": ok,
+            "timed_out": False,
+            "duration_ms": 12,
+            "stdout": stdout,
+            "stderr": "",
+        }
+
+    async def fake_status() -> dict[str, object]:
+        return {
+            "schema": "tinyhat_hermes_status_v1",
+            "installed": True,
+            "ok": True,
+            "version": "Hermes Agent 0.1.0",
+            "message": "ok",
+        }
+
+    with (
+        patch(
+            "hermes_runtime.commands.start_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
+        patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
+        patch(
+            "hermes_runtime.commands.start_hermes.load_env_files_into_process",
+            return_value={"loaded": True, "keys": ["TELEGRAM_BOT_TOKEN"]},
+        ),
+    ):
+        result = asyncio.run(run_command(SimpleNamespace(), {"kind": "start_hermes"}))
+
+    assert calls == [
+        ["/usr/local/bin/hermes", "gateway", "status"],
+        ["/usr/local/bin/hermes", "gateway", "start"],
+        ["/usr/local/bin/hermes", "gateway", "status"],
+        ["/usr/local/bin/hermes", "gateway", "install"],
+        ["/usr/local/bin/hermes", "gateway", "start"],
+        ["/usr/local/bin/hermes", "gateway", "status"],
+    ]
+    assert result["started"] is True
+    assert result["healthy"] is True
+    assert result["gateway"]["install"]["ok"] is True
+    assert result["gateway"]["foreground"] is None
