@@ -1231,6 +1231,55 @@ class CommandTests(TestCase):
             self.assertFalse(checked["update_available"])
             self.assertEqual(checked["target_ref"], current_ref)
 
+    def test_check_update_uses_code_version_when_current_ref_is_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            target_sha = "6" * 40
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                computer_id="987",
+                current_version=lambda: "channels/lts",
+                current_commit_sha=lambda: "4" * 40,
+            )
+
+            with patch(
+                "hermes_runtime.commands.check_update.__version__",
+                "0.0.39",
+            ), patch(
+                "hermes_runtime.update_check._fetch_github_commit",
+                return_value={
+                    "ok": True,
+                    "status": "ok",
+                    "sha": target_sha,
+                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                    + target_sha,
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "v0.0.40",
+                            },
+                        },
+                    )
+                )
+
+            self.assertEqual(checked["current_version"], "channels/lts")
+            self.assertEqual(checked["current_code_version"], "0.0.39")
+            self.assertEqual(checked["target_ref"], "v0.0.40")
+            self.assertEqual(checked["target_sha"], target_sha)
+            self.assertFalse(checked["current_matches_target"])
+            self.assertTrue(checked["target_final_version_is_newer"])
+            self.assertEqual(checked["decision"], "newer_final_release")
+            self.assertTrue(checked["update_available"])
+            self.assertTrue(platform.posts[0][1]["result"]["update_available"])
+
     def test_check_update_uses_dev_ref_check_for_local_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
@@ -1570,6 +1619,7 @@ class CommandTests(TestCase):
             config_dir.mkdir(parents=True)
             (config_dir / "update_check_time").write_text("00:00\n")
             (config_dir / "update_check_timezone").write_text("UTC\n")
+            (config_dir / "update_check_ref").write_text("v0.0.40\n")
             platform = FakePlatform()
             ctx = SimpleNamespace(
                 platform=platform,
@@ -1579,7 +1629,7 @@ class CommandTests(TestCase):
                 current_commit_sha=lambda: "b" * 40,
             )
 
-            with patch(
+            with patch("hermes_runtime.main.__version__", "0.0.39"), patch(
                 "hermes_runtime.update_check._fetch_github_commit",
                 return_value={
                     "ok": True,
@@ -1592,6 +1642,10 @@ class CommandTests(TestCase):
                 result = asyncio.run(_scheduled_update_check(ctx))
 
             self.assertEqual(result["reason"], "scheduled")
+            self.assertEqual(result["current_version"], "channels/lts")
+            self.assertEqual(result["current_code_version"], "0.0.39")
+            self.assertEqual(result["decision"], "newer_final_release")
+            self.assertTrue(result["update_available"])
             self.assertEqual(
                 platform.posts[0][0],
                 "/hapi/v1/computers/local-dev/update-check-results/v1",
