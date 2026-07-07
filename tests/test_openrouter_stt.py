@@ -275,7 +275,7 @@ def test_openrouter_stt_tries_openrouter_model_chain_before_local() -> None:
     assert output_text == "Fallback model transcript\n"
     assert stdout.getvalue().strip() == "Fallback model transcript"
     assert attempted_models == [
-        "openai/whisper-large-v3",
+        "openai/gpt-4o-transcribe",
         "mistralai/voxtral-mini-transcribe",
     ]
 
@@ -322,7 +322,7 @@ def test_openrouter_stt_disabled_local_fallback_reports_model_chain() -> None:
     assert code == 1
     error_text = stderr.getvalue()
     assert "OpenRouter STT failed for all configured models" in error_text
-    assert "openai/whisper-large-v3" in error_text
+    assert "openai/gpt-4o-transcribe" in error_text
     assert "mistralai/voxtral-mini-transcribe" in error_text
 
 
