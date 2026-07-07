@@ -93,6 +93,9 @@ it may confirm the selector is eligible, but it must not report
 `update_available=true`. That keeps a Computer already running `v0.0.7` from
 treating the protected `channels/lts` merge commit as a newer version. The
 platform should send the concrete final tag when it wants a version decision.
+When a Computer's installed runtime ref is itself a moving selector such as
+`channels/lts`, the runtime uses its imported package version
+(`current_code_version`) as the installed final version for that comparison.
 
 Channel branch update example:
 

@@ -452,6 +452,7 @@ async def _scheduled_update_check(ctx: RuntimeContext) -> dict[str, Any]:
     result = await run_update_check(
         state_dir=ctx.state_dir,
         current_version=ctx.current_version(),
+        current_code_version=__version__,
         current_sha=ctx.current_commit_sha(),
         reason="scheduled",
     )

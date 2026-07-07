@@ -364,6 +364,10 @@ Update checks use the same version rule everywhere:
 - `custom` can point at any explicit tag or commit selected by an operator.
 - `lts` and `latest` only report `update_available=true` when the target is a
   concrete final release tag (`vX.Y.Z`) newer than the installed final version.
+  If the Computer was installed from a moving selector such as `channels/lts`,
+  the update check compares the target tag with the `hermes_runtime.__version__`
+  value imported by the running process and reports that value as
+  `current_code_version`.
 - A raw channel selector such as `channels/lts` is installable, but it is not a
   version decision by itself. Protected channel branches can point at merge
   commits that contain the release tag, so the platform should resolve the

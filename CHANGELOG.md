@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Use the running Hermes package version when a Computer installed from a
+  channel ref checks a newer final LTS/latest tag, so channel-installed
+  runtimes correctly report available updates.
+
 ## 0.0.40 - 2026-07-07
 
 - Keep the Tinyhat heartbeat loop alive when platform HTTP reads time out,

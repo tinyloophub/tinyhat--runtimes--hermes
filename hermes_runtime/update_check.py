@@ -185,9 +185,12 @@ def _versions_match(left: str | None, right: str | None) -> bool:
 def _is_strictly_newer_final(
     *,
     current_version: str,
+    current_code_version: str | None = None,
     target_ref: str,
 ) -> bool | None:
     current = _final_version_tuple(current_version)
+    if current is None:
+        current = _final_version_tuple(current_code_version)
     target = _final_version_tuple(target_ref)
     if current is None or target is None:
         return None
@@ -201,6 +204,7 @@ def _update_decision(
     target_ref: str,
     target_sha: str | None,
     current_version: str,
+    current_code_version: str | None,
     current_sha: str | None,
 ) -> dict[str, Any]:
     channel_eligible = _is_channel_eligible_target(
@@ -209,9 +213,12 @@ def _update_decision(
     )
     final_version_is_newer = _is_strictly_newer_final(
         current_version=current_version,
+        current_code_version=current_code_version,
         target_ref=target_ref,
     )
     current_matches_target = _versions_match(current_version, target_ref)
+    if not current_matches_target:
+        current_matches_target = _versions_match(current_code_version, target_ref)
     if not current_matches_target and target_sha and current_sha:
         current_matches_target = target_sha == current_sha
     elif not current_matches_target and target_sha:
@@ -256,6 +263,7 @@ async def run_update_check(
     *,
     state_dir: Path,
     current_version: str,
+    current_code_version: str | None = None,
     current_sha: str | None = None,
     spec: dict[str, Any] | None = None,
     reason: str = "scheduled",
@@ -291,6 +299,7 @@ async def run_update_check(
         target_ref=target_ref,
         target_sha=target_sha,
         current_version=current_version,
+        current_code_version=current_code_version,
         current_sha=current_sha,
     )
     result = {
@@ -303,6 +312,7 @@ async def run_update_check(
         "target_sha": target_sha,
         "target_url": resolved.get("html_url"),
         "current_version": current_version,
+        "current_code_version": current_code_version,
         "current_sha": current_sha,
         **decision,
         "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
