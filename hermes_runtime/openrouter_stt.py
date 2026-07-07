@@ -15,16 +15,16 @@ from urllib import error, request
 
 from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 
-DEFAULT_MODEL = "openai/gpt-4o-transcribe"
+DEFAULT_MODEL = "openai/whisper-large-v3"
 DEFAULT_FALLBACK_MODELS = (
+    "openai/whisper-large-v3-turbo",
+    "openai/whisper-1",
+    "openai/gpt-4o-transcribe",
     "openai/gpt-4o-mini-transcribe",
     "microsoft/mai-transcribe-1.5",
     "mistralai/voxtral-mini-transcribe",
     "qwen/qwen3-asr-flash-2026-02-10",
     "google/chirp-3",
-    "openai/whisper-large-v3",
-    "openai/whisper-large-v3-turbo",
-    "openai/whisper-1",
 )
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT_SECONDS = 120.0

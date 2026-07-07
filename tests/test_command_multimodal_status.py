@@ -65,8 +65,8 @@ def test_multimodal_status_reports_models_without_values() -> None:
                     "    openrouter:",
                     "      type: command",
                     "      command: python3 -m hermes_runtime.openrouter_stt --input {input_path}",
-                    "      model: openai/gpt-4o-transcribe",
-                    "      fallback_models: openai/gpt-4o-mini-transcribe,microsoft/mai-transcribe-1.5,mistralai/voxtral-mini-transcribe,qwen/qwen3-asr-flash-2026-02-10,google/chirp-3,openai/whisper-large-v3,openai/whisper-large-v3-turbo,openai/whisper-1",
+                    "      model: openai/whisper-large-v3",
+                    "      fallback_models: openai/whisper-large-v3-turbo,openai/whisper-1,openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,microsoft/mai-transcribe-1.5,mistralai/voxtral-mini-transcribe,qwen/qwen3-asr-flash-2026-02-10,google/chirp-3",
                     "      local_fallback_model: small",
                     "      language: auto",
                     "      timeout: 375",
@@ -112,17 +112,17 @@ def test_multimodal_status_reports_models_without_values() -> None:
 
     assert result["schema"] == "tinyhat_hermes_multimodal_status_v1"
     assert result["stt"]["provider"] == "openrouter"
-    assert result["stt"]["active_model"] == "openai/gpt-4o-transcribe"
+    assert result["stt"]["active_model"] == "openai/whisper-large-v3"
     assert result["stt"]["openrouter"]["command_provider_configured"] is True
     assert result["stt"]["openrouter"]["fallback_models"] == [
+        "openai/whisper-large-v3-turbo",
+        "openai/whisper-1",
+        "openai/gpt-4o-transcribe",
         "openai/gpt-4o-mini-transcribe",
         "microsoft/mai-transcribe-1.5",
         "mistralai/voxtral-mini-transcribe",
         "qwen/qwen3-asr-flash-2026-02-10",
         "google/chirp-3",
-        "openai/whisper-large-v3",
-        "openai/whisper-large-v3-turbo",
-        "openai/whisper-1",
     ]
     assert result["stt"]["openrouter"]["api_key_present"] is True
     assert result["stt"]["openrouter"]["command_api_key_resolvable"] is True
