@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.41 - 2026-07-07
+
 - Use the running Hermes package version when a Computer installed from a
   channel ref checks a newer final LTS/latest tag, so channel-installed
   runtimes correctly report available updates.
