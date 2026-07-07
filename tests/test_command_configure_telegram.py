@@ -326,7 +326,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "config",
             "set",
             "stt.providers.openrouter.model",
-            "openai/whisper-large-v3",
+            "openai/gpt-4o-transcribe",
         ],
         [
             "/usr/local/bin/hermes",
@@ -467,7 +467,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         },
         {
             "key": "stt.providers.openrouter.model",
-            "value": "openai/whisper-large-v3",
+            "value": "openai/gpt-4o-transcribe",
             "ok": True,
             "returncode": 0,
             "duration_ms": 21,
@@ -767,7 +767,7 @@ def test_configure_telegram_runs_foreground_gateway_in_containers() -> None:
             "config",
             "set",
             "stt.providers.openrouter.model",
-            "openai/whisper-large-v3",
+            "openai/gpt-4o-transcribe",
         ],
         [
             "/usr/local/bin/hermes",
@@ -1153,7 +1153,7 @@ def test_configure_codex_multimedia_keeps_openrouter_stt_and_sets_codex_vision()
 
     assert result["ok"] is True
     assert result["active_provider"] == "openrouter"
-    assert result["openrouter_stt_model"] == "openai/whisper-large-v3"
+    assert result["openrouter_stt_model"] == "openai/gpt-4o-transcribe"
     assert (
         result["openrouter_stt_fallback_models"]
         == configure_telegram.openrouter_stt_fallback_models()
