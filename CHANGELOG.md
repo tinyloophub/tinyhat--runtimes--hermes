@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.39 - 2026-07-07
+
 - Restore OpenRouter `openai/gpt-4o-transcribe` as the default Computer /
   Telegram STT primary and move Whisper variants back to the end of the
   fallback chain.
