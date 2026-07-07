@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make OpenRouter `openai/whisper-large-v3` the default Computer / Telegram
+  STT primary and keep Whisper variants first in the OpenRouter fallback chain
+  ahead of the gpt-4o transcribe models. Codex-auth multimedia still keeps
+  voice transcription on the OpenRouter STT chain.
+
 ## 0.0.37 - 2026-07-06
 
 - Retry transient post-install Hermes status probes with bounded diagnostics so
