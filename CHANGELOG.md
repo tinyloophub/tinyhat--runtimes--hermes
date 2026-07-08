@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.42 - 2026-07-08
+
 - Add a one-shot durable gateway restart to `heal_hermes`
   (`spec.restart=true`): reload env files, stop → start → functionally
   verify (gateway status healthy plus best-effort Telegram connect evidence
