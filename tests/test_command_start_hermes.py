@@ -83,6 +83,7 @@ def test_start_hermes_noops_when_gateway_is_already_healthy() -> None:
             "hermes_runtime.commands.start_hermes.find_hermes_binary",
             return_value=Path("/usr/local/bin/hermes"),
         ),
+        patch("hermes_runtime.commands.start_hermes.shutil.which", return_value=None),
         patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
         patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
         patch(
@@ -135,6 +136,7 @@ def test_start_hermes_runs_gateway_start_when_not_healthy() -> None:
             "hermes_runtime.commands.start_hermes.find_hermes_binary",
             return_value=Path("/usr/local/bin/hermes"),
         ),
+        patch("hermes_runtime.commands.start_hermes.shutil.which", return_value=None),
         patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
         patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
         patch(
