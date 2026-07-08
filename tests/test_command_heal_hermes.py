@@ -116,20 +116,34 @@ def _fake_start_result() -> dict[str, object]:
     }
 
 
-def test_heal_hermes_restart_runs_stop_start_then_verify() -> None:
+def test_heal_hermes_restart_runs_gateway_restart_then_verify() -> None:
     events: list[str] = []
+    run_process_calls: list[list[str]] = []
 
-    async def fake_stop(_ctx: object, command: dict[str, object]) -> dict[str, object]:
-        events.append("stop")
-        assert command["kind"] == "stop_hermes"
-        assert command["spec"] == {"reason": "secret_saved_restart"}
-        return {"schema": "tinyhat_hermes_stop_v1", "stopped": True}
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        run_process_calls.append(list(args))
+        events.append("restart")
+        return {
+            "args": list(args),
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 15,
+            "stdout": "Gateway restarted\n",
+            "stderr": "",
+        }
 
-    async def fake_start(_ctx: object, command: dict[str, object]) -> dict[str, object]:
-        events.append("start")
-        assert command["kind"] == "start_hermes"
-        assert command["spec"] == {"reason": "secret_saved_restart"}
-        return _fake_start_result()
+    async def fail_stop(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("stop_hermes must not run for a gateway restart")
+
+    async def fail_start(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("start_hermes must not run for a gateway restart")
 
     async def fake_probe(
         hermes_bin: Path,
@@ -144,8 +158,9 @@ def test_heal_hermes_restart_runs_stop_start_then_verify() -> None:
             "ready": True,
             "status_healthy": True,
             "telegram_evidence": "journal",
-            "telegram_connected": True,
-            "status": {"ok": True},
+            # Positive-only Telegram evidence: only True or None ever reach here.
+            "telegram_connected": None,
+            "status": {"ok": True, "stdout": "Active: active (running)"},
         }
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -155,8 +170,12 @@ def test_heal_hermes_restart_runs_stop_start_then_verify() -> None:
                 "hermes_runtime.commands.heal_hermes.find_hermes_binary",
                 return_value=Path("/usr/local/bin/hermes"),
             ),
-            patch("hermes_runtime.commands.heal_hermes.stop_hermes.run", fake_stop),
-            patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fake_start),
+            patch(
+                "hermes_runtime.commands.heal_hermes.run_process",
+                fake_run_process,
+            ),
+            patch("hermes_runtime.commands.heal_hermes.stop_hermes.run", fail_stop),
+            patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fail_start),
             patch(
                 "hermes_runtime.commands.heal_hermes.probe_functional_readiness",
                 fake_probe,
@@ -172,7 +191,10 @@ def test_heal_hermes_restart_runs_stop_start_then_verify() -> None:
                 )
             )
 
-    assert events == ["stop", "start", "verify"]
+    # The official one-shot Hermes CLI restart is invoked exactly once; the
+    # hand-rolled stop/start commands are never used on the restart path.
+    assert run_process_calls == [["/usr/local/bin/hermes", "gateway", "restart"]]
+    assert events == ["restart", "verify"]
     assert result["schema"] == "tinyhat_hermes_heal_v1"
     assert result["healthy"] is True
     assert result["healed"] is True
@@ -184,12 +206,11 @@ def test_heal_hermes_restart_runs_stop_start_then_verify() -> None:
     assert restart["deadline_exceeded"] is False
     assert restart["telegram_evidence"] == "journal"
     milestones = restart["milestones_ms"]
-    for key in ("stop_started", "stop_done", "start_started", "start_done", "verified"):
+    for key in ("restart_started", "restart_done", "verified"):
         assert isinstance(milestones[key], int)
         assert milestones[key] >= 0
-    assert milestones["stop_started"] <= milestones["stop_done"]
-    assert milestones["start_started"] <= milestones["start_done"]
-    assert milestones["start_done"] <= milestones["verified"]
+    assert milestones["restart_started"] <= milestones["restart_done"]
+    assert milestones["restart_done"] <= milestones["verified"]
     assert result["env_reload"]["loaded"] is True
     assert "123456:token" not in str(result)
 
@@ -200,11 +221,28 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
     def fake_monotonic() -> float:
         return clock["now"]
 
-    async def fake_stop(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
-        return {"schema": "tinyhat_hermes_stop_v1", "stopped": True}
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        return {
+            "args": list(args),
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 5,
+            "stdout": "Gateway restarted\n",
+            "stderr": "",
+        }
 
-    async def fake_start(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
-        return _fake_start_result()
+    async def fail_stop(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("stop_hermes must not run for a gateway restart")
+
+    async def fail_start(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
+        raise AssertionError("start_hermes must not run for a gateway restart")
 
     async def fake_probe(
         hermes_bin: Path,
@@ -214,13 +252,16 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
         log_offset: int = 0,
     ) -> dict[str, object]:
         del hermes_bin, since_unix, log_path, log_offset
+        # Advance the injected clock past the (clamped) 30s deadline so the
+        # first probe that is not ready ends the poll loop.
         clock["now"] += 31.0
         return {
             "ready": False,
-            "status_healthy": True,
-            "telegram_evidence": "log",
-            "telegram_connected": False,
-            "status": {"ok": True},
+            "status_healthy": False,
+            "telegram_evidence": "unavailable",
+            # Positive-only evidence: absence is None, never False.
+            "telegram_connected": None,
+            "status": {"ok": True, "stdout": "Active: inactive (dead)"},
         }
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -231,8 +272,12 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
                 return_value=Path("/usr/local/bin/hermes"),
             ),
             patch("hermes_runtime.commands.heal_hermes._monotonic", fake_monotonic),
-            patch("hermes_runtime.commands.heal_hermes.stop_hermes.run", fake_stop),
-            patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fake_start),
+            patch(
+                "hermes_runtime.commands.heal_hermes.run_process",
+                fake_run_process,
+            ),
+            patch("hermes_runtime.commands.heal_hermes.stop_hermes.run", fail_stop),
+            patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fail_start),
             patch(
                 "hermes_runtime.commands.heal_hermes.probe_functional_readiness",
                 fake_probe,
@@ -257,11 +302,27 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
     assert restart["performed"] is True
     assert restart["deadline_seconds"] == 30
     assert restart["deadline_exceeded"] is True
-    assert restart["telegram_evidence"] == "log"
+    assert restart["telegram_evidence"] == "unavailable"
+    assert isinstance(restart["milestones_ms"]["restart_started"], int)
+    assert isinstance(restart["milestones_ms"]["restart_done"], int)
     assert restart["milestones_ms"]["verified"] is None
 
 
-def test_heal_hermes_without_restart_flag_never_stops_gateway() -> None:
+def test_heal_hermes_without_restart_flag_never_restarts_gateway() -> None:
+    run_process_calls: list[list[str]] = []
+
+    async def recording_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        run_process_calls.append(list(args))
+        raise AssertionError(
+            "run_process (gateway restart) must not run for a start-only heal"
+        )
+
     async def fail_stop(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
         raise AssertionError("stop_hermes must not run for a start-only heal")
 
@@ -275,6 +336,10 @@ def test_heal_hermes_without_restart_flag_never_stops_gateway() -> None:
                 "hermes_runtime.commands.heal_hermes.find_hermes_binary",
                 return_value=Path("/usr/local/bin/hermes"),
             ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.run_process",
+                recording_run_process,
+            ),
             patch("hermes_runtime.commands.heal_hermes.stop_hermes.run", fail_stop),
             patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fake_start),
         ):
@@ -285,6 +350,9 @@ def test_heal_hermes_without_restart_flag_never_stops_gateway() -> None:
                 )
             )
 
+    # A start-only heal reuses the durable start path and never invokes the
+    # one-shot `hermes gateway restart`.
+    assert run_process_calls == []
     assert result["healthy"] is True
     assert result["restart"]["requested"] is False
     assert result["restart"]["performed"] is False

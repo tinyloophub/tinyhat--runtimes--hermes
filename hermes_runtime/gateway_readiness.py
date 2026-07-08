@@ -40,7 +40,19 @@ from hermes_runtime.hermes_cli import run_process
 GATEWAY_SERVICE_NAME = "hermes-gateway.service"
 STATUS_PROBE_TIMEOUT_SECONDS = 15
 JOURNAL_PROBE_TIMEOUT_SECONDS = 15
-TELEGRAM_CONNECTED_MARKER = "connected to telegram"
+# Positive markers for an established Telegram connection. Hermes does not
+# reliably log a single "connected" line (service mode is quiet after
+# "Connecting to Telegram ..."), so evidence is treated as POSITIVE-ONLY:
+# finding a marker confirms connection, but its ABSENCE is reported as
+# unavailable (None), never as a negative that blocks readiness. The
+# definitive readiness signal is the gateway unit being active; Telegram
+# reconnection is the gateway's own retry loop and completes within seconds.
+TELEGRAM_CONNECTED_MARKERS = (
+    "connected to telegram",
+    "gateway running with",
+    "started polling",
+    "[telegram] connected",
+)
 _LOG_SCAN_MAX_BYTES = 262_144
 
 
@@ -77,9 +89,8 @@ def _log_telegram_evidence(path: Path | None, offset: int) -> bool | None:
             appended = handle.read(_LOG_SCAN_MAX_BYTES)
     except OSError:
         return None
-    return TELEGRAM_CONNECTED_MARKER in appended.decode(
-        "utf-8", errors="replace"
-    ).lower()
+    text = appended.decode("utf-8", errors="replace").lower()
+    return True if any(m in text for m in TELEGRAM_CONNECTED_MARKERS) else None
 
 
 async def _journal_telegram_evidence(since_unix: float) -> bool | None:
@@ -101,7 +112,8 @@ async def _journal_telegram_evidence(since_unix: float) -> bool | None:
     )
     if not result.get("ok"):
         return None
-    return TELEGRAM_CONNECTED_MARKER in str(result.get("stdout") or "").lower()
+    text = str(result.get("stdout") or "").lower()
+    return True if any(m in text for m in TELEGRAM_CONNECTED_MARKERS) else None
 
 
 async def probe_functional_readiness(

@@ -1297,3 +1297,53 @@ def test_install_telegram_command_menu_priority_adds_missing_path() -> None:
     assert "    extra:" in text
     assert "      command_menu:" in text
     assert "        priority_mode: prepend" in text
+
+
+def _status(stdout: str, *, ok: bool = True) -> dict[str, object]:
+    return {
+        "args": ["/usr/local/bin/hermes", "gateway", "status"],
+        "returncode": 0 if ok else 3,
+        "ok": ok,
+        "timed_out": False,
+        "duration_ms": 8,
+        "stdout": stdout,
+        "stderr": "",
+    }
+
+
+def test_gateway_status_is_healthy_true_for_active_running() -> None:
+    status = _status(
+        "● hermes-gateway.service - Hermes Telegram gateway\n"
+        "     Active: active (running) since Tue 2026-07-08 10:00:00 UTC\n"
+    )
+    assert configure_telegram._gateway_status_is_healthy(status) is True
+
+
+def test_gateway_status_is_healthy_false_for_inactive_dead() -> None:
+    status = _status("     Active: inactive (dead)\n")
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
+def test_gateway_status_is_healthy_false_for_failed() -> None:
+    status = _status("     Active: failed (Result: exit-code)\n")
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
+def test_gateway_status_is_healthy_false_for_activating() -> None:
+    status = _status("     Active: activating (auto-restart)\n")
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
+def test_gateway_status_is_healthy_false_for_not_running_text() -> None:
+    status = _status("✗ Gateway is not running\n")
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
+def test_gateway_status_is_healthy_false_when_status_not_ok() -> None:
+    # Even a healthy-looking systemd line cannot rescue a non-zero probe.
+    status = _status("     Active: active (running)\n", ok=False)
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
+def test_gateway_status_is_healthy_false_for_none() -> None:
+    assert configure_telegram._gateway_status_is_healthy(None) is False

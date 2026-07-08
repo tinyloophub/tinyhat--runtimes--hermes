@@ -27,7 +27,8 @@ Example input:
 The result's ``restart`` object reports {requested, performed,
 deadline_seconds, deadline_exceeded, telegram_evidence, milestones_ms}
 where ``milestones_ms`` carries millisecond offsets from the restart start
-for stop_started / stop_done / start_started / start_done / verified.
+for restart_started / restart_done / verified. The restart itself uses the
+official ``hermes gateway restart`` command.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import Any
 
 from hermes_runtime.commands import start_hermes, stop_hermes
 from hermes_runtime.commands.configure_telegram import (
+    _compact_process,
     _env_file_candidates,
     _gateway_log_path,
 )
@@ -47,7 +49,11 @@ from hermes_runtime.gateway_readiness import (
     gateway_log_size,
     probe_functional_readiness,
 )
-from hermes_runtime.hermes_cli import find_hermes_binary, probe_hermes_status
+from hermes_runtime.hermes_cli import (
+    find_hermes_binary,
+    probe_hermes_status,
+    run_process,
+)
 from hermes_runtime.runtime_env import load_env_files_into_process, read_env_values
 
 TELEGRAM_ENV_KEYS = (
@@ -136,19 +142,29 @@ async def _run_gateway_restart(
     def _ms() -> int:
         return int((_monotonic() - started) * 1000)
 
-    milestones: dict[str, int | None] = {"stop_started": _ms()}
-    stop_result = await stop_hermes.run(
-        ctx,
-        {"kind": "stop_hermes", "spec": {"reason": reason}},
-    )
-    milestones["stop_done"] = _ms()
+    # Reload env into this process for parity with the start-only heal path;
+    # the gateway itself re-reads ~/.hermes/.env (where the saved secret lives)
+    # when it restarts.
+    try:
+        load_env_files_into_process(_env_file_candidates())
+    except Exception:  # noqa: BLE001 - env reload is best-effort.
+        pass
 
-    milestones["start_started"] = _ms()
-    start_result = await start_hermes.run(
-        ctx,
-        {"kind": "start_hermes", "spec": {"reason": reason}},
+    milestones: dict[str, int | None] = {"restart_started": _ms()}
+    # Use the official hermes gateway restart -- a single atomic Hermes CLI
+    # command that stops and starts the installed gateway service. This
+    # replaces a hand-rolled stop+start whose start step could be fooled by a
+    # stopped-but-exit-0 gateway status into skipping the restart entirely
+    # (the live secret-save failure mode). run_process injects the root
+    # user-manager bus env so the CLI's internal systemctl --user reaches
+    # uid 0's user manager from the system-service runtime. Verified live: this
+    # brings the gateway to active + polling Telegram within seconds on a GCE
+    # Hermes Computer, where the hand-rolled path left it foreground-degraded.
+    restart_result = await run_process(
+        [str(hermes_bin), "gateway", "restart"],
+        timeout_seconds=min(180, max(60, deadline_seconds)),
     )
-    milestones["start_done"] = _ms()
+    milestones["restart_done"] = _ms()
 
     readiness: dict[str, Any] | None = None
     verified = False
@@ -176,8 +192,7 @@ async def _run_gateway_restart(
         "deadline_exceeded": deadline_exceeded,
         "milestones_ms": milestones,
         "readiness": readiness,
-        "stop_result": stop_result,
-        "start_result": start_result,
+        "restart_result": _compact_process(restart_result),
     }
 
 
@@ -261,8 +276,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         deadline_seconds=deadline_seconds,
     )
     healthy = bool(restart["verified"])
-    start_result = restart["start_result"]
     readiness = restart["readiness"] or {}
+    restart_result = restart["restart_result"]
     return {
         "schema": "tinyhat_hermes_heal_v1",
         "healthy": healthy,
@@ -273,11 +288,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             else "gateway_restart_deadline_exceeded"
         ),
         "telegram": telegram,
-        "gateway": start_result.get("gateway"),
-        "hermes": start_result.get("hermes"),
+        "gateway": readiness.get("status"),
+        "hermes": None,
         "env_reload": env_reload,
-        "stop_hermes": restart["stop_result"],
-        "start_hermes": start_result,
+        "restart_result": restart_result,
         "restart": _restart_summary(
             requested=True,
             performed=True,
