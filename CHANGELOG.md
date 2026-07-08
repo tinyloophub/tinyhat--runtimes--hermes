@@ -2,9 +2,18 @@
 
 ## Unreleased
 
-- Report Hermes gateway readiness on every assigned heartbeat, run gateway
-  reconcile periodically instead of once per runtime process, and reset a
-  failed/start-limited gateway unit before retrying `hermes gateway start`.
+- Add a one-shot durable gateway restart to `heal_hermes`
+  (`spec.restart=true`): reload env files, stop → start → functionally
+  verify (gateway status healthy plus best-effort Telegram connect evidence
+  from the gateway log or journal) within `spec.deadline_seconds`, reporting
+  machine-readable milestones. Report gateway readiness on every assigned
+  heartbeat as a cheap status-only observation (the bring-up reconcile stays
+  one-shot per runtime process and defers while a platform command is
+  mid-flight; restart policy belongs to the platform), and reset a
+  failed/start-limited gateway unit before retrying `hermes gateway start`,
+  detected via the `systemctl is-failed` exit code on the systemd manager
+  that owns the unit (system first, then user with best-effort root bus-env
+  injection) instead of matching CLI prose.
 
 ## 0.0.41 - 2026-07-07
 

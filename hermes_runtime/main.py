@@ -22,12 +22,8 @@ from hermes_runtime.client import (
 from hermes_runtime.commands import run_command
 from hermes_runtime.commands.configure_telegram import (
     _compact_process,
-    _gateway_log_has_adapter_failure,
-    _gateway_log_path,
-    _process_text,
     _gateway_status_is_healthy,
 )
-from hermes_runtime.gateway_desired_state import read_desired_stopped
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
@@ -48,11 +44,8 @@ DEFAULT_STATE_DIR = "/var/lib/tinyhat-hermes-runtime"
 DEFAULT_CURRENT_VERSION = "0.0.1"
 DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 1.0
 DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 10.0
-DEFAULT_GATEWAY_RECONCILE_INTERVAL_SECONDS = 30.0
-DEFAULT_GATEWAY_RECONCILE_MAX_INTERVAL_SECONDS = 300.0
-GATEWAY_RECONCILE_HEAL_PRESERVE_SECONDS = 120.0
+GATEWAY_STATE_PROBE_TIMEOUT_SECONDS = 15
 ASSIGNED_PLATFORM_STATES = {"assigned", "active"}
-_BAD_FLOAT_ENV_WARNED: set[str] = set()
 
 
 @dataclass
@@ -67,8 +60,7 @@ class RuntimeContext:
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
     command_task: asyncio.Task[None] | None = None
     gateway_reconcile_task: asyncio.Task[None] | None = None
-    gateway_last_reconcile_at: float | None = None
-    gateway_reconcile_failures: int = 0
+    gateway_reconciled: bool = False
     gateway_state: dict[str, Any] | None = None
     command_id: str | None = None
     command_kind: str | None = None
@@ -96,10 +88,6 @@ class RuntimeContext:
     @property
     def activation_error_file(self) -> Path:
         return self.state_dir / "updates" / "last_activation_error.json"
-
-    @property
-    def gateway_desired_stopped(self) -> dict[str, Any] | None:
-        return read_desired_stopped(self.state_dir)
 
     def ensure_state(self) -> None:
         (self.state_dir / "current").mkdir(parents=True, exist_ok=True)
@@ -170,69 +158,46 @@ def _env(name: str, default: str | None = None) -> str:
     return value
 
 
-def _float_env(name: str, default: float, *, minimum: float) -> float:
+_warned_invalid_interval_envs: set[str] = set()
+
+
+def _interval_env_seconds(name: str, default: float | None) -> float | None:
+    """Parse a float interval env var; a malformed value logs once and
+    falls back to ``default`` instead of raising (the heartbeat loop must
+    never die on operator-supplied configuration)."""
     raw = (os.getenv(name) or "").strip()
     if not raw:
-        return max(minimum, default)
+        return default
     try:
-        value = float(raw)
+        return float(raw)
     except ValueError:
-        if name not in _BAD_FLOAT_ENV_WARNED:
+        if name not in _warned_invalid_interval_envs:
+            _warned_invalid_interval_envs.add(name)
             print(
-                f"invalid {name}={raw!r}; using default {default}",
+                f"invalid {name}={raw[:50]!r}; falling back to default",
                 file=sys.stderr,
                 flush=True,
             )
-            _BAD_FLOAT_ENV_WARNED.add(name)
-        return max(minimum, default)
-    return max(minimum, value)
+        return default
 
 
 def _heartbeat_interval_seconds(ctx: RuntimeContext) -> float:
-    legacy_override = (os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "").strip()
-    if legacy_override:
-        return _float_env(
-            "TINYHAT_HEARTBEAT_INTERVAL_SECONDS",
-            DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS,
-            minimum=0.1,
-        )
+    legacy_override = _interval_env_seconds("TINYHAT_HEARTBEAT_INTERVAL_SECONDS", None)
+    if legacy_override is not None:
+        return max(0.1, legacy_override)
 
-    assigned_interval = _float_env(
+    assigned_interval = _interval_env_seconds(
         "TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS",
         DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS,
-        minimum=0.1,
     )
-    unassigned_interval = _float_env(
+    unassigned_interval = _interval_env_seconds(
         "TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS",
         DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS,
-        minimum=0.1,
     )
     state = (getattr(ctx, "platform_state", "") or "").strip().lower()
     if state in ASSIGNED_PLATFORM_STATES:
-        return assigned_interval
-    return unassigned_interval
-
-
-def _gateway_reconcile_interval_seconds() -> float:
-    return _float_env(
-        "TINYHAT_GATEWAY_RECONCILE_INTERVAL_SECONDS",
-        DEFAULT_GATEWAY_RECONCILE_INTERVAL_SECONDS,
-        minimum=1.0,
-    )
-
-
-def _gateway_reconcile_max_interval_seconds() -> float:
-    return _float_env(
-        "TINYHAT_GATEWAY_RECONCILE_MAX_INTERVAL_SECONDS",
-        DEFAULT_GATEWAY_RECONCILE_MAX_INTERVAL_SECONDS,
-        minimum=_gateway_reconcile_interval_seconds(),
-    )
-
-
-def _gateway_reconcile_due_interval_seconds(ctx: RuntimeContext) -> float:
-    base = _gateway_reconcile_interval_seconds()
-    failures = max(0, getattr(ctx, "gateway_reconcile_failures", 0))
-    return min(_gateway_reconcile_max_interval_seconds(), base * (2 ** failures))
+        return max(0.1, assigned_interval)
+    return max(0.1, unassigned_interval)
 
 
 def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
@@ -318,33 +283,6 @@ def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _gateway_status_has_adapter_failure(status: dict[str, Any] | None) -> bool:
-    text = _process_text(status)
-    adapter_needles = (
-        "platform 'telegram' requirements not met",
-        "adapter creation failed",
-        "no adapter available for telegram",
-    )
-    return any(needle in text for needle in adapter_needles)
-
-
-def _should_preserve_heal_gateway_state(
-    current: dict[str, Any] | None,
-    inspected: dict[str, Any],
-) -> bool:
-    if not isinstance(current, dict):
-        return False
-    details = current.get("details")
-    if not isinstance(details, dict) or details.get("source") != "heal_hermes":
-        return False
-    if current.get("ready") is not False or inspected.get("ready") is not True:
-        return False
-    observed_at = current.get("observed_at_unix")
-    if not isinstance(observed_at, (int, float)):
-        return False
-    return time.time() - float(observed_at) < GATEWAY_RECONCILE_HEAL_PRESERVE_SECONDS
-
-
 async def _inspect_gateway_state() -> dict[str, Any]:
     if not _telegram_env_configured():
         return _gateway_state_payload(
@@ -361,29 +299,14 @@ async def _inspect_gateway_state() -> dict[str, Any]:
         )
     status = await run_process(
         [str(hermes_bin), "gateway", "status"],
-        timeout_seconds=10,
+        timeout_seconds=GATEWAY_STATE_PROBE_TIMEOUT_SECONDS,
     )
-    adapter_failure = (
-        _gateway_status_has_adapter_failure(status)
-        or _gateway_log_has_adapter_failure(_gateway_log_path())
-    )
-    ready = _gateway_status_is_healthy(status) and not adapter_failure
+    ready = _gateway_status_is_healthy(status)
     return _gateway_state_payload(
         status="ready" if ready else "not_ready",
         ready=ready,
-        reason=(
-            "gateway_status_ready"
-            if ready
-            else (
-                "gateway_adapter_not_ready"
-                if adapter_failure
-                else "gateway_status_not_ready"
-            )
-        ),
-        details={
-            "gateway_status": _compact_process(status),
-            "adapter_ready": not adapter_failure,
-        },
+        reason="gateway_status_ready" if ready else "gateway_status_not_ready",
+        details={"gateway_status": _compact_process(status)},
     )
 
 
@@ -392,9 +315,7 @@ async def _refresh_gateway_state(ctx: RuntimeContext) -> None:
     if state not in ASSIGNED_PLATFORM_STATES:
         return
     try:
-        inspected = await _inspect_gateway_state()
-        if not _should_preserve_heal_gateway_state(ctx.gateway_state, inspected):
-            ctx.gateway_state = inspected
+        ctx.gateway_state = await _inspect_gateway_state()
     except Exception as exc:  # noqa: BLE001 - heartbeat must remain best-effort.
         ctx.gateway_state = _gateway_state_payload(
             status="unknown",
@@ -430,43 +351,34 @@ def _consume_gateway_reconcile_task(ctx: RuntimeContext) -> None:
         return
     ctx.gateway_reconcile_task = None
     try:
-        result = task.result()
+        task.result()
     except Exception as exc:  # noqa: BLE001 - reconciliation must not stop heartbeat.
-        ctx.gateway_reconcile_failures += 1
         print(f"gateway reconcile failed: {exc}", file=sys.stderr, flush=True)
-        return
-    if result.get("healthy"):
-        ctx.gateway_reconcile_failures = 0
-    else:
-        ctx.gateway_reconcile_failures += 1
 
 
 def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
+    """Start the one-shot assignment-time gateway bring-up reconcile.
+
+    This runs at most once per runtime process. The runtime never initiates
+    gateway mutations on its own beyond this single bring-up: recovery policy
+    belongs to the platform, which queues explicit commands (for example
+    ``heal_hermes`` with ``spec.restart=true``).
+    """
     _consume_gateway_reconcile_task(ctx)
-    if ctx.gateway_reconcile_task is not None:
+    if ctx.gateway_reconciled or ctx.gateway_reconcile_task is not None:
         return
     command_task = getattr(ctx, "command_task", None)
     if command_task is not None and not command_task.done():
+        # Never kick the bring-up while a platform command is mid-flight
+        # (for example a configure_telegram that is itself about to start
+        # the gateway); the one-shot fires on a later beat instead.
         return
     state = (getattr(ctx, "platform_state", "") or "").strip().lower()
     if state not in ASSIGNED_PLATFORM_STATES:
         return
-    desired_stopped = getattr(ctx, "gateway_desired_stopped", None)
-    if isinstance(desired_stopped, dict):
-        ctx.gateway_state = _gateway_state_payload(
-            status="stopped",
-            ready=False,
-            reason="gateway_intentionally_stopped",
-            details={"desired_state": desired_stopped},
-        )
-        return
     if not _telegram_env_configured():
         return
-    now = time.monotonic()
-    last = ctx.gateway_last_reconcile_at
-    if last is not None and now - last < _gateway_reconcile_due_interval_seconds(ctx):
-        return
-    ctx.gateway_last_reconcile_at = now
+    ctx.gateway_reconciled = True
     ctx.gateway_reconcile_task = asyncio.create_task(_run_gateway_reconcile(ctx))
 
 
@@ -646,9 +558,6 @@ def _maybe_start_command(ctx: RuntimeContext, command: dict[str, Any]) -> None:
     _consume_command_task(ctx)
     if ctx.command_task is not None:
         return
-    reconcile_task = getattr(ctx, "gateway_reconcile_task", None)
-    if reconcile_task is not None and not reconcile_task.done():
-        return
     ctx.command_id = str(command.get("command_id") or "").strip() or None
     ctx.command_kind = str(command.get("kind") or "").strip() or None
     ctx.command_task = asyncio.create_task(_run_one_command(ctx, command))
@@ -710,13 +619,13 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     platform_state = response.get("state")
     if isinstance(platform_state, str) and platform_state.strip():
         ctx.platform_state = platform_state.strip()
+    _maybe_start_gateway_reconcile(ctx)
     envelope = response.get("command")
-    command = None
-    if isinstance(envelope, dict) and envelope:
-        command = envelope.get("command") if envelope.get("type") else envelope
+    if not isinstance(envelope, dict) or not envelope:
+        return
+    command = envelope.get("command") if envelope.get("type") else envelope
     if isinstance(command, dict) and command:
         _maybe_start_command(ctx, command)
-    _maybe_start_gateway_reconcile(ctx)
 
 
 async def run() -> int:

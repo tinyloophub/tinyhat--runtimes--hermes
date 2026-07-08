@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +14,6 @@ sys.path.insert(0, str(ROOT))
 
 import hermes_runtime.commands.stop_hermes as stop_hermes  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
-from hermes_runtime.gateway_desired_state import read_desired_stopped  # noqa: E402
 
 
 def load_tests(
@@ -91,54 +89,6 @@ def test_stop_hermes_runs_gateway_stop_and_status() -> None:
     assert result["hermes_installed"] is True
     assert result["stopped"] is True
     assert result["gateway_stop"]["ok"] is True
-
-
-def test_stop_hermes_marks_gateway_intentionally_stopped() -> None:
-    async def fake_run_process(
-        args: list[str],
-        *,
-        timeout_seconds: int,
-        env: dict[str, str] | None = None,
-    ) -> dict[str, object]:
-        del timeout_seconds, env
-        return {
-            "args": args,
-            "returncode": 0,
-            "ok": True,
-            "timed_out": False,
-            "duration_ms": 12,
-            "stdout": "gateway stopped\n" if args[-1] == "status" else "ok\n",
-            "stderr": "",
-        }
-
-    with tempfile.TemporaryDirectory() as tmp:
-        state_dir = Path(tmp)
-        with (
-            patch(
-                "hermes_runtime.commands.stop_hermes.find_hermes_binary",
-                return_value=Path("/usr/local/bin/hermes"),
-            ),
-            patch("hermes_runtime.commands.stop_hermes.run_process", fake_run_process),
-            patch(
-                "hermes_runtime.commands.stop_hermes._terminate_gateway_processes",
-                return_value=[],
-            ),
-        ):
-            result = asyncio.run(
-                run_command(
-                    SimpleNamespace(state_dir=state_dir),
-                    {
-                        "kind": "stop_hermes",
-                        "spec": {"reason": "admin_reset_to_parked"},
-                    },
-                )
-            )
-        marker = read_desired_stopped(state_dir)
-
-    assert result["stopped"] is True
-    assert marker is not None
-    assert marker["reason"] == "admin_reset_to_parked"
-    assert result["desired_state"]["command_kind"] == "stop_hermes"
 
 
 def test_stop_hermes_terminates_foreground_gateway_process() -> None:

@@ -43,7 +43,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from hermes_runtime.gateway_desired_state import mark_desired_stopped
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 
 
@@ -200,16 +199,6 @@ def _terminate_gateway_processes(hermes_bin: Path | None) -> list[dict[str, Any]
 
 
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
-    state_dir = getattr(_ctx, "state_dir", None)
-    desired_stopped: dict[str, Any] | None = None
-    if isinstance(state_dir, Path):
-        spec = _command.get("spec") if isinstance(_command.get("spec"), dict) else {}
-        reason = str(spec.get("reason") or "stop_hermes").strip() or "stop_hermes"
-        desired_stopped = mark_desired_stopped(
-            state_dir,
-            reason=reason,
-            command_kind=str(_command.get("kind") or "stop_hermes"),
-        )
     hermes_bin = find_hermes_binary()
     status_before: dict[str, Any] | None = None
     stop: dict[str, Any] | None = None
@@ -250,7 +239,6 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "gateway_stop": _compact_process(stop),
         "gateway_status_after": _compact_process(status_after),
         "terminated_processes": terminated,
-        "desired_state": desired_stopped,
         "message": (
             "Hermes gateway stop requested."
             if hermes_bin is not None

@@ -24,20 +24,15 @@ from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
     RuntimeContext,
-    _BAD_FLOAT_ENV_WARNED,
-    _gateway_reconcile_due_interval_seconds,
-    _gateway_reconcile_interval_seconds,
     _heartbeat_interval_seconds,
     _heartbeat_metrics,
     _heartbeat_once,
-    _inspect_gateway_state,
     _reexec_after_code_swap,
     _safe_activate_staged_on_startup,
     _run_one_command,
     _scheduled_update_check,
     run,
 )
-from hermes_runtime.gateway_desired_state import mark_desired_stopped  # noqa: E402
 from hermes_runtime.platform_paths import (  # noqa: E402
     computer_api_path,
     context_computer_api_path,
@@ -242,9 +237,9 @@ class CommandTests(TestCase):
         ctx = asyncio.run(scenario())
 
         self.assertIsNone(ctx.gateway_reconcile_task)
-        self.assertIsNone(ctx.gateway_last_reconcile_at)
+        self.assertFalse(ctx.gateway_reconciled)
 
-    def test_gateway_reconcile_runs_again_after_interval(self) -> None:
+    def test_gateway_reconcile_runs_once_per_process(self) -> None:
         async def scenario() -> list[dict[str, Any]]:
             with tempfile.TemporaryDirectory() as tmp:
                 platform = FakePlatform()
@@ -269,7 +264,6 @@ class CommandTests(TestCase):
                         {
                             "HOME": str(Path(tmp) / "home"),
                             "TELEGRAM_BOT_TOKEN": "bot-token",
-                            "TINYHAT_GATEWAY_RECONCILE_INTERVAL_SECONDS": "1",
                         },
                         clear=True,
                     ),
@@ -280,144 +274,35 @@ class CommandTests(TestCase):
                     assert ctx.gateway_reconcile_task is not None
                     await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
 
+                    # Later heartbeats must never start another reconcile:
+                    # the bring-up runs at most once per runtime process.
                     await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                    self.assertEqual(len(commands), 1)
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    self.assertTrue(ctx.gateway_reconciled)
+                    self.assertIsNone(ctx.gateway_reconcile_task)
 
-                    assert ctx.gateway_last_reconcile_at is not None
-                    ctx.gateway_last_reconcile_at -= _gateway_reconcile_interval_seconds()
-                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                    assert ctx.gateway_reconcile_task is not None
-                    await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
+                    # The heartbeat still carries the observed gateway state.
+                    gateway_state = platform.posts[-1][1]["metrics"][
+                        "hermes_runtime"
+                    ]["gateway"]
+                    self.assertEqual(gateway_state["status"], "unknown")
 
                 return commands
 
         commands = asyncio.run(scenario())
 
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 1)
 
-    def test_bad_interval_env_values_fall_back_without_crashing(self) -> None:
-        ctx = SimpleNamespace(platform_state="assigned")
-
-        with patch.dict(
-            os.environ,
-            {
-                "TINYHAT_HEARTBEAT_INTERVAL_SECONDS": "30s",
-                "TINYHAT_GATEWAY_RECONCILE_INTERVAL_SECONDS": "later",
-            },
-            clear=True,
-        ):
-            _BAD_FLOAT_ENV_WARNED.clear()
-
-            self.assertEqual(_heartbeat_interval_seconds(ctx), 10.0)
-            self.assertEqual(_gateway_reconcile_interval_seconds(), 30.0)
-
-    def test_gateway_reconcile_backoff_increases_after_failures(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "TINYHAT_GATEWAY_RECONCILE_INTERVAL_SECONDS": "5",
-                "TINYHAT_GATEWAY_RECONCILE_MAX_INTERVAL_SECONDS": "30",
-            },
-            clear=True,
-        ):
-            ctx = SimpleNamespace(gateway_reconcile_failures=0)
-            self.assertEqual(_gateway_reconcile_due_interval_seconds(ctx), 5.0)
-            ctx.gateway_reconcile_failures = 1
-            self.assertEqual(_gateway_reconcile_due_interval_seconds(ctx), 10.0)
-            ctx.gateway_reconcile_failures = 4
-            self.assertEqual(_gateway_reconcile_due_interval_seconds(ctx), 30.0)
-
-    def test_gateway_reconcile_skips_when_gateway_intentionally_stopped(self) -> None:
-        async def scenario() -> RuntimeContext:
-            with tempfile.TemporaryDirectory() as tmp:
-                platform = FakePlatform()
-                platform.post_response = {"ok": True, "state": "assigned"}
-                ctx = RuntimeContext(
-                    platform=platform,
-                    state_dir=Path(tmp),
-                    started_at=0,
-                    platform_state="assigned",
-                )
-                mark_desired_stopped(
-                    ctx.state_dir,
-                    reason="admin_reset_to_parked",
-                    command_kind="stop_hermes",
-                )
-
-                async def fake_run_command(
-                    _ctx: RuntimeContext, command: dict[str, Any]
-                ) -> dict[str, Any]:
-                    raise AssertionError(f"unexpected command: {command}")
-
-                with (
-                    patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot"}, clear=True),
-                    patch("hermes_runtime.main.run_command", fake_run_command),
-                ):
-                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                return ctx
-
-        ctx = asyncio.run(scenario())
-
-        self.assertIsNone(ctx.gateway_reconcile_task)
-        self.assertIsNone(ctx.gateway_last_reconcile_at)
-        self.assertEqual(ctx.gateway_state["status"], "stopped")
-        self.assertEqual(ctx.gateway_state["reason"], "gateway_intentionally_stopped")
-
-    def test_gateway_reconcile_defers_to_platform_command_same_beat(self) -> None:
-        async def scenario() -> tuple[RuntimeContext, list[dict[str, Any]]]:
+    def test_gateway_reconcile_defers_while_platform_command_runs(self) -> None:
+        async def scenario() -> list[dict[str, Any]]:
             with tempfile.TemporaryDirectory() as tmp:
                 platform = FakePlatform()
                 platform.post_response = {
                     "ok": True,
                     "state": "assigned",
                     "command": {
-                        "command_id": "cmd-stop",
-                        "kind": "stop_hermes",
-                        "spec": {"reason": "admin_reset_to_parked"},
-                    },
-                }
-                ctx = RuntimeContext(
-                    platform=platform,
-                    state_dir=Path(tmp),
-                    started_at=0,
-                    platform_state="assigned",
-                )
-                started_commands: list[dict[str, Any]] = []
-                release = asyncio.Event()
-
-                async def fake_run_command(
-                    _ctx: RuntimeContext, command: dict[str, Any]
-                ) -> dict[str, Any]:
-                    started_commands.append(command)
-                    await release.wait()
-                    return {"message": "done"}
-
-                with (
-                    patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot"}, clear=True),
-                    patch("hermes_runtime.main.run_command", fake_run_command),
-                ):
-                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                    self.assertIsNotNone(ctx.command_task)
-                    self.assertIsNone(ctx.gateway_reconcile_task)
-                    release.set()
-                    await asyncio.wait_for(ctx.command_task, timeout=0.2)
-                return ctx, started_commands
-
-        ctx, commands = asyncio.run(scenario())
-
-        self.assertEqual([command["kind"] for command in commands], ["stop_hermes"])
-        self.assertIsNone(ctx.gateway_reconcile_task)
-
-    def test_platform_command_waits_while_gateway_reconcile_runs(self) -> None:
-        async def scenario() -> RuntimeContext:
-            with tempfile.TemporaryDirectory() as tmp:
-                platform = FakePlatform()
-                platform.post_response = {
-                    "ok": True,
-                    "state": "assigned",
-                    "command": {
-                        "command_id": "cmd-a",
-                        "kind": "setup_snapshot",
+                        "command_id": "cmd-configure",
+                        "kind": "configure_telegram",
                         "spec": {},
                     },
                 }
@@ -427,56 +312,56 @@ class CommandTests(TestCase):
                     started_at=0,
                     platform_state="assigned",
                 )
-                release_reconcile = asyncio.Event()
+                heal_commands: list[dict[str, Any]] = []
+                release = asyncio.Event()
 
-                async def fake_reconcile() -> dict[str, Any]:
-                    await release_reconcile.wait()
-                    return {"healthy": True}
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, Any]:
+                    if command.get("kind") == "heal_hermes":
+                        heal_commands.append(command)
+                        return {"healthy": True, "reason": "gateway_healthy"}
+                    await release.wait()
+                    return {"message": "done"}
 
-                ctx.gateway_reconcile_task = asyncio.create_task(fake_reconcile())
-                with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot"}, clear=True):
-                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                    self.assertIsNotNone(ctx.gateway_reconcile_task)
-                    self.assertIsNone(ctx.command_task)
-                    release_reconcile.set()
-                    await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
-                return ctx
+                base_env = {"HOME": str(Path(tmp) / "home")}
+                configured_env = {**base_env, "TELEGRAM_BOT_TOKEN": "bot-token"}
+                with (
+                    patch("hermes_runtime.main.find_hermes_binary", return_value=None),
+                    patch("hermes_runtime.main.run_command", fake_run_command),
+                ):
+                    # Beat 1: telegram is not configured yet; the platform
+                    # command starts and keeps running.
+                    with patch.dict(os.environ, base_env, clear=True):
+                        await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    assert ctx.command_task is not None
 
-        ctx = asyncio.run(scenario())
+                    # Beat 2: telegram is configured now, but the command is
+                    # still mid-flight -- the one-shot bring-up must defer.
+                    platform.post_response = {"ok": True, "state": "assigned"}
+                    with patch.dict(os.environ, configured_env, clear=True):
+                        await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    self.assertIsNone(ctx.gateway_reconcile_task)
+                    self.assertFalse(ctx.gateway_reconciled)
 
-        self.assertIsNone(ctx.command_task)
+                    release.set()
+                    await asyncio.wait_for(ctx.command_task, timeout=0.2)
 
-    def test_gateway_probe_rejects_adapter_failure_text(self) -> None:
-        async def fake_run_process(
-            args: list[str],
-            *,
-            timeout_seconds: int,
-            env: dict[str, str] | None = None,
-        ) -> dict[str, Any]:
-            del args, timeout_seconds, env
-            return {
-                "returncode": 0,
-                "ok": True,
-                "timed_out": False,
-                "duration_ms": 5,
-                "stdout": (
-                    "Gateway is running\n"
-                    "WARNING gateway.run: No adapter available for telegram\n"
-                ),
-                "stderr": "",
-            }
+                    # Beat 3: the command settled; the one-shot fires now.
+                    with patch.dict(os.environ, configured_env, clear=True):
+                        await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                        assert ctx.gateway_reconcile_task is not None
+                        await asyncio.wait_for(
+                            ctx.gateway_reconcile_task, timeout=0.2
+                        )
+                    self.assertTrue(ctx.gateway_reconciled)
 
-        with (
-            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "bot"}, clear=True),
-            patch("hermes_runtime.main.find_hermes_binary", return_value=Path("/bin/hermes")),
-            patch("hermes_runtime.main.run_process", fake_run_process),
-            patch("hermes_runtime.main._gateway_log_has_adapter_failure", return_value=False),
-        ):
-            state = asyncio.run(_inspect_gateway_state())
+                return heal_commands
 
-        self.assertEqual(state["status"], "not_ready")
-        self.assertFalse(state["ready"])
-        self.assertEqual(state["reason"], "gateway_adapter_not_ready")
+        heal_commands = asyncio.run(scenario())
+
+        self.assertEqual(len(heal_commands), 1)
+        self.assertEqual(heal_commands[0]["kind"], "heal_hermes")
 
     def test_heartbeat_starts_any_command_without_blocking_loop(self) -> None:
         async def scenario() -> tuple[RuntimeContext, FakePlatform]:
@@ -734,6 +619,30 @@ class CommandTests(TestCase):
             clear=True,
         ):
             self.assertEqual(_heartbeat_interval_seconds(ctx), 30.0)
+
+    def test_heartbeat_interval_falls_back_on_malformed_env(self) -> None:
+        ctx = SimpleNamespace(platform_state="assigned")
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_HEARTBEAT_INTERVAL_SECONDS": "not-a-number"},
+            clear=True,
+        ):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 10.0)
+
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS": "12,5"},
+            clear=True,
+        ):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 10.0)
+
+        ctx.platform_state = "ready"
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS": "oops"},
+            clear=True,
+        ):
+            self.assertEqual(_heartbeat_interval_seconds(ctx), 1.0)
 
     def test_update_is_staged_then_marked_for_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
