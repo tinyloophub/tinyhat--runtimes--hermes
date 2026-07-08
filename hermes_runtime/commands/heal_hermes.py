@@ -10,7 +10,8 @@ present, and then either:
 - ``spec.restart=true``: performs a durable one-shot gateway restart owned
   end-to-end by this runtime process (which lives outside the gateway's
   control group, so the follow-up start can never be orphaned by the stop's
-  kill sweep): reload env files, ``stop_hermes`` → ``start_hermes``, then
+  kill sweep): reload env files, run the official ``hermes gateway
+  restart`` command, then
   poll *functional* readiness — ``hermes gateway status`` healthy plus
   best-effort Telegram connect evidence from the gateway log or journal —
   until ``spec.deadline_seconds`` (default 90, clamped 30..300). ``healthy``
@@ -133,7 +134,7 @@ async def _run_gateway_restart(
     reason: str,
     deadline_seconds: int,
 ) -> dict[str, Any]:
-    """Stop → start → functionally verify, all owned by this process."""
+    """Restart via official ``hermes gateway restart`` then verify readiness."""
     started = _monotonic()
     since_unix = time.time()
     log_path = _gateway_log_path()
@@ -165,11 +166,28 @@ async def _run_gateway_restart(
         timeout_seconds=min(180, max(60, deadline_seconds)),
     )
     milestones["restart_done"] = _ms()
+    # The restart command's own result is part of the success contract. If
+    # ``hermes gateway restart`` reports failure, a status-only "active
+    # (running)" reading can be the OLD gateway that was never cycled (with
+    # the just-saved secret still unread), so we must not accept it as
+    # verified -- readiness evidence is intentionally status-only when
+    # Telegram evidence is unavailable (see gateway_readiness). Report the
+    # command failure honestly instead.
+    restart_command_ok = bool(restart_result.get("ok"))
 
     readiness: dict[str, Any] | None = None
     verified = False
     deadline_exceeded = False
-    while True:
+    if not restart_command_ok:
+        # One diagnostic probe, but never mark verified on a failed restart.
+        readiness = await probe_functional_readiness(
+            hermes_bin,
+            since_unix=since_unix,
+            log_path=log_path,
+            log_offset=log_offset,
+        )
+        milestones["verified"] = None
+    while restart_command_ok:
         readiness = await probe_functional_readiness(
             hermes_bin,
             since_unix=since_unix,
@@ -190,6 +208,7 @@ async def _run_gateway_restart(
     return {
         "verified": verified,
         "deadline_exceeded": deadline_exceeded,
+        "restart_command_ok": restart_command_ok,
         "milestones_ms": milestones,
         "readiness": readiness,
         "restart_result": _compact_process(restart_result),
@@ -276,17 +295,20 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         deadline_seconds=deadline_seconds,
     )
     healthy = bool(restart["verified"])
+    restart_command_ok = bool(restart.get("restart_command_ok"))
     readiness = restart["readiness"] or {}
     restart_result = restart["restart_result"]
+    if healthy:
+        reason = "gateway_restart_verified"
+    elif not restart_command_ok:
+        reason = "gateway_restart_command_failed"
+    else:
+        reason = "gateway_restart_deadline_exceeded"
     return {
         "schema": "tinyhat_hermes_heal_v1",
         "healthy": healthy,
         "healed": healthy,
-        "reason": (
-            "gateway_restart_verified"
-            if healthy
-            else "gateway_restart_deadline_exceeded"
-        ),
+        "reason": reason,
         "telegram": telegram,
         "gateway": readiness.get("status"),
         "hermes": None,
@@ -307,8 +329,13 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "Hermes Telegram gateway restarted and functionally verified."
             if healthy
             else (
-                "Hermes Telegram gateway restart did not verify within "
-                f"{deadline_seconds}s."
+                "The `hermes gateway restart` command failed; the gateway "
+                "was not restarted."
+                if not restart_command_ok
+                else (
+                    "Hermes Telegram gateway restart did not verify within "
+                    f"{deadline_seconds}s."
+                )
             )
         ),
     }

@@ -308,6 +308,83 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
     assert restart["milestones_ms"]["verified"] is None
 
 
+def test_heal_hermes_restart_command_failure_is_not_verified() -> None:
+    """A failed ``hermes gateway restart`` must not report a false success even
+    when the OLD gateway unit is still active (the command never cycled it)."""
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        return {
+            "args": list(args),
+            "returncode": 1,
+            "ok": False,
+            "timed_out": False,
+            "duration_ms": 12,
+            "stdout": "",
+            "stderr": "Failed to restart hermes-gateway.service\n",
+        }
+
+    async def fake_probe(
+        hermes_bin: Path,
+        *,
+        since_unix: float,
+        log_path: Path | None = None,
+        log_offset: int = 0,
+    ) -> dict[str, object]:
+        # The old gateway is still active; status-only readiness with no
+        # Telegram evidence would say "ready" -- the false-positive we guard.
+        del hermes_bin, since_unix, log_path, log_offset
+        return {
+            "ready": True,
+            "status_healthy": True,
+            "telegram_evidence": "unavailable",
+            "telegram_connected": None,
+            "status": {"ok": True, "stdout": "Active: active (running)"},
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with (
+            patch.dict(os.environ, _configured_heal_env(tmp), clear=True),
+            patch(
+                "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.run_process",
+                fake_run_process,
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.probe_functional_readiness",
+                fake_probe,
+            ),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {
+                        "kind": "heal_hermes",
+                        "spec": {"restart": True, "reason": "secret_saved_restart"},
+                    },
+                )
+            )
+
+    # The restart command failed, so heal must not claim verified success even
+    # though the status probe reported an active (old) gateway.
+    assert result["healthy"] is False
+    assert result["healed"] is False
+    assert result["reason"] == "gateway_restart_command_failed"
+    restart = result["restart"]
+    assert restart["requested"] is True
+    assert restart["performed"] is True
+    assert restart["deadline_exceeded"] is False
+    assert restart["milestones_ms"]["verified"] is None
+
+
 def test_heal_hermes_without_restart_flag_never_restarts_gateway() -> None:
     run_process_calls: list[list[str]] = []
 
