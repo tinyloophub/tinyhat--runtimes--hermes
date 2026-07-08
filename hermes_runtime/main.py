@@ -20,6 +20,11 @@ from hermes_runtime.client import (
     PlatformError,
 )
 from hermes_runtime.commands import run_command
+from hermes_runtime.commands.configure_telegram import (
+    _compact_process,
+    _gateway_status_is_healthy,
+)
+from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.runtime_env import env_file_candidates, read_env_values
@@ -34,10 +39,12 @@ from hermes_runtime.update_artifacts import staged_runtime_dir
 
 STATE_SCHEMA = "tinyhat_hermes_runtime_v1"
 RESULT_SCHEMA = "tiny_runtime_command_result_v1"
+GATEWAY_STATE_SCHEMA = "tinyhat_hermes_gateway_state_v1"
 DEFAULT_STATE_DIR = "/var/lib/tinyhat-hermes-runtime"
 DEFAULT_CURRENT_VERSION = "0.0.1"
 DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 1.0
 DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 10.0
+GATEWAY_STATE_PROBE_TIMEOUT_SECONDS = 15
 ASSIGNED_PLATFORM_STATES = {"assigned", "active"}
 
 
@@ -54,6 +61,7 @@ class RuntimeContext:
     command_task: asyncio.Task[None] | None = None
     gateway_reconcile_task: asyncio.Task[None] | None = None
     gateway_reconciled: bool = False
+    gateway_state: dict[str, Any] | None = None
     command_id: str | None = None
     command_kind: str | None = None
 
@@ -150,18 +158,41 @@ def _env(name: str, default: str | None = None) -> str:
     return value
 
 
-def _heartbeat_interval_seconds(ctx: RuntimeContext) -> float:
-    legacy_override = (os.getenv("TINYHAT_HEARTBEAT_INTERVAL_SECONDS") or "").strip()
-    if legacy_override:
-        return max(0.1, float(legacy_override))
+_warned_invalid_interval_envs: set[str] = set()
 
-    assigned_interval = float(
-        os.getenv("TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS")
-        or DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS
+
+def _interval_env_seconds(name: str, default: float | None) -> float | None:
+    """Parse a float interval env var; a malformed value logs once and
+    falls back to ``default`` instead of raising (the heartbeat loop must
+    never die on operator-supplied configuration)."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        if name not in _warned_invalid_interval_envs:
+            _warned_invalid_interval_envs.add(name)
+            print(
+                f"invalid {name}={raw[:50]!r}; falling back to default",
+                file=sys.stderr,
+                flush=True,
+            )
+        return default
+
+
+def _heartbeat_interval_seconds(ctx: RuntimeContext) -> float:
+    legacy_override = _interval_env_seconds("TINYHAT_HEARTBEAT_INTERVAL_SECONDS", None)
+    if legacy_override is not None:
+        return max(0.1, legacy_override)
+
+    assigned_interval = _interval_env_seconds(
+        "TINYHAT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS",
+        DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS,
     )
-    unassigned_interval = float(
-        os.getenv("TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS")
-        or DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS
+    unassigned_interval = _interval_env_seconds(
+        "TINYHAT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS",
+        DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS,
     )
     state = (getattr(ctx, "platform_state", "") or "").strip().lower()
     if state in ASSIGNED_PLATFORM_STATES:
@@ -196,6 +227,9 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     activation_error = _read_activation_error(ctx)
     if activation_error:
         runtime["startup_activation_error"] = activation_error
+    gateway_state = getattr(ctx, "gateway_state", None)
+    if isinstance(gateway_state, dict) and gateway_state:
+        runtime["gateway"] = gateway_state
     return {
         "runtime_generation": "tiny_runtime",
         "hermes_runtime": runtime,
@@ -204,10 +238,94 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
 
 def _telegram_env_configured() -> bool:
     values = read_env_values(env_file_candidates(), names=["TELEGRAM_BOT_TOKEN"])
-    return bool((os.getenv("TELEGRAM_BOT_TOKEN") or values.get("TELEGRAM_BOT_TOKEN") or "").strip())
+    return bool(
+        (
+            os.getenv("TELEGRAM_BOT_TOKEN")
+            or values.get("TELEGRAM_BOT_TOKEN")
+            or ""
+        ).strip()
+    )
 
 
-async def _run_gateway_reconcile(ctx: RuntimeContext) -> None:
+def _gateway_state_payload(
+    *,
+    status: str,
+    ready: bool | None,
+    reason: str,
+    observed_at_unix: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": GATEWAY_STATE_SCHEMA,
+        "status": status,
+        "ready": ready,
+        "reason": reason,
+        "observed_at_unix": observed_at_unix or int(time.time()),
+        "details": details or {},
+    }
+
+
+def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
+    ready = bool(result.get("healthy"))
+    reason = str(result.get("reason") or ("gateway_ready" if ready else "gateway_unhealthy"))
+    details: dict[str, Any] = {
+        "source": "heal_hermes",
+        "healed": bool(result.get("healed")),
+    }
+    gateway = result.get("gateway")
+    if isinstance(gateway, dict):
+        details["gateway"] = gateway
+    return _gateway_state_payload(
+        status="ready" if ready else "not_ready",
+        ready=ready,
+        reason=reason,
+        details=details,
+    )
+
+
+async def _inspect_gateway_state() -> dict[str, Any]:
+    if not _telegram_env_configured():
+        return _gateway_state_payload(
+            status="not_configured",
+            ready=False,
+            reason="telegram_not_configured",
+        )
+    hermes_bin = find_hermes_binary()
+    if hermes_bin is None:
+        return _gateway_state_payload(
+            status="unknown",
+            ready=None,
+            reason="hermes_cli_missing",
+        )
+    status = await run_process(
+        [str(hermes_bin), "gateway", "status"],
+        timeout_seconds=GATEWAY_STATE_PROBE_TIMEOUT_SECONDS,
+    )
+    ready = _gateway_status_is_healthy(status)
+    return _gateway_state_payload(
+        status="ready" if ready else "not_ready",
+        ready=ready,
+        reason="gateway_status_ready" if ready else "gateway_status_not_ready",
+        details={"gateway_status": _compact_process(status)},
+    )
+
+
+async def _refresh_gateway_state(ctx: RuntimeContext) -> None:
+    state = (getattr(ctx, "platform_state", "") or "").strip().lower()
+    if state not in ASSIGNED_PLATFORM_STATES:
+        return
+    try:
+        ctx.gateway_state = await _inspect_gateway_state()
+    except Exception as exc:  # noqa: BLE001 - heartbeat must remain best-effort.
+        ctx.gateway_state = _gateway_state_payload(
+            status="unknown",
+            ready=None,
+            reason="gateway_probe_failed",
+            details={"error": str(exc)[:200]},
+        )
+
+
+async def _run_gateway_reconcile(ctx: RuntimeContext) -> dict[str, Any]:
     result = await run_command(
         ctx,
         {
@@ -215,6 +333,7 @@ async def _run_gateway_reconcile(ctx: RuntimeContext) -> None:
             "spec": {"reason": "runtime_assigned_heartbeat_reconcile"},
         },
     )
+    ctx.gateway_state = _gateway_state_from_heal_result(result)
     if result.get("healthy"):
         print("gateway reconcile complete: healthy", flush=True)
     else:
@@ -223,6 +342,7 @@ async def _run_gateway_reconcile(ctx: RuntimeContext) -> None:
             file=sys.stderr,
             flush=True,
         )
+    return result
 
 
 def _consume_gateway_reconcile_task(ctx: RuntimeContext) -> None:
@@ -237,8 +357,21 @@ def _consume_gateway_reconcile_task(ctx: RuntimeContext) -> None:
 
 
 def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
+    """Start the one-shot assignment-time gateway bring-up reconcile.
+
+    This runs at most once per runtime process. The runtime never initiates
+    gateway mutations on its own beyond this single bring-up: recovery policy
+    belongs to the platform, which queues explicit commands (for example
+    ``heal_hermes`` with ``spec.restart=true``).
+    """
     _consume_gateway_reconcile_task(ctx)
     if ctx.gateway_reconciled or ctx.gateway_reconcile_task is not None:
+        return
+    command_task = getattr(ctx, "command_task", None)
+    if command_task is not None and not command_task.done():
+        # Never kick the bring-up while a platform command is mid-flight
+        # (for example a configure_telegram that is itself about to start
+        # the gateway); the one-shot fires on a later beat instead.
         return
     state = (getattr(ctx, "platform_state", "") or "").strip().lower()
     if state not in ASSIGNED_PLATFORM_STATES:
@@ -478,6 +611,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     _consume_command_task(ctx)
     _consume_gateway_reconcile_task(ctx)
     _maybe_start_scheduled_update_check(ctx)
+    await _refresh_gateway_state(ctx)
     response = await ctx.platform.post_json(
         context_computer_api_path(ctx, "heartbeat"),
         {"metrics": _heartbeat_metrics(ctx, status="running")},

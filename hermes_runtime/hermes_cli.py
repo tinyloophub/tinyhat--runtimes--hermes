@@ -52,6 +52,32 @@ def find_hermes_binary() -> Path | None:
     return None
 
 
+def root_user_manager_env() -> dict[str, str]:
+    """Bus environment so a root *system* process can reach uid 0's *user*
+    systemd manager.
+
+    ``hermes gateway install`` under root registers the gateway as a **user**
+    unit for uid 0, and the Hermes CLI drives it with ``systemctl --user``.
+    The Tinyhat runtime, however, runs as a root **system** service with no
+    ``XDG_RUNTIME_DIR``/``DBUS_SESSION_BUS_ADDRESS``, so those user-manager
+    calls silently fail and ``hermes gateway start`` falls back to an
+    unmanaged foreground gateway that never picks up freshly-saved env. Inject
+    the bus vars for every subprocess (best-effort, only when we are root and
+    no runtime dir is already set) so the CLI's internal ``systemctl --user``
+    reaches the running user manager. Verified live: a platform-queued secret
+    restart on a GCE Hermes Computer left the gateway foreground-degraded
+    without these vars.
+    """
+    if getattr(os, "geteuid", lambda: -1)() != 0:
+        return {}
+    if (os.getenv("XDG_RUNTIME_DIR") or "").strip():
+        return {}
+    return {
+        "XDG_RUNTIME_DIR": "/run/user/0",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus",
+    }
+
+
 async def run_process(
     args: list[str],
     *,
@@ -60,6 +86,7 @@ async def run_process(
 ) -> dict[str, Any]:
     started = asyncio.get_running_loop().time()
     merged_env = os.environ.copy()
+    merged_env.update(root_user_manager_env())
     if env:
         merged_env.update(env)
     try:

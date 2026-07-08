@@ -4,7 +4,13 @@ What it does:
     1. Looks for the public ``hermes`` CLI.
     2. Runs ``hermes gateway status`` to see whether the gateway is already
        healthy.
-    3. If the gateway is not already healthy, runs ``hermes gateway start``.
+    3. If the gateway is not already healthy, checks whether systemd reports
+       the gateway unit failed/start-limited — probing the system manager
+       first and then the user manager, detected by exit code (``systemctl
+       is-failed`` exits 0 exactly when the unit is failed) — and runs
+       ``reset-failed`` on the manager that reports the failure, then runs
+       ``hermes gateway start``. If the start still leaves the unit failed,
+       it resets and retries the start once.
     4. If Hermes says service-mode gateway start is not usable in this
        environment, starts the foreground ``hermes gateway run`` process used
        by Tinyhat's Docker/local fallback.
@@ -37,6 +43,8 @@ Side effects:
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -50,12 +58,101 @@ from hermes_runtime.commands.configure_telegram import (
     _gateway_status_is_healthy,
     _start_gateway_foreground,
 )
+from hermes_runtime.gateway_readiness import GATEWAY_SERVICE_NAME
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     probe_hermes_status,
     run_process,
 )
 from hermes_runtime.runtime_env import load_env_files_into_process
+
+
+def _user_systemd_env() -> dict[str, str] | None:
+    """Bus environment for ``systemctl --user`` when running as root.
+
+    ``hermes gateway install`` under root creates a *user* unit for uid 0;
+    ``systemctl --user`` can only reach that manager when ``XDG_RUNTIME_DIR``
+    points at the root user's runtime directory. Best-effort: only injected
+    when we are root and no runtime dir is already set.
+    """
+    if getattr(os, "geteuid", lambda: -1)() != 0:
+        return None
+    if (os.getenv("XDG_RUNTIME_DIR") or "").strip():
+        return None
+    return {
+        "XDG_RUNTIME_DIR": "/run/user/0",
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus",
+    }
+
+
+def _systemctl_manager_commands(systemctl: str) -> list[dict[str, Any]]:
+    """Manager candidates for the gateway unit, most reachable first.
+
+    ``hermes gateway install`` may register the unit with the system manager
+    or with a user manager depending on how Hermes was installed, so probe
+    both: the system manager first (reachable without any bus environment),
+    then the user manager. The user-manager calls carry the best-effort root
+    bus environment from ``_user_systemd_env`` so a root-installed runtime
+    can still reach uid 0's user manager.
+    """
+    user_env = _user_systemd_env()
+    return [
+        {
+            "manager": "system",
+            "is_failed": [systemctl, "is-failed", GATEWAY_SERVICE_NAME],
+            "reset_failed": [systemctl, "reset-failed", GATEWAY_SERVICE_NAME],
+            "env": None,
+        },
+        {
+            "manager": "user",
+            "is_failed": [systemctl, "--user", "is-failed", GATEWAY_SERVICE_NAME],
+            "reset_failed": [
+                systemctl,
+                "--user",
+                "reset-failed",
+                GATEWAY_SERVICE_NAME,
+            ],
+            "env": user_env,
+        },
+    ]
+
+
+def _service_reported_failed(result: dict[str, Any] | None) -> bool:
+    """``systemctl is-failed`` exits 0 exactly when the unit is failed."""
+    return isinstance(result, dict) and result.get("returncode") == 0
+
+
+async def _reset_failed_gateway_service() -> dict[str, Any] | None:
+    """Reset a failed/start-limited gateway unit on the manager that owns it.
+
+    Detection is by exit code only (never by matching CLI prose). Returns a
+    summary for the manager that was reset, or ``None`` when no manager
+    reports the unit failed or ``systemctl`` is unavailable.
+    """
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return None
+    for manager in _systemctl_manager_commands(systemctl):
+        is_failed = await run_process(
+            manager["is_failed"],
+            timeout_seconds=30,
+            env=manager["env"],
+        )
+        if not _service_reported_failed(is_failed):
+            continue
+        reset = await run_process(
+            manager["reset_failed"],
+            timeout_seconds=30,
+            env=manager["env"],
+        )
+        return {
+            "manager": manager["manager"],
+            "ok": bool(reset.get("ok")),
+            "bus_env_injected": manager["env"] is not None,
+            "is_failed": _compact_process(is_failed),
+            "reset": _compact_process(reset),
+        }
+    return None
 
 
 async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
@@ -76,6 +173,8 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
             "status_after": _compact_process(status_before),
         }
 
+    reset_failed = await _reset_failed_gateway_service()
+
     start = await run_process(
         [str(hermes_bin), "gateway", "start"],
         timeout_seconds=180,
@@ -84,6 +183,17 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
         [str(hermes_bin), "gateway", "status"],
         timeout_seconds=45,
     )
+    if not _gateway_status_is_healthy(status_after) and reset_failed is None:
+        reset_failed = await _reset_failed_gateway_service()
+        if reset_failed is not None:
+            start = await run_process(
+                [str(hermes_bin), "gateway", "start"],
+                timeout_seconds=180,
+            )
+            status_after = await run_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=45,
+            )
     install: dict[str, Any] | None = None
     if (
         not _gateway_status_is_healthy(status_after)
@@ -132,6 +242,7 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
         ),
         "adapter_ready": not adapter_failure,
         "status_before": _compact_process(status_before),
+        "reset_failed": reset_failed,
         "start": _compact_process(start),
         "install": _compact_process(install),
         "foreground": foreground,

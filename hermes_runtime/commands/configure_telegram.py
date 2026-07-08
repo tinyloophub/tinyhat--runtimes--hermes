@@ -1627,7 +1627,23 @@ def _gateway_status_is_healthy(status: dict[str, Any] | None) -> bool:
     if not isinstance(status, dict) or not status.get("ok"):
         return False
     text = _process_text(status)
-    if "not running" in text or "gateway is not running" in text:
+    # A stopped systemd gateway prints "Active: inactive (dead)" (or "failed" /
+    # "activating") yet "hermes gateway status" still exits 0, so the old
+    # "not running" substring check let a dead gateway read as healthy -- the
+    # live bug that made a secret-save restart's start step skip the actual
+    # restart ("already_running: true") and leave the bot down. Treat any
+    # non-active systemd state as unhealthy.
+    negative_markers = (
+        "not running",
+        "gateway is not running",
+        "active: inactive",
+        "inactive (dead)",
+        "active: failed",
+        "active: activating",
+        "active: deactivating",
+        "active: reloading",
+    )
+    if any(marker in text for marker in negative_markers):
         return False
     return True
 
