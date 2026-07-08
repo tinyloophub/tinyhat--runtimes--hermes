@@ -83,6 +83,7 @@ import time
 from typing import Any
 from urllib import error, parse, request
 
+from hermes_runtime.gateway_desired_state import clear_desired_stopped
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     probe_hermes_status,
@@ -1834,6 +1835,9 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     gateway = await _run_gateway(hermes_bin)
     if not gateway.get("healthy"):
         raise RuntimeError("Hermes gateway did not report a healthy status.")
+    state_dir = getattr(ctx, "state_dir", None)
+    if isinstance(state_dir, Path):
+        clear_desired_stopped(state_dir)
 
     hermes_status = await probe_hermes_status()
     return {

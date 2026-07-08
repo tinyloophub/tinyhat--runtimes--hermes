@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
+from hermes_runtime.gateway_desired_state import (  # noqa: E402
+    mark_desired_stopped,
+    read_desired_stopped,
+)
 
 
 def load_tests(
@@ -162,7 +167,17 @@ def test_start_hermes_resets_failed_service_before_retrying_start() -> None:
     ) -> dict[str, object]:
         del timeout_seconds, env
         calls.append(args)
-        if args[:2] == ["/bin/systemctl", "--user"]:
+        if args[:2] == ["/bin/systemctl", "is-failed"]:
+            return {
+                "args": args,
+                "returncode": 0,
+                "ok": True,
+                "timed_out": False,
+                "duration_ms": 9,
+                "stdout": "failed\n",
+                "stderr": "",
+            }
+        if args[:2] == ["/bin/systemctl", "reset-failed"]:
             return {
                 "args": args,
                 "returncode": 0,
@@ -180,7 +195,7 @@ def test_start_hermes_resets_failed_service_before_retrying_start() -> None:
         if command == "status" and status_calls == 1:
             ok = False
             returncode = 3
-            stdout = "hermes-gateway.service failed with result 'start-limit-hit'\n"
+            stdout = "gateway is not running\n"
         elif command == "status":
             stdout = "gateway running\n"
         return {
@@ -219,11 +234,67 @@ def test_start_hermes_resets_failed_service_before_retrying_start() -> None:
 
     assert calls[:3] == [
         ["/usr/local/bin/hermes", "gateway", "status"],
-        ["/bin/systemctl", "--user", "reset-failed", "hermes-gateway.service"],
-        ["/usr/local/bin/hermes", "gateway", "start"],
+        ["/bin/systemctl", "is-failed", "hermes-gateway.service"],
+        ["/bin/systemctl", "reset-failed", "hermes-gateway.service"],
     ]
+    assert calls[3] == ["/usr/local/bin/hermes", "gateway", "start"]
     assert result["healthy"] is True
+    assert result["gateway"]["reset_failed"]["manager"] == "system"
     assert result["gateway"]["reset_failed"]["ok"] is True
+
+
+def test_start_hermes_clears_desired_stopped_marker_when_healthy() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        return {
+            "args": args,
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 12,
+            "stdout": "gateway running\n",
+            "stderr": "",
+        }
+
+    async def fake_status() -> dict[str, object]:
+        return {
+            "schema": "tinyhat_hermes_status_v1",
+            "installed": True,
+            "ok": True,
+            "version": "Hermes Agent 0.1.0",
+            "message": "ok",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        mark_desired_stopped(
+            state_dir,
+            reason="admin_reset_to_parked",
+            command_kind="stop_hermes",
+        )
+        with (
+            patch(
+                "hermes_runtime.commands.start_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
+            patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
+            patch(
+                "hermes_runtime.commands.start_hermes.load_env_files_into_process",
+                return_value={"loaded": True, "keys": []},
+            ),
+        ):
+            result = asyncio.run(
+                run_command(SimpleNamespace(state_dir=state_dir), {"kind": "start_hermes"})
+            )
+
+        assert result["healthy"] is True
+        assert read_desired_stopped(state_dir) is None
 
 
 def test_start_hermes_installs_gateway_service_before_foreground_fallback() -> None:

@@ -18,6 +18,10 @@ sys.path.insert(0, str(ROOT))
 
 import hermes_runtime.commands.configure_telegram as configure_telegram  # noqa: E402
 from hermes_runtime.commands import run_command  # noqa: E402
+from hermes_runtime.gateway_desired_state import (  # noqa: E402
+    mark_desired_stopped,
+    read_desired_stopped,
+)
 
 
 def load_tests(
@@ -170,8 +174,14 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp) / "home"
         project = Path(tmp) / "project"
+        state_dir = Path(tmp) / "state"
         home.mkdir()
         project.mkdir()
+        mark_desired_stopped(
+            state_dir,
+            reason="admin_reset_to_parked",
+            command_kind="stop_hermes",
+        )
         old_env = os.environ.copy()
         os.environ.update(
             {
@@ -211,6 +221,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
                             platform=platform,
                             platform_auth="local_dev",
                             computer_id="local-dev",
+                            state_dir=state_dir,
                         ),
                         {"kind": "configure_telegram", "spec": {}},
                     )
@@ -265,6 +276,7 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         assert "hermes_runtime.telegram_tinyhat_settings" in plugin_source
         assert "hermes_runtime.telegram_codex_auth" in plugin_source
         assert "hermes_runtime.codex_limits" in plugin_source
+        assert read_desired_stopped(state_dir) is None
 
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})

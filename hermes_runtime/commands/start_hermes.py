@@ -37,6 +37,7 @@ Side effects:
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -57,32 +58,60 @@ from hermes_runtime.hermes_cli import (
     probe_hermes_status,
     run_process,
 )
+from hermes_runtime.gateway_desired_state import clear_desired_stopped
 from hermes_runtime.runtime_env import load_env_files_into_process
 
 GATEWAY_SERVICE_NAME = "hermes-gateway.service"
 
 
-def _gateway_status_needs_reset_failed(*results: dict[str, Any] | None) -> bool:
-    text = "\n".join(_process_text(result) for result in results).lower()
-    needles = (
-        "start-limit-hit",
-        "start limit hit",
-        "start request repeated too quickly",
-        "failed with result",
-        "result: failed",
-        "unit is failed",
-    )
-    return any(needle in text for needle in needles)
+def _systemctl_manager_commands(systemctl: str) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = [
+        {
+            "manager": "system",
+            "is_failed": [systemctl, "is-failed", GATEWAY_SERVICE_NAME],
+            "reset_failed": [systemctl, "reset-failed", GATEWAY_SERVICE_NAME],
+        }
+    ]
+    if os.getenv("XDG_RUNTIME_DIR") or os.getenv("DBUS_SESSION_BUS_ADDRESS"):
+        commands.append(
+            {
+                "manager": "user",
+                "is_failed": [systemctl, "--user", "is-failed", GATEWAY_SERVICE_NAME],
+                "reset_failed": [
+                    systemctl,
+                    "--user",
+                    "reset-failed",
+                    GATEWAY_SERVICE_NAME,
+                ],
+            }
+        )
+    return commands
+
+
+def _systemctl_is_failed(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if result.get("returncode") != 0:
+        return False
+    return "failed" in _process_text(result)
 
 
 async def _reset_failed_gateway_service() -> dict[str, Any] | None:
     systemctl = shutil.which("systemctl")
     if not systemctl:
         return None
-    return await run_process(
-        [systemctl, "--user", "reset-failed", GATEWAY_SERVICE_NAME],
-        timeout_seconds=30,
-    )
+    for manager in _systemctl_manager_commands(systemctl):
+        is_failed = await run_process(manager["is_failed"], timeout_seconds=30)
+        if not _systemctl_is_failed(is_failed):
+            continue
+        reset = await run_process(manager["reset_failed"], timeout_seconds=30)
+        return {
+            "manager": manager["manager"],
+            "ok": bool(reset.get("ok")),
+            "is_failed": _compact_process(is_failed),
+            "reset": _compact_process(reset),
+        }
+    return None
 
 
 async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
@@ -103,9 +132,7 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
             "status_after": _compact_process(status_before),
         }
 
-    reset_failed = None
-    if _gateway_status_needs_reset_failed(status_before):
-        reset_failed = await _reset_failed_gateway_service()
+    reset_failed = await _reset_failed_gateway_service()
 
     start = await run_process(
         [str(hermes_bin), "gateway", "start"],
@@ -118,17 +145,17 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
     if (
         not _gateway_status_is_healthy(status_after)
         and reset_failed is None
-        and _gateway_status_needs_reset_failed(start, status_after)
     ):
         reset_failed = await _reset_failed_gateway_service()
-        start = await run_process(
-            [str(hermes_bin), "gateway", "start"],
-            timeout_seconds=180,
-        )
-        status_after = await run_process(
-            [str(hermes_bin), "gateway", "status"],
-            timeout_seconds=45,
-        )
+        if reset_failed is not None:
+            start = await run_process(
+                [str(hermes_bin), "gateway", "start"],
+                timeout_seconds=180,
+            )
+            status_after = await run_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=45,
+            )
     install: dict[str, Any] | None = None
     if (
         not _gateway_status_is_healthy(status_after)
@@ -177,7 +204,7 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
         ),
         "adapter_ready": not adapter_failure,
         "status_before": _compact_process(status_before),
-        "reset_failed": _compact_process(reset_failed),
+        "reset_failed": reset_failed,
         "start": _compact_process(start),
         "install": _compact_process(install),
         "foreground": foreground,
@@ -202,6 +229,10 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     env_reload = load_env_files_into_process(_env_file_candidates())
     gateway = await _start_gateway(hermes_bin)
+    if gateway.get("healthy"):
+        state_dir = getattr(_ctx, "state_dir", None)
+        if isinstance(state_dir, Path):
+            clear_desired_stopped(state_dir)
     hermes_status = await probe_hermes_status()
     return {
         "schema": "tinyhat_hermes_start_v1",
