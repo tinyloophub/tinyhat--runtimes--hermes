@@ -24,6 +24,7 @@ from hermes_runtime.commands import run_command  # noqa: E402
 from hermes_runtime.local_ledger import append_entry, report  # noqa: E402
 from hermes_runtime.main import (  # noqa: E402
     RuntimeContext,
+    _gateway_reconcile_interval_seconds,
     _heartbeat_interval_seconds,
     _heartbeat_metrics,
     _heartbeat_once,
@@ -130,7 +131,8 @@ class CommandTests(TestCase):
                 platform_state="ready",
             )
 
-            asyncio.run(_heartbeat_once(ctx))
+            with patch.dict(os.environ, {}, clear=True):
+                asyncio.run(_heartbeat_once(ctx))
 
         self.assertEqual(ctx.platform_state, "assigned")
 
@@ -167,14 +169,26 @@ class CommandTests(TestCase):
                         },
                         clear=True,
                     ),
+                    patch(
+                        "hermes_runtime.main.find_hermes_binary",
+                        return_value=None,
+                    ),
                     patch("hermes_runtime.main.run_command", fake_run_command),
                 ):
                     await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    self.assertNotIn(
+                        "gateway",
+                        platform.posts[-1][1]["metrics"]["hermes_runtime"],
+                    )
                     await asyncio.wait_for(started.wait(), timeout=0.2)
                     self.assertIsNotNone(ctx.gateway_reconcile_task)
                     await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
 
                     await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    gateway_state = platform.posts[-1][1]["metrics"][
+                        "hermes_runtime"
+                    ]["gateway"]
+                    self.assertEqual(gateway_state["status"], "unknown")
 
                 return commands
 
@@ -224,7 +238,58 @@ class CommandTests(TestCase):
         ctx = asyncio.run(scenario())
 
         self.assertIsNone(ctx.gateway_reconcile_task)
-        self.assertFalse(ctx.gateway_reconciled)
+        self.assertIsNone(ctx.gateway_last_reconcile_at)
+
+    def test_gateway_reconcile_runs_again_after_interval(self) -> None:
+        async def scenario() -> list[dict[str, Any]]:
+            with tempfile.TemporaryDirectory() as tmp:
+                platform = FakePlatform()
+                platform.post_response = {"ok": True, "state": "assigned"}
+                ctx = RuntimeContext(
+                    platform=platform,
+                    state_dir=Path(tmp),
+                    started_at=0,
+                    platform_state="assigned",
+                )
+                commands: list[dict[str, Any]] = []
+
+                async def fake_run_command(
+                    _ctx: RuntimeContext, command: dict[str, Any]
+                ) -> dict[str, Any]:
+                    commands.append(command)
+                    return {"healthy": True, "reason": "gateway_healthy"}
+
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "HOME": str(Path(tmp) / "home"),
+                            "TELEGRAM_BOT_TOKEN": "bot-token",
+                            "TINYHAT_GATEWAY_RECONCILE_INTERVAL_SECONDS": "1",
+                        },
+                        clear=True,
+                    ),
+                    patch("hermes_runtime.main.find_hermes_binary", return_value=None),
+                    patch("hermes_runtime.main.run_command", fake_run_command),
+                ):
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    assert ctx.gateway_reconcile_task is not None
+                    await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
+
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    self.assertEqual(len(commands), 1)
+
+                    assert ctx.gateway_last_reconcile_at is not None
+                    ctx.gateway_last_reconcile_at -= _gateway_reconcile_interval_seconds()
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    assert ctx.gateway_reconcile_task is not None
+                    await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
+
+                return commands
+
+        commands = asyncio.run(scenario())
+
+        self.assertEqual(len(commands), 2)
 
     def test_heartbeat_starts_any_command_without_blocking_loop(self) -> None:
         async def scenario() -> tuple[RuntimeContext, FakePlatform]:

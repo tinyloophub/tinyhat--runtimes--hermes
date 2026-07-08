@@ -81,6 +81,7 @@ def test_heal_hermes_starts_gateway_when_telegram_is_configured() -> None:
     assert result["healed"] is True
     assert result["telegram"]["configured"] is True
     assert result["gateway"] == {"healthy": True, "mode": "service"}
+    assert result["reason"] == "gateway_healthy"
     assert start_calls[0]["spec"] == {"reason": "admin_heal"}
     assert "123456:token" not in str(result)
 

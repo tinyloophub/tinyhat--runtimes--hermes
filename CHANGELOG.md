@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Report Hermes gateway readiness on every assigned heartbeat, run gateway
+  reconcile periodically instead of once per runtime process, and reset a
+  failed/start-limited gateway unit before retrying `hermes gateway start`.
+
 ## 0.0.41 - 2026-07-07
 
 - Use the running Hermes package version when a Computer installed from a
