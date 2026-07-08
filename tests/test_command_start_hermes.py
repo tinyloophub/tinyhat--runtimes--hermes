@@ -349,6 +349,7 @@ def test_start_hermes_installs_gateway_service_before_foreground_fallback() -> N
             "hermes_runtime.commands.start_hermes.find_hermes_binary",
             return_value=Path("/usr/local/bin/hermes"),
         ),
+        patch("hermes_runtime.commands.start_hermes.shutil.which", return_value=None),
         patch("hermes_runtime.commands.start_hermes.run_process", fake_run_process),
         patch("hermes_runtime.commands.start_hermes.probe_hermes_status", fake_status),
         patch(
