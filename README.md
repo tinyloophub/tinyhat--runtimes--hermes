@@ -64,6 +64,36 @@ The installer is intentionally a regular public shell script. You can read
 [`install.sh`](install.sh) before running it, pin it to an exact tag, or run it
 from `channels/lts` when you want the conservative default.
 
+### Staged delivery by hosting platforms
+
+A hosting platform does not have to make the machine download `install.sh`
+anonymously at boot. Anonymous `raw.githubusercontent.com` downloads are
+rate-limited and can intermittently fail (HTTP 429), which would kill a fresh
+machine's bootstrap before the runtime starts. The supported alternative is
+**staged delivery**:
+
+1. The platform reads the published `install.sh` at a pinned release tag —
+   the conservative default is the release currently promoted to
+   `channels/lts`.
+2. It places that exact content on the machine (for example inside a cloud
+   startup payload) together with the tag and the file's SHA-256, then
+   executes the staged copy with the same public flags (`--ref`,
+   `--platform-url`, ...).
+
+Staged delivery must not change what runs on the machine. The staged file has
+to be byte-for-byte the published `install.sh` at the named tag, and the small
+launcher that stages it must not add provisioning logic of its own — all
+provisioning behaviour stays in this repository, whichever delivery path a
+platform uses. Anyone on the machine can verify a staged copy against this
+repository:
+
+```sh
+# Both commands must print the same SHA-256 (the boot payload header
+# names the tag and the expected hash).
+curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--hermes/<tag>/install.sh | sha256sum
+sha256sum <path-to-the-staged-copy>
+```
+
 The foundation installer does this:
 
 1. Downloads this repo at the requested ref, unless `--source-dir` points at a
