@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Shorten successful `/codex_auth` Telegram updates to a clear restart notice
+  followed by `Ready ✅`, while retaining actionable failure details.
+
 ## 0.0.42 - 2026-07-08
 
 - Add a one-shot durable gateway restart to `heal_hermes`
