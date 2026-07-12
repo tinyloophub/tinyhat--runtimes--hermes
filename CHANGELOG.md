@@ -2,8 +2,13 @@
 
 ## Unreleased
 
-- Shorten successful `/codex_auth` Telegram updates to a clear restart notice
-  followed by `Ready ✅`, while retaining actionable failure details.
+## 0.0.43 - 2026-07-12
+
+- Make successful `/codex_auth` updates concise: an explicit restart notice
+  followed by `Ready ✅`, while preserving actionable failure guidance.
+- Document a verified staged `install.sh` delivery path for hosting platforms
+  so machine bootstrap can avoid anonymous GitHub raw-download rate limits
+  without changing the published installer.
 
 ## 0.0.42 - 2026-07-08
 
