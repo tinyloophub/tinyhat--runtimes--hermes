@@ -678,11 +678,7 @@ def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
 
 
 def _auth_restart_notice_message() -> str:
-    return (
-        "OpenAI Codex auth is connected. I'm restarting my Telegram gateway now "
-        "so the new OpenAI chat and vision model settings are available in chat. "
-        "Voice transcription stays on Tinyhat's OpenRouter Whisper route."
-    )
+    return "OpenAI Codex is connected. I'm restarting now."
 
 
 def _send_auth_restart_notice() -> dict[str, Any]:
@@ -725,22 +721,13 @@ def _completion_message(
     multimedia: dict[str, Any] | None = None,
 ) -> str:
     if switch.get("ok") and gateway.get("healthy"):
-        media_sentence = ""
-        if multimedia is not None:
-            if multimedia.get("ok"):
-                media_sentence = (
-                    " Image understanding now uses the selected Codex/OpenAI "
-                    "chat model when it supports images, with OpenRouter as "
-                    "fallback. Voice transcription stays on OpenRouter."
-                )
-            else:
-                media_sentence = " I could not confirm the image/voice model config; send /codex_auth_status if media still fails."
-        return (
-            "OpenAI Codex auth is connected ✅\n\n"
-            "I switched Hermes to OpenAI Codex and restarted my Telegram gateway, "
-            "so your next message should use your OpenAI subscription."
-            f"{media_sentence}"
-        )
+        if multimedia is not None and not multimedia.get("ok"):
+            return (
+                "OpenAI Codex auth is connected ✅\n\n"
+                "I could not confirm the image/voice model config; "
+                "send /codex_auth_status if media still fails."
+            )
+        return "Ready ✅"
     if switch.get("ok"):
         return (
             "OpenAI Codex auth is connected ✅\n\n"

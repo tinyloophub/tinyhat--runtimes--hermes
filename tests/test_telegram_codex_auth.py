@@ -552,21 +552,29 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
         Path("/usr/local/bin/hermes"),
         codex_chat_model="gpt-5.5",
     )
-    assert any("restarted my Telegram gateway" in text for text in sent)
-    notice_index = next(
-        index
-        for index, text in enumerate(sent)
-        if "new OpenAI chat and vision model settings" in text
-    )
+    restart_notice = "OpenAI Codex is connected. I'm restarting now."
+    completion = "Ready ✅"
+    assert restart_notice in sent
+    notice_index = sent.index(restart_notice)
     gateway_index = sent.index("__gateway_restart__")
-    completion_index = next(
-        index for index, text in enumerate(sent) if "restarted my Telegram gateway" in text
-    )
+    assert completion in sent
+    completion_index = sent.index(completion)
     assert notice_index < gateway_index < completion_index
-    assert any("Voice transcription stays on OpenRouter" in text for text in sent)
     assert not any(
         "Voice transcription is now set to OpenAI Codex STT" in text
         for text in sent
+    )
+
+
+def test_completion_message_keeps_multimedia_failure_actionable() -> None:
+    assert codex_auth._completion_message(
+        switch={"ok": True},
+        gateway={"healthy": True},
+        multimedia={"ok": False},
+    ) == (
+        "OpenAI Codex auth is connected ✅\n\n"
+        "I could not confirm the image/voice model config; "
+        "send /codex_auth_status if media still fails."
     )
 
 
