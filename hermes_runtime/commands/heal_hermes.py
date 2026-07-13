@@ -48,6 +48,7 @@ from hermes_runtime.commands.configure_telegram import (
     _compact_process,
     _env_file_candidates,
     _gateway_log_path,
+    ensure_telegram_network_fallback_env,
 )
 from hermes_runtime.gateway_readiness import (
     gateway_log_size,
@@ -458,6 +459,27 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "message": "Telegram is not configured; run configure_telegram first.",
         }
 
+    env_candidates = _env_file_candidates()
+    telegram_network = ensure_telegram_network_fallback_env(env_candidates)
+    if not telegram_network["ok"]:
+        return {
+            "schema": "tinyhat_hermes_heal_v1",
+            "healthy": False,
+            "healed": False,
+            "reason": "telegram_network_env_failed",
+            "telegram": telegram,
+            "telegram_network": telegram_network,
+            "gateway": None,
+            "hermes": await probe_hermes_status(),
+            "restart": _restart_summary(
+                requested=restart_requested,
+                performed=False,
+                deadline_seconds=deadline_seconds,
+                compat_defaulted=compat_defaulted,
+            ),
+            "message": "Hermes Telegram network fallback could not be prepared.",
+        }
+
     if not restart_requested:
         start_result = await start_hermes.run(
             ctx,
@@ -485,6 +507,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "gateway": start_result.get("gateway"),
             "hermes": start_result.get("hermes"),
             "env_reload": start_result.get("env_reload"),
+            "telegram_network": telegram_network,
             "start_hermes": start_result,
             "restart": _restart_summary(
                 requested=False,
@@ -504,7 +527,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
 
     # Restart path: a just-saved secret must reach the new gateway process,
     # so reload env files into this process before the stop/start pair.
-    env_reload = load_env_files_into_process(_env_file_candidates())
+    env_reload = load_env_files_into_process(env_candidates)
     restart = await _run_gateway_restart(
         ctx,
         hermes_bin=hermes_bin,
@@ -531,6 +554,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "gateway": readiness.get("status"),
         "hermes": None,
         "env_reload": env_reload,
+        "telegram_network": telegram_network,
         "restart_result": restart_result,
         "restart_fallback": restart.get("fallback_actions") or {},
         "restart": _restart_summary(

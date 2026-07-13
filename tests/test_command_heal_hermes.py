@@ -118,6 +118,230 @@ def _fake_start_result() -> dict[str, object]:
     }
 
 
+def test_restart_heal_applies_network_fallback_before_reload_and_restart() -> None:
+    events: list[str] = []
+    network_metadata = {
+        "ok": True,
+        "seeded": True,
+        "preserved_existing": False,
+        "key": "TELEGRAM_FALLBACK_IPS",
+        "files": [
+            {
+                "path": "managed.env",
+                "updated": True,
+                "keys": ["TELEGRAM_FALLBACK_IPS"],
+            }
+        ],
+    }
+
+    def fake_ensure(paths: list[Path]) -> dict[str, object]:
+        assert len(paths) == 1
+        events.append("network_fallback")
+        return network_metadata
+
+    def fake_reload(paths: list[Path]) -> dict[str, object]:
+        assert len(paths) == 1
+        events.append("env_reload")
+        return {"loaded": True, "keys": ["TELEGRAM_FALLBACK_IPS"]}
+
+    async def fake_restart(
+        _ctx: object,
+        *,
+        hermes_bin: Path,
+        reason: str,
+        deadline_seconds: int,
+    ) -> dict[str, object]:
+        del hermes_bin, reason, deadline_seconds
+        events.append("restart")
+        return {
+            "verified": True,
+            "functionally_verified": True,
+            "deadline_exceeded": False,
+            "restart_command_ok": True,
+            "performed": True,
+            "method": "official",
+            "fallback_attempted": False,
+            "failure_reason": None,
+            "milestones_ms": {
+                "restart_started": 0,
+                "restart_done": 10,
+                "verified": 20,
+            },
+            "readiness": {
+                "status_healthy": True,
+                "telegram_evidence": "journal",
+                "telegram_connected": True,
+                "status": {"ok": True},
+            },
+            "restart_result": {"ok": True},
+            "fallback_actions": {},
+            "generation": {"owner": "user", "changed": True, "active": True},
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = _configured_heal_env(tmp)
+        env_path = Path(env["TINYHAT_HERMES_HOME"]) / ".env"
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes._env_file_candidates",
+                return_value=[env_path],
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.ensure_telegram_network_fallback_env",
+                fake_ensure,
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.load_env_files_into_process",
+                fake_reload,
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes._run_gateway_restart",
+                fake_restart,
+            ),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {"kind": "heal_hermes", "spec": {"restart": True}},
+                )
+            )
+
+    assert events == ["network_fallback", "env_reload", "restart"]
+    assert result["healthy"] is True
+    assert result["telegram_network"] == network_metadata
+    assert result["env_reload"]["keys"] == ["TELEGRAM_FALLBACK_IPS"]
+
+
+def test_start_only_heal_applies_network_fallback_before_gateway_start() -> None:
+    events: list[str] = []
+    network_metadata = {
+        "ok": True,
+        "seeded": True,
+        "preserved_existing": False,
+        "key": "TELEGRAM_FALLBACK_IPS",
+        "files": [],
+    }
+
+    def fake_ensure(paths: list[Path]) -> dict[str, object]:
+        assert len(paths) == 1
+        events.append("network_fallback")
+        return network_metadata
+
+    async def fake_start(
+        _ctx: object, _command: dict[str, object]
+    ) -> dict[str, object]:
+        events.append("start")
+        return _fake_start_result()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = _configured_heal_env(tmp)
+        env_path = Path(env["TINYHAT_HERMES_HOME"]) / ".env"
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes._env_file_candidates",
+                return_value=[env_path],
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.ensure_telegram_network_fallback_env",
+                fake_ensure,
+            ),
+            patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fake_start),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {
+                        "kind": "heal_hermes",
+                        "spec": {"restart": False, "reason": "health_check"},
+                    },
+                )
+            )
+
+    assert events == ["network_fallback", "start"]
+    assert result["telegram_network"] == network_metadata
+
+
+def test_heal_network_preparation_failure_never_starts_or_restarts() -> None:
+    sensitive_detail = "203.0.113.80"
+    network_metadata = {
+        "ok": False,
+        "seeded": False,
+        "preserved_existing": True,
+        "source": "process_env",
+        "key": "TELEGRAM_FALLBACK_IPS",
+        "files": [
+            {
+                "path": "managed.env",
+                "updated": False,
+                "keys": ["TELEGRAM_FALLBACK_IPS"],
+                "error_type": "PermissionError",
+            }
+        ],
+        "error": "env_write_failed",
+    }
+
+    async def fail_start(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("gateway start must not run after env preparation fails")
+
+    async def fail_restart(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("gateway restart must not run after env preparation fails")
+
+    async def fake_status() -> dict[str, object]:
+        return {"installed": True, "ok": True, "version": "Hermes Agent 0.1.0"}
+
+    for restart in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = _configured_heal_env(tmp)
+            with (
+                patch.dict(
+                    os.environ,
+                    {**env, "TELEGRAM_FALLBACK_IPS": sensitive_detail},
+                    clear=True,
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.ensure_telegram_network_fallback_env",
+                    return_value=network_metadata,
+                ),
+                patch("hermes_runtime.commands.heal_hermes.start_hermes.run", fail_start),
+                patch(
+                    "hermes_runtime.commands.heal_hermes._run_gateway_restart",
+                    fail_restart,
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.probe_hermes_status",
+                    fake_status,
+                ),
+            ):
+                result = asyncio.run(
+                    run_command(
+                        SimpleNamespace(),
+                        {"kind": "heal_hermes", "spec": {"restart": restart}},
+                    )
+                )
+
+        assert result["healthy"] is False
+        assert result["healed"] is False
+        assert result["reason"] == "telegram_network_env_failed"
+        assert result["telegram_network"] == network_metadata
+        assert result["restart"]["requested"] is restart
+        assert result["restart"]["performed"] is False
+        assert sensitive_detail not in str(result)
+
+
 def test_start_only_heal_does_not_claim_already_running_gateway_was_healed() -> None:
     async def fake_start(_ctx: object, _command: dict[str, object]) -> dict[str, object]:
         return {

@@ -10,6 +10,10 @@
   start-only. Functional success requires Telegram evidence scoped to the new
   systemd invocation. Heartbeats now distinguish verified serving,
   serving-but-unverified, draining/restarting, non-serving, and unknown states.
+- Seed Hermes' documented Telegram fallback endpoints when no operator value is
+  configured, before Telegram setup or a Heal restart. This bypasses Hermes'
+  unbounded system-DNS discovery task without replacing its normal DNS-first
+  transport, and preserves any explicit `TELEGRAM_FALLBACK_IPS` override.
 
 ## 0.0.43 - 2026-07-12
 

@@ -154,6 +154,7 @@ def load_env_files_into_process(
             missing_files.append(str(path))
             continue
         read_files.append(str(path))
+        file_values: dict[str, str] = {}
         for line in lines:
             clean = line.strip()
             if not clean or clean.startswith("#") or "=" not in clean:
@@ -166,7 +167,15 @@ def load_env_files_into_process(
                 continue
             if selected_keys is not None and key not in selected_keys:
                 continue
-            os.environ[key] = parse_env_value(raw_value)
+            # Match read_env_values and Hermes itself: the last assignment in
+            # one file wins, while the first file defining a name wins across
+            # files. The old line-by-line loop accidentally let a lower-
+            # precedence project .env overwrite the Hermes home .env.
+            file_values[key] = parse_env_value(raw_value)
+        for key, value in file_values.items():
+            if key in loaded_keys:
+                continue
+            os.environ[key] = value
             loaded_keys.add(key)
     return {
         "loaded": True,

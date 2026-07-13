@@ -76,6 +76,37 @@ def test_load_env_files_into_process_loads_selected_keys_only() -> None:
     assert str(env_file) in result["files"]
 
 
+def test_load_env_files_first_file_wins_and_last_assignment_wins_within_file() -> (
+    None
+):
+    with tempfile.TemporaryDirectory() as tmp:
+        primary = Path(tmp) / "primary.env"
+        secondary = Path(tmp) / "secondary.env"
+        primary.write_text(
+            'TELEGRAM_FALLBACK_IPS="primary-first"\n'
+            'TELEGRAM_FALLBACK_IPS="primary-last"\n',
+            encoding="utf-8",
+        )
+        secondary.write_text(
+            'TELEGRAM_FALLBACK_IPS="secondary"\n',
+            encoding="utf-8",
+        )
+        old_env = os.environ.copy()
+        try:
+            os.environ.pop("TELEGRAM_FALLBACK_IPS", None)
+            result = load_env_files_into_process(
+                [primary, secondary],
+                keys=["TELEGRAM_FALLBACK_IPS"],
+            )
+            assert os.environ["TELEGRAM_FALLBACK_IPS"] == "primary-last"
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert result["keys"] == ["TELEGRAM_FALLBACK_IPS"]
+    assert result["count"] == 1
+
+
 def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     events: list[tuple[str, str]] = []
     platform = FakePlatform(

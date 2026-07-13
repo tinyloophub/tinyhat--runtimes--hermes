@@ -96,7 +96,7 @@ from hermes_runtime.openrouter_stt import (
 )
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
-from hermes_runtime.runtime_env import env_file_candidates
+from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 
 
 TELEGRAM_TINYHAT_MENU_COMMANDS = {
@@ -135,6 +135,12 @@ DEFAULT_OPENROUTER_VISION_FALLBACK_MODELS = (
     "meta-llama/llama-4-maverick",
 )
 MAX_OPENROUTER_VISION_FALLBACK_MODELS = 3
+TELEGRAM_FALLBACK_IPS_ENV_KEY = "TELEGRAM_FALLBACK_IPS"
+# Hermes f96b2e6e uses these same last-resort Bot API endpoints when its
+# automatic DNS-over-HTTPS discovery produces no result. Supplying them up
+# front avoids Hermes' unbounded system-resolver task while its transport still
+# tries api.telegram.org through normal DNS before either fallback address.
+DEFAULT_TELEGRAM_FALLBACK_IPS = "149.154.166.110,149.154.167.220"
 
 
 def local_stt_model() -> str:
@@ -280,6 +286,140 @@ def _upsert_env_file(path: Path, values: dict[str, str]) -> dict[str, Any]:
         "path": str(path),
         "updated": True,
         "keys": sorted(values),
+    }
+
+
+def _config_has_telegram_fallback_ips(config_file: Path | None = None) -> bool:
+    """Detect an explicit Hermes YAML fallback without parsing secret values.
+
+    The standalone Tinyhat runtime intentionally has no PyYAML dependency.
+    This small indentation-aware scan only recognizes the documented
+    ``platforms.telegram.extra.fallback_ips`` path. It does not return the
+    configured addresses and therefore cannot leak them into command results.
+    """
+
+    path = (config_file or _hermes_config_file()).expanduser()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    parents: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        stripped = line.lstrip(" ")
+        if (
+            not stripped
+            or stripped.startswith(("#", "-"))
+            or ":" not in stripped
+        ):
+            continue
+        indent = len(line) - len(stripped)
+        while parents and indent <= parents[-1][0]:
+            parents.pop()
+        raw_key, _separator, raw_value = stripped.partition(":")
+        key = raw_key.strip().strip("'\"")
+        ancestry = [item[1] for item in parents]
+        value = raw_value.split(" #", 1)[0].strip()
+        if (
+            ancestry[-3:] == ["platforms", "telegram", "extra"]
+            and key == "fallback_ips"
+        ):
+            if value and value not in {"[]", "null", "~"}:
+                return True
+            for child in lines[index + 1 :]:
+                child_stripped = child.lstrip(" ")
+                if not child_stripped or child_stripped.startswith("#"):
+                    continue
+                child_indent = len(child) - len(child_stripped)
+                if child_indent <= indent:
+                    break
+                if child_stripped.startswith("-"):
+                    item = (
+                        child_stripped[1:]
+                        .split(" #", 1)[0]
+                        .strip()
+                        .strip("'\"")
+                    )
+                    if item:
+                        return True
+            return False
+        parents.append((indent, key))
+    return False
+
+
+def _resolve_telegram_network_fallback(
+    paths: list[Path],
+) -> tuple[str | None, str]:
+    """Resolve the effective fallback source without exposing it publicly."""
+
+    process_value = (os.getenv(TELEGRAM_FALLBACK_IPS_ENV_KEY) or "").strip()
+    if process_value:
+        return process_value, "process_env"
+    file_value = read_env_values(
+        paths,
+        names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
+    ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+    if file_value:
+        return file_value, "env_file"
+    if _config_has_telegram_fallback_ips():
+        return None, "config"
+    return DEFAULT_TELEGRAM_FALLBACK_IPS, "default"
+
+
+def ensure_telegram_network_fallback_env(
+    paths: list[Path] | None = None,
+) -> dict[str, Any]:
+    """Ensure Hermes can skip its unbounded Telegram DNS discovery path.
+
+    Preserve any explicit non-empty ``TELEGRAM_FALLBACK_IPS`` value. When the
+    value is absent, persist Hermes' own last-resort seed addresses in the
+    normal Tinyhat-managed env files. The result deliberately reports only
+    the env name and write status, never credential values.
+    """
+
+    candidates = list(paths if paths is not None else _env_file_candidates())
+    value, source = _resolve_telegram_network_fallback(candidates)
+    existing_primary = (
+        read_env_values(
+            candidates[:1],
+            names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
+        ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+        if candidates
+        else ""
+    )
+    write_required = source in {"process_env", "default"} and (
+        not candidates or existing_primary != value
+    )
+    files: list[dict[str, Any]] = []
+    error: str | None = None
+    if write_required and not candidates:
+        error = "env_file_unavailable"
+    elif write_required and value is not None:
+        try:
+            files.append(
+                _upsert_env_file(
+                    candidates[0],
+                    {TELEGRAM_FALLBACK_IPS_ENV_KEY: value},
+                )
+            )
+        except OSError as exc:
+            error = "env_write_failed"
+            files.append(
+                {
+                    "path": str(candidates[0].expanduser()),
+                    "updated": False,
+                    "keys": [TELEGRAM_FALLBACK_IPS_ENV_KEY],
+                    "error_type": type(exc).__name__,
+                }
+            )
+    return {
+        "ok": error is None and all(bool(item.get("updated")) for item in files),
+        "seeded": source == "default",
+        "preserved_existing": source != "default",
+        "source": source,
+        "key": TELEGRAM_FALLBACK_IPS_ENV_KEY,
+        "files": files,
+        **({"error": error} if error is not None else {}),
     }
 
 
@@ -1809,6 +1949,13 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if not owner_user_id:
         raise RuntimeError("Platform did not return the Telegram owner user id.")
 
+    env_candidates = _env_file_candidates()
+    telegram_network = ensure_telegram_network_fallback_env(env_candidates)
+    if not telegram_network["ok"]:
+        raise RuntimeError("Could not prepare Hermes Telegram network fallback.")
+    fallback_ips, fallback_source = _resolve_telegram_network_fallback(
+        env_candidates
+    )
     env_values = {
         "TELEGRAM_BOT_TOKEN": token,
         "TELEGRAM_ALLOWED_USERS": str(
@@ -1825,9 +1972,11 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         ).strip(),
         **_openrouter_env_values(setup),
     }
+    if fallback_source != "config" and fallback_ips:
+        env_values[TELEGRAM_FALLBACK_IPS_ENV_KEY] = fallback_ips
     env_files = [
         _upsert_env_file(env_path, env_values)
-        for env_path in _env_file_candidates()
+        for env_path in env_candidates
     ]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
@@ -1870,6 +2019,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "home_channel": env_values["TELEGRAM_HOME_CHANNEL"],
         "home_channel_name": env_values["TELEGRAM_HOME_CHANNEL_NAME"],
         "env_files": env_files,
+        "telegram_network": telegram_network,
         "codex_auth": codex_auth,
         "model_config": model_config,
         "multimedia_config": multimedia_config,

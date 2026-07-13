@@ -89,6 +89,235 @@ def test_configure_telegram_uses_canonical_hermes_home_override() -> None:
     assert env_files[0] == hermes_home / ".env"
 
 
+def test_telegram_network_fallback_seeds_upstream_defaults_when_absent() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = [Path(tmp) / "hermes.env", Path(tmp) / "project.env"]
+        with patch.dict(os.environ, {}, clear=True):
+            result = configure_telegram.ensure_telegram_network_fallback_env(paths)
+
+        assert (
+            f'{configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY}="'
+            f'{configure_telegram.DEFAULT_TELEGRAM_FALLBACK_IPS}"'
+        ) in paths[0].read_text(encoding="utf-8")
+        assert paths[1].exists() is False
+
+    assert result["ok"] is True
+    assert result["seeded"] is True
+    assert result["preserved_existing"] is False
+    assert result["key"] == configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY
+    assert configure_telegram.DEFAULT_TELEGRAM_FALLBACK_IPS not in str(result)
+
+
+def test_telegram_network_fallback_persists_process_override_without_metadata() -> (
+    None
+):
+    operator_override = "203.0.113.10,203.0.113.11"
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = [Path(tmp) / "hermes.env", Path(tmp) / "project.env"]
+        with patch.dict(
+            os.environ,
+            {configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY: operator_override},
+            clear=True,
+        ):
+            result = configure_telegram.ensure_telegram_network_fallback_env(paths)
+
+        assert operator_override in paths[0].read_text(encoding="utf-8")
+        assert paths[1].exists() is False
+
+    assert result["ok"] is True
+    assert result["seeded"] is False
+    assert result["preserved_existing"] is True
+    assert result["key"] == configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY
+    assert operator_override not in str(result)
+
+
+def test_telegram_network_fallback_preserves_managed_env_without_writing() -> None:
+    operator_override = "198.51.100.10"
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = [Path(tmp) / "hermes.env", Path(tmp) / "project.env"]
+        paths[0].write_text(
+            f'{configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY}="'
+            f'{operator_override}"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "hermes_runtime.commands.configure_telegram._upsert_env_file",
+                side_effect=AssertionError("existing env value must not be rewritten"),
+            ),
+        ):
+            result = configure_telegram.ensure_telegram_network_fallback_env(paths)
+
+    assert result["ok"] is True
+    assert result["preserved_existing"] is True
+    assert operator_override not in str(result)
+
+
+def test_telegram_network_fallback_preserves_yaml_config_without_writing() -> None:
+    yaml_override = "192.0.2.10"
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = Path(tmp) / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      fallback_ips:\n"
+            f"        - {yaml_override}\n",
+            encoding="utf-8",
+        )
+        paths = [Path(tmp) / "hermes.env", Path(tmp) / "project.env"]
+        with (
+            patch.dict(
+                os.environ,
+                {"HERMES_CONFIG_FILE": str(config_path)},
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._upsert_env_file",
+                side_effect=AssertionError("YAML fallback must not be rewritten"),
+            ),
+        ):
+            result = configure_telegram.ensure_telegram_network_fallback_env(paths)
+
+        assert paths[0].exists() is False
+        assert paths[1].exists() is False
+
+    assert result["ok"] is True
+    assert result["preserved_existing"] is True
+    assert yaml_override not in str(result)
+
+
+def test_telegram_network_fallback_write_failure_is_redacted() -> None:
+    sensitive_override = "203.0.113.50,203.0.113.51"
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = [Path(tmp) / "hermes.env", Path(tmp) / "project.env"]
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY: (
+                        sensitive_override
+                    )
+                },
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._upsert_env_file",
+                side_effect=PermissionError(
+                    f"cannot write operator value {sensitive_override}"
+                ),
+            ),
+        ):
+            result = configure_telegram.ensure_telegram_network_fallback_env(paths)
+
+    assert result["ok"] is False
+    assert result["error"] == "env_write_failed"
+    assert result["files"][0]["updated"] is False
+    assert result["files"][0]["error_type"] == "PermissionError"
+    assert sensitive_override not in str(result)
+
+
+def test_configure_telegram_preserves_explicit_yaml_fallback_out_of_env() -> None:
+    yaml_override = "192.0.2.40"
+
+    async def fake_status() -> dict[str, object]:
+        return {
+            "schema": "tinyhat_hermes_status_v1",
+            "installed": True,
+            "ok": True,
+            "version": "Hermes Agent 0.1.0",
+            "message": "ok",
+        }
+
+    platform = FakePlatform()
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        project = Path(tmp) / "project"
+        config = home / ".hermes" / "config.yaml"
+        config.parent.mkdir(parents=True)
+        project.mkdir()
+        config.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      fallback_ips:\n"
+            f"        - {yaml_override}\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "HOME": str(home),
+                    "HERMES_PROJECT_DIR": str(project),
+                    "HERMES_CONFIG_FILE": str(config),
+                },
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._configure_model",
+                return_value={"ok": True},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._configure_day_one_multimedia",
+                return_value={"ok": True},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._configure_tinyhat_menu_button",
+                return_value={"configured": True},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._telegram_delete_webhook",
+                return_value={"ok": True},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                return_value={"healthy": True},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram.probe_hermes_status",
+                fake_status,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._install_codex_auth_quick_commands",
+                return_value={"updated": False},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._install_codex_auth_plugin_commands",
+                return_value={"updated": False},
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._install_telegram_command_menu_priority",
+                return_value={"updated": False},
+            ),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(
+                        platform=platform,
+                        platform_auth="local_dev",
+                        computer_id="local-dev",
+                    ),
+                    {"kind": "configure_telegram", "spec": {}},
+                )
+            )
+
+        for env_file in (home / ".hermes" / ".env", project / ".env"):
+            assert configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY not in (
+                env_file.read_text(encoding="utf-8")
+            )
+
+    assert result["configured"] is True
+    assert result["telegram_network"]["source"] == "config"
+    assert result["telegram_network"]["files"] == []
+    assert yaml_override not in str(result)
+
+
 def test_openrouter_vision_fallback_models_are_capped_for_openrouter() -> None:
     with patch.dict(
         os.environ,
@@ -231,6 +460,10 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
             "tinyhat/miniapp/agents/agt_test/settings\"" in project_env_text
         )
         assert "OPENROUTER_API_KEY=\"sk-or-v1-test-runtime-key\"" in project_env_text
+        assert (
+            f'{configure_telegram.TELEGRAM_FALLBACK_IPS_ENV_KEY}="'
+            f'{configure_telegram.DEFAULT_TELEGRAM_FALLBACK_IPS}"'
+        ) in project_env_text
         config_text = (home / ".hermes" / "config.yaml").read_text(
             encoding="utf-8"
         )
@@ -269,6 +502,12 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     assert platform.posts == [
         ("/hapi/v1/computers/local-dev/hermes/telegram-setup/v1", {})
     ]
+    assert result["telegram_network"]["ok"] is True
+    assert result["telegram_network"]["seeded"] is True
+    assert (
+        configure_telegram.DEFAULT_TELEGRAM_FALLBACK_IPS
+        not in str(result["telegram_network"])
+    )
     assert menu_calls == [
         {
             "token": "123456:secret-token",
