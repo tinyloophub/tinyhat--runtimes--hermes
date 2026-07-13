@@ -70,10 +70,6 @@ def _write_text_atomic(path: Path, content: str) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
     finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
         temporary_path.unlink(missing_ok=True)
 
 

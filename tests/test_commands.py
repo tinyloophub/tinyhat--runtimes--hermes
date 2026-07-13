@@ -49,6 +49,7 @@ from hermes_runtime.update_artifacts import (  # noqa: E402
 )
 from hermes_runtime.update_check import (  # noqa: E402
     PENDING_SCHEDULED_RESULT_FILE,
+    _write_text_atomic,
     run_update_check,
     scheduled_check_due,
 )
@@ -2292,6 +2293,17 @@ class CommandTests(TestCase):
                 now_utc=now,
             )
             self.assertFalse(due_again)
+
+    def test_atomic_update_state_write_does_not_close_owned_descriptor_twice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "updates" / "last_check.json"
+            with patch("hermes_runtime.update_check.os.close") as close:
+                _write_text_atomic(path, '{"status":"ok"}\n')
+
+            self.assertEqual(path.read_text(encoding="utf-8"), '{"status":"ok"}\n')
+            close.assert_not_called()
 
     def test_scheduled_update_check_posts_result_then_marks_date(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
