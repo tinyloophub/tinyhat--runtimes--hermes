@@ -563,6 +563,8 @@ def test_exact_commit_checkout_skips_branch_clone() -> None:
     assert not any("clone" in call for call in calls)
     fetches = [call for call in calls if "fetch" in call]
     assert [call[-1] for call in fetches] == [TARGET_COMMIT]
+    checkouts = [call for call in calls if "checkout" in call]
+    assert checkouts[-1][-1] == TARGET_COMMIT
 
 
 def test_exact_commit_checkout_falls_back_to_logical_ref_without_drift() -> None:
@@ -597,6 +599,8 @@ def test_exact_commit_checkout_falls_back_to_logical_ref_without_drift() -> None
     assert commit == TARGET_COMMIT
     fetches = [call for call in calls if "fetch" in call]
     assert [call[-1] for call in fetches] == [TARGET_COMMIT, "channels/lts"]
+    checkouts = [call for call in calls if "checkout" in call]
+    assert checkouts[-1][-1] == TARGET_COMMIT
 
 
 def test_exact_commit_checkout_rejects_logical_ref_drift() -> None:
