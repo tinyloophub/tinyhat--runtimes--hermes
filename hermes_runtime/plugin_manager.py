@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-from pathlib import Path
 import re
 import tempfile
-from typing import Any
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.runtime_env import hermes_home
@@ -18,6 +20,25 @@ DEFAULT_TINYHAT_PLUGIN_REF = "channels/lts"
 DEFAULT_TINYHAT_PLUGIN_NAME = "tinyhat"
 PLUGIN_COMMAND_TIMEOUT_SECONDS = 300
 PLUGIN_SOURCE_METADATA = ".tinyhat-plugin-source.json"
+MAX_PLUGIN_REPO_URL_LENGTH = 2_048
+MAX_PLUGIN_REF_LENGTH = 512
+EXACT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+@dataclass(frozen=True)
+class PluginTargetSelection:
+    """One immutable repo/ref decision for a complete plugin operation."""
+
+    source: str
+    repo_url: str
+    ref: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source": self.source,
+            "repo_url": self.repo_url,
+            "ref": self.ref,
+        }
 
 
 def _command_spec(command: dict[str, Any]) -> dict[str, Any]:
@@ -35,26 +56,194 @@ def plugin_name(command: dict[str, Any]) -> str:
     return str(raw).strip() or DEFAULT_TINYHAT_PLUGIN_NAME
 
 
-def plugin_repo_url(command: dict[str, Any]) -> str:
-    spec = _command_spec(command)
-    raw = (
-        spec.get("plugin_repo_url")
-        or spec.get("repo_url")
-        or os.getenv("TINYHAT_PLUGIN_REPO_URL")
-        or DEFAULT_TINYHAT_PLUGIN_REPO_URL
-    )
-    return str(raw).strip() or DEFAULT_TINYHAT_PLUGIN_REPO_URL
+def _bounded_target_value(
+    value: Any,
+    *,
+    field: str,
+    max_length: int,
+    strict: bool,
+    reject_leading_hyphen: bool = False,
+) -> str | None:
+    if not isinstance(value, str):
+        if strict and value is not None:
+            raise ValueError(f"{field} must be a string")
+        return None
+    clean = value.strip()
+    if not clean:
+        if strict:
+            raise ValueError(f"{field} must not be empty")
+        return None
+    if (
+        len(clean) > max_length
+        or any(char in clean for char in ("\x00", "\r", "\n"))
+        or (reject_leading_hyphen and clean.startswith("-"))
+    ):
+        if strict:
+            raise ValueError(f"{field} is malformed or too long")
+        return None
+    return clean
 
 
-def plugin_ref(command: dict[str, Any]) -> str:
-    spec = _command_spec(command)
-    raw = (
-        spec.get("plugin_ref")
-        or spec.get("ref")
-        or os.getenv("TINYHAT_PLUGIN_REF")
-        or DEFAULT_TINYHAT_PLUGIN_REF
+def _environment_target_value(
+    value: str | None,
+    *,
+    field: str,
+    max_length: int,
+    reject_leading_hyphen: bool = False,
+) -> str | None:
+    if value is None or not value.strip():
+        return None
+    return _bounded_target_value(
+        value,
+        field=field,
+        max_length=max_length,
+        strict=True,
+        reject_leading_hyphen=reject_leading_hyphen,
     )
-    return str(raw).strip() or DEFAULT_TINYHAT_PLUGIN_REF
+
+
+def _spec_target_value(
+    spec: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    field: str,
+    max_length: int,
+    reject_leading_hyphen: bool = False,
+) -> str | None:
+    values = {
+        value
+        for key in keys
+        if key in spec and spec.get(key) not in (None, "")
+        if (
+            value := _bounded_target_value(
+                spec.get(key),
+                field=field,
+                max_length=max_length,
+                strict=True,
+                reject_leading_hyphen=reject_leading_hyphen,
+            )
+        )
+    }
+    if len(values) > 1:
+        raise ValueError(f"conflicting {field} values")
+    return next(iter(values)) if values else None
+
+
+def _select_plugin_target(
+    command: dict[str, Any],
+    *,
+    installed: dict[str, Any] | None = None,
+) -> PluginTargetSelection:
+    """Select one logical plugin target without crossing source levels.
+
+    A partial explicit target may inherit its counterpart from environment
+    configuration, preserving the existing per-field command contract. It is
+    never completed from installed metadata, which could belong to an unrelated
+    custom source.
+    """
+
+    spec = _command_spec(command)
+    explicit_repo = _spec_target_value(
+        spec,
+        ("plugin_repo_url", "repo_url"),
+        field="plugin repo URL",
+        max_length=MAX_PLUGIN_REPO_URL_LENGTH,
+    )
+    explicit_ref = _spec_target_value(
+        spec,
+        ("plugin_ref", "ref"),
+        field="plugin ref",
+        max_length=MAX_PLUGIN_REF_LENGTH,
+        reject_leading_hyphen=True,
+    )
+    environment_repo = _environment_target_value(
+        os.getenv("TINYHAT_PLUGIN_REPO_URL")
+        if explicit_repo is None
+        else None,
+        field="TINYHAT_PLUGIN_REPO_URL",
+        max_length=MAX_PLUGIN_REPO_URL_LENGTH,
+    )
+    environment_ref = _environment_target_value(
+        os.getenv("TINYHAT_PLUGIN_REF") if explicit_ref is None else None,
+        field="TINYHAT_PLUGIN_REF",
+        max_length=MAX_PLUGIN_REF_LENGTH,
+        reject_leading_hyphen=True,
+    )
+    if explicit_repo or explicit_ref:
+        return PluginTargetSelection(
+            source="spec",
+            repo_url=(
+                explicit_repo
+                or environment_repo
+                or DEFAULT_TINYHAT_PLUGIN_REPO_URL
+            ),
+            ref=explicit_ref or environment_ref or DEFAULT_TINYHAT_PLUGIN_REF,
+        )
+
+    if environment_repo or environment_ref:
+        return PluginTargetSelection(
+            source="environment",
+            repo_url=environment_repo or DEFAULT_TINYHAT_PLUGIN_REPO_URL,
+            ref=environment_ref or DEFAULT_TINYHAT_PLUGIN_REF,
+        )
+
+    installed_source_value = (
+        installed.get("source")
+        if isinstance(installed, dict)
+        else _read_source_metadata(plugin_name(command))
+    )
+    installed_source = (
+        installed_source_value if isinstance(installed_source_value, dict) else {}
+    )
+    installed_repo = _bounded_target_value(
+        installed_source.get("repo_url"),
+        field="installed plugin repo URL",
+        max_length=MAX_PLUGIN_REPO_URL_LENGTH,
+        strict=False,
+    )
+    installed_ref = _bounded_target_value(
+        installed_source.get("ref"),
+        field="installed plugin ref",
+        max_length=MAX_PLUGIN_REF_LENGTH,
+        strict=False,
+        reject_leading_hyphen=True,
+    )
+    if installed_repo and installed_ref:
+        return PluginTargetSelection(
+            source="installed_metadata",
+            repo_url=installed_repo,
+            ref=installed_ref,
+        )
+
+    return PluginTargetSelection(
+        source="default",
+        repo_url=DEFAULT_TINYHAT_PLUGIN_REPO_URL,
+        ref=DEFAULT_TINYHAT_PLUGIN_REF,
+    )
+
+
+def plugin_target_selection(command: dict[str, Any]) -> dict[str, str]:
+    """Return the selected target as the command/report-compatible mapping."""
+
+    return _select_plugin_target(command).as_dict()
+
+
+def plugin_target_commit(command: dict[str, Any]) -> str | None:
+    spec = _command_spec(command)
+    requested = []
+    for key in ("target_commit", "target_sha"):
+        if key not in spec or spec.get(key) in (None, ""):
+            continue
+        raw_value = spec.get(key)
+        if not isinstance(raw_value, str):
+            raise ValueError(f"{key} must be a full 40-character Git commit SHA")
+        value = raw_value.strip().lower()
+        if EXACT_COMMIT_RE.fullmatch(value) is None:
+            raise ValueError(f"{key} must be a full 40-character Git commit SHA")
+        requested.append(value)
+    if len(set(requested)) > 1:
+        raise ValueError("target_commit and target_sha must identify the same commit")
+    return requested[0] if requested else None
 
 
 def plugin_dir(name: str) -> Path:
@@ -115,8 +304,24 @@ def _source_commit(snapshot: dict[str, Any]) -> str | None:
     source = snapshot.get("source")
     if not isinstance(source, dict):
         return None
-    commit = str(source.get("commit") or "").strip()
+    commit = _bounded_target_value(
+        source.get("commit"),
+        field="plugin commit",
+        max_length=40,
+        strict=False,
+    )
+    commit = str(commit or "").lower()
     return commit or None
+
+
+def public_plugin_target_error(exc: Exception, *, repo_url: str) -> str:
+    message = str(exc)
+    if repo_url:
+        message = message.replace(repo_url, "<plugin-repo>")
+    for private_root in (tempfile.gettempdir(), str(Path.home())):
+        if private_root:
+            message = message.replace(private_root, "<local-path>")
+    return message[:500]
 
 
 def _target_matches_installed(
@@ -136,17 +341,39 @@ def _target_matches_installed(
     )
 
 
-async def plugin_target_snapshot(command: dict[str, Any]) -> dict[str, Any]:
-    repo_url = plugin_repo_url(command)
-    ref = plugin_ref(command)
-    resolved_commit = await _resolve_ref(repo_url, ref)
-    checkout, commit, tmp = await _prepare_checkout(repo_url, ref)
+async def plugin_target_snapshot(
+    command: dict[str, Any],
+    *,
+    selection: PluginTargetSelection | None = None,
+    requested_commit: str | None = None,
+) -> dict[str, Any]:
+    selection = selection or _select_plugin_target(command)
+    repo_url = selection.repo_url
+    ref = selection.ref
+    if requested_commit is None:
+        requested_commit = plugin_target_commit(command)
+    checkout_ref = requested_commit or ref
+    checkout, commit, tmp = await _prepare_checkout(
+        repo_url,
+        checkout_ref,
+        fallback_ref=(
+            ref
+            if requested_commit and requested_commit.lower() != ref.lower()
+            else None
+        ),
+    )
     try:
+        clean_commit = str(commit or "").strip().lower() or None
+        if requested_commit and clean_commit != requested_commit:
+            raise RuntimeError(
+                "Tinyhat plugin checkout did not match the requested exact commit"
+            )
         manifest = checkout / "plugin.yaml"
         return {
             "repo_url": repo_url,
             "ref": ref,
-            "commit": resolved_commit or commit,
+            "commit": clean_commit,
+            "requested_commit": requested_commit,
             "version": _read_manifest_field(manifest, "version"),
             "manifest_name": _read_manifest_field(manifest, "name"),
         }
@@ -154,18 +381,31 @@ async def plugin_target_snapshot(command: dict[str, Any]) -> dict[str, Any]:
         tmp.cleanup()
 
 
-async def tinyhat_plugin_status(command: dict[str, Any]) -> dict[str, Any]:
+async def tinyhat_plugin_status(
+    command: dict[str, Any],
+    *,
+    selection: PluginTargetSelection | None = None,
+    installed: dict[str, Any] | None = None,
+    requested_commit: str | None = None,
+) -> dict[str, Any]:
     """Return installed and target Tinyhat plugin versions without changing it."""
     name = plugin_name(command)
-    repo_url = plugin_repo_url(command)
-    ref = plugin_ref(command)
-    installed = plugin_snapshot(name)
+    installed = installed if installed is not None else plugin_snapshot(name)
+    selection = selection or _select_plugin_target(command, installed=installed)
+    repo_url = selection.repo_url
+    ref = selection.ref
+    if requested_commit is None:
+        requested_commit = plugin_target_commit(command)
     target: dict[str, Any] | None = None
     target_error: str | None = None
     try:
-        target = await plugin_target_snapshot(command)
+        target = await plugin_target_snapshot(
+            command,
+            selection=selection,
+            requested_commit=requested_commit,
+        )
     except Exception as exc:  # pragma: no cover - exercised through callers
-        target_error = str(exc)[:500]
+        target_error = public_plugin_target_error(exc, repo_url=repo_url)
     target_commit = str((target or {}).get("commit") or "").strip() or None
     update_available = (
         None
@@ -189,6 +429,11 @@ async def tinyhat_plugin_status(command: dict[str, Any]) -> dict[str, Any]:
         "plugin_name": name,
         "plugin_repo_url": repo_url,
         "plugin_ref": ref,
+        "target_selection": {
+            "source": selection.source,
+            "plugin_repo_url": repo_url,
+            "plugin_ref": ref,
+        },
         "installed": installed,
         "target": target,
         "installed_version": installed.get("version"),
@@ -259,48 +504,100 @@ def _raise_if_failed(action: str, result: dict[str, Any]) -> None:
     )
 
 
-async def _resolve_ref(repo_url: str, ref: str) -> str | None:
-    if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
-        return ref.lower()
-    result = await _git(["ls-remote", repo_url, ref], timeout_seconds=60)
-    if not result.get("ok"):
-        return None
-    stdout = str(result.get("stdout") or "")
-    first = stdout.strip().splitlines()[0] if stdout.strip() else ""
-    sha = first.split()[0] if first else ""
-    if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-        return sha.lower()
-    return None
-
-
-async def _prepare_checkout(repo_url: str, ref: str) -> tuple[Path, str | None, tempfile.TemporaryDirectory[str]]:
+async def _prepare_checkout(
+    repo_url: str,
+    ref: str,
+    *,
+    fallback_ref: str | None = None,
+) -> tuple[Path, str | None, tempfile.TemporaryDirectory[str]]:
+    if ref.startswith("-") or (fallback_ref and fallback_ref.startswith("-")):
+        raise ValueError("plugin ref must not begin with '-'")
     tmp = tempfile.TemporaryDirectory(prefix="tinyhat-plugin-")
     checkout = Path(tmp.name) / "tinyhat"
     try:
-        clone = await _git(
-            ["clone", "--depth", "1", "--branch", ref, repo_url, str(checkout)],
-            timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-        )
-        if not clone.get("ok"):
-            clone = await _git(
-                ["clone", "--depth", "1", repo_url, str(checkout)],
-                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-            )
-            _raise_if_failed("clone", clone)
-            fetch = await _git(
-                ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
-                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-            )
-            _raise_if_failed("fetch ref", fetch)
-            checkout_result = await _git(
-                ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+        exact_commit = ref.lower() if EXACT_COMMIT_RE.fullmatch(ref) else None
+        if exact_commit:
+            init = await _git(["init", str(checkout)], timeout_seconds=60)
+            _raise_if_failed("initialize checkout", init)
+            remote = await _git(
+                ["-C", str(checkout), "remote", "add", "origin", repo_url],
                 timeout_seconds=60,
             )
-            _raise_if_failed("checkout ref", checkout_result)
-        commit_result = await _git(["-C", str(checkout), "rev-parse", "HEAD"], timeout_seconds=60)
+            _raise_if_failed("configure checkout remote", remote)
+            fetch = await _git(
+                [
+                    "-C",
+                    str(checkout),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    exact_commit,
+                ],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            if not fetch.get("ok") and fallback_ref:
+                fetch = await _git(
+                    [
+                        "-C",
+                        str(checkout),
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        fallback_ref,
+                    ],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+            _raise_if_failed("fetch exact commit", fetch)
+            checkout_result = await _git(
+                ["-C", str(checkout), "checkout", "--detach", exact_commit],
+                timeout_seconds=60,
+            )
+            _raise_if_failed("checkout exact commit", checkout_result)
+        else:
+            clone = await _git(
+                [
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    ref,
+                    repo_url,
+                    str(checkout),
+                ],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            if not clone.get("ok"):
+                clone = await _git(
+                    ["clone", "--depth", "1", repo_url, str(checkout)],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+                _raise_if_failed("clone", clone)
+                fetch = await _git(
+                    ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+                _raise_if_failed("fetch ref", fetch)
+                checkout_result = await _git(
+                    ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+                    timeout_seconds=60,
+                )
+                _raise_if_failed("checkout ref", checkout_result)
+        commit_result = await _git(
+            ["-C", str(checkout), "rev-parse", "HEAD"],
+            timeout_seconds=60,
+        )
         _raise_if_failed("read commit", commit_result)
         commit = str(commit_result.get("stdout") or "").strip() or None
+        if exact_commit and str(commit or "").lower() != exact_commit:
+            raise RuntimeError(
+                "Tinyhat plugin checkout did not match the exact commit"
+            )
         return checkout, commit, tmp
+    except asyncio.CancelledError:
+        tmp.cleanup()
+        raise
     except Exception:
         tmp.cleanup()
         raise
@@ -328,26 +625,43 @@ async def _install_from_ref(
     hermes_bin: Path,
     *,
     name: str,
-    repo_url: str,
-    ref: str,
+    selection: PluginTargetSelection,
     force: bool,
-    resolved_commit: str | None = None,
+    checkout_ref: str | None = None,
+    expected_commit: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    checkout, commit, tmp = await _prepare_checkout(repo_url, ref)
+    checkout, commit, tmp = await _prepare_checkout(
+        selection.repo_url,
+        checkout_ref or selection.ref,
+        fallback_ref=(
+            selection.ref
+            if checkout_ref
+            and EXACT_COMMIT_RE.fullmatch(checkout_ref)
+            and checkout_ref.lower() != selection.ref.lower()
+            else None
+        ),
+    )
     try:
+        clean_commit = str(commit or "").strip().lower() or None
+        clean_expected_commit = str(expected_commit or "").strip().lower() or None
+        if clean_expected_commit and clean_commit != clean_expected_commit:
+            raise RuntimeError(
+                "Tinyhat plugin checkout changed after target selection; "
+                "the update was not installed"
+            )
         install = await _install_plugin(
             hermes_bin,
             identifier=checkout.as_uri(),
             force=force,
         )
         _raise_if_failed("install", install)
-        remote = await _set_origin(name, repo_url)
+        remote = await _set_origin(name, selection.repo_url)
         if remote is not None:
             _raise_if_failed("set origin", remote)
         metadata = {
-            "repo_url": repo_url,
-            "ref": ref,
-            "commit": resolved_commit or commit,
+            "repo_url": selection.repo_url,
+            "ref": selection.ref,
+            "commit": clean_commit,
         }
         _write_source_metadata(name, metadata)
         return install, metadata
@@ -362,9 +676,11 @@ async def install_tinyhat_plugin(
 ) -> dict[str, Any]:
     hermes_bin = find_hermes_binary()
     name = plugin_name(command)
-    repo_url = plugin_repo_url(command)
-    ref = plugin_ref(command)
     before = plugin_snapshot(name)
+    selection = _select_plugin_target(command, installed=before)
+    repo_url = selection.repo_url
+    ref = selection.ref
+    requested_commit = plugin_target_commit(command)
     list_before: dict[str, Any] | None = None
     install: dict[str, Any] | None = None
     enable: dict[str, Any] | None = None
@@ -378,9 +694,10 @@ async def install_tinyhat_plugin(
         install, metadata = await _install_from_ref(
             hermes_bin,
             name=name,
-            repo_url=repo_url,
-            ref=ref,
+            selection=selection,
             force=force or before["installed"],
+            checkout_ref=requested_commit,
+            expected_commit=requested_commit,
         )
 
     enable = await _enable_plugin(hermes_bin, name)
@@ -418,9 +735,11 @@ async def install_tinyhat_plugin(
 async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
     hermes_bin = find_hermes_binary()
     name = plugin_name(command)
-    repo_url = plugin_repo_url(command)
-    ref = plugin_ref(command)
     before = plugin_snapshot(name)
+    selection = _select_plugin_target(command, installed=before)
+    repo_url = selection.repo_url
+    ref = selection.ref
+    requested_commit = plugin_target_commit(command)
     install: dict[str, Any] | None = None
     enable: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
@@ -429,7 +748,12 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Hermes CLI was not found; run install_hermes first.")
 
     list_before = await _plugins_list(hermes_bin)
-    before_status = await tinyhat_plugin_status(command)
+    before_status = await tinyhat_plugin_status(
+        command,
+        selection=selection,
+        installed=before,
+        requested_commit=requested_commit,
+    )
     if before_status.get("target_error"):
         raise RuntimeError(
             "Tinyhat plugin target could not be resolved: "
@@ -441,21 +765,17 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     target_commit = str((target or {}).get("commit") or "").strip() or None
-    installed_commit = (
-        before.get("source", {}).get("commit")
-        if isinstance(before.get("source"), dict)
-        else None
-    )
+    installed_commit = _source_commit(before)
     if not before["installed"] or not _source_matches(before, repo_url=repo_url, ref=ref) or (
         target_commit and target_commit != installed_commit
     ):
         install, metadata = await _install_from_ref(
             hermes_bin,
             name=name,
-            repo_url=repo_url,
-            ref=ref,
+            selection=selection,
             force=bool(before["installed"]),
-            resolved_commit=target_commit,
+            checkout_ref=target_commit,
+            expected_commit=target_commit,
         )
     else:
         metadata = before.get("source") if isinstance(before.get("source"), dict) else None
@@ -471,13 +791,20 @@ async def update_tinyhat_plugin(command: dict[str, Any]) -> dict[str, Any]:
             f"directory for {name!r}. Check HERMES_HOME/TINYHAT_HERMES_HOME "
             "or Hermes plugin path behavior."
         )
-    after_status = await tinyhat_plugin_status(command)
+    after_status = await tinyhat_plugin_status(
+        command,
+        selection=selection,
+        installed=after,
+        requested_commit=requested_commit,
+    )
 
     return {
         "plugin_name": name,
         "plugin_repo_url": repo_url,
         "plugin_ref": ref,
-        "target_commit": target_commit or (metadata.get("commit") if metadata else None),
+        "target_commit": requested_commit
+        or target_commit
+        or (metadata.get("commit") if metadata else None),
         "target_version": (target or {}).get("version"),
         "installed_before": bool(before["installed"]),
         "installed_after": bool(after["installed"]),
