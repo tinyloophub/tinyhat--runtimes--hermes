@@ -368,8 +368,10 @@ async def _run_gateway_restart(
             and gateway_generation_same(before, current)
         ):
             after = current if isinstance(current, dict) else after
-            failure_reason = str(
-                rediscovery.get("reason") or "gateway_generation_not_proven"
+            failure_reason = (
+                str(rediscovery.get("reason") or "gateway_service_probe_unavailable")
+                if not rediscovery.get("ok")
+                else "gateway_generation_not_proven"
             )
         else:
             if _remaining() < FORCE_FALLBACK_RESERVE_SECONDS:

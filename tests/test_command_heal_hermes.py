@@ -1445,6 +1445,68 @@ def test_restart_fails_closed_when_service_probe_is_unavailable() -> None:
     assert result["restart"]["performed"] is False
 
 
+def test_restart_reports_unproven_generation_instead_of_owner_found() -> None:
+    before = _generation("old-invocation", 100, manager="user")
+    unexpected = _generation("other-invocation", 200, manager="system")
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+        kill_process_group: bool = False,
+    ) -> dict[str, object]:
+        del timeout_seconds, env, kill_process_group
+        return {
+            "args": list(args),
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 10,
+            "stdout": "Gateway restarted\n",
+            "stderr": "",
+        }
+
+    async def fake_snapshot(
+        _owner: dict[str, str], *, timeout_seconds: float = 5
+    ) -> dict[str, object]:
+        del timeout_seconds
+        return before
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with (
+            patch.dict(os.environ, _configured_heal_env(tmp), clear=True),
+            patch(
+                "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.run_process",
+                fake_run_process,
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.discover_gateway_service",
+                side_effect=[_discovery(before), _discovery(unexpected)],
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.snapshot_gateway_service",
+                fake_snapshot,
+            ),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {"kind": "heal_hermes", "spec": {"restart": True}},
+                )
+            )
+
+    assert result["healthy"] is False
+    assert result["healed"] is False
+    assert result["reason"] == "gateway_generation_not_proven"
+    assert result["restart"]["performed"] is True
+    assert result["restart"]["fallback_attempted"] is False
+
+
 def test_heal_hermes_reports_missing_telegram_config() -> None:
     async def fake_status() -> dict[str, object]:
         return {
