@@ -1849,6 +1849,10 @@ def test_restart_rejects_generation_that_disappears_after_readiness() -> None:
                 return_value=None,
             ),
             patch(
+                "hermes_runtime.commands.heal_hermes.gateway_runtime_generation_active",
+                return_value=False,
+            ),
+            patch(
                 "hermes_runtime.commands.heal_hermes.probe_functional_readiness",
                 fake_probe,
             ),
