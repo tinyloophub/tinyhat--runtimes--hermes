@@ -313,8 +313,10 @@ def _source_commit(snapshot: dict[str, Any]) -> str | None:
     return commit or None
 
 
-def _public_target_error(exc: Exception, *, repo_url: str) -> str:
-    message = str(exc).replace(repo_url, "<plugin-repo>")
+def public_plugin_target_error(exc: Exception, *, repo_url: str) -> str:
+    message = str(exc)
+    if repo_url:
+        message = message.replace(repo_url, "<plugin-repo>")
     for private_root in (tempfile.gettempdir(), str(Path.home())):
         if private_root:
             message = message.replace(private_root, "<local-path>")
@@ -402,7 +404,7 @@ async def tinyhat_plugin_status(
             requested_commit=requested_commit,
         )
     except Exception as exc:  # pragma: no cover - exercised through callers
-        target_error = _public_target_error(exc, repo_url=repo_url)
+        target_error = public_plugin_target_error(exc, repo_url=repo_url)
     target_commit = str((target or {}).get("commit") or "").strip() or None
     update_available = (
         None

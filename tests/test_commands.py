@@ -2484,6 +2484,58 @@ class CommandTests(TestCase):
             {"repo_url", "ref", "commit"},
         )
 
+    def test_manual_plugin_check_keeps_sanitized_error_detail(self) -> None:
+        private_repo = "https://build-user:secret@github.com/example/plugin.git"
+        private_path = str(Path.home() / "private-plugin")
+
+        async def failed_plugin_status(
+            _command: dict[str, Any],
+        ) -> dict[str, Any]:
+            raise RuntimeError(f"checkout failed for {private_repo} at {private_path}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "TINYHAT_LOCAL_DEV_TOKEN": "dev-token",
+                        "TINYHAT_PLUGIN_REPO_URL": private_repo,
+                    },
+                    clear=True,
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    failed_plugin_status,
+                ),
+            ):
+                manual = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="admin_check_update",
+                    )
+                )
+                scheduled = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="scheduled",
+                        scheduled_local_date="2026-07-13",
+                    )
+                )
+
+        manual_error = manual["plugin_update_check"]["error"]
+        self.assertIn("checkout failed", manual_error)
+        self.assertIn("<plugin-repo>", manual_error)
+        self.assertIn("<local-path>", manual_error)
+        self.assertNotIn("secret", manual_error)
+        self.assertNotIn(private_path, manual_error)
+        self.assertEqual(
+            scheduled["plugin_update_check"]["error"],
+            "RuntimeError: plugin update check failed",
+        )
+
     def test_failed_scheduled_result_delivery_survives_manual_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)

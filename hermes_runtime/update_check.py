@@ -26,7 +26,10 @@ from typing import Any
 from urllib import error, parse, request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from hermes_runtime.plugin_manager import tinyhat_plugin_status
+from hermes_runtime.plugin_manager import (
+    public_plugin_target_error,
+    tinyhat_plugin_status,
+)
 
 
 REPO = "tinyloophub/tinyhat--runtimes--hermes"
@@ -324,6 +327,23 @@ def _scheduled_plugin_report(value: Any) -> dict[str, Any]:
     }
 
 
+def _manual_plugin_error(
+    exc: Exception,
+    *,
+    command_spec: dict[str, Any],
+) -> str:
+    repo_value = (
+        command_spec.get("plugin_repo_url")
+        or command_spec.get("repo_url")
+        or os.getenv("TINYHAT_PLUGIN_REPO_URL")
+    )
+    repo_url = repo_value if isinstance(repo_value, str) else ""
+    detail = public_plugin_target_error(exc, repo_url=repo_url).strip()
+    if not detail:
+        detail = "plugin update check failed"
+    return f"{type(exc).__name__}: {detail}"[:500]
+
+
 def _fetch_github_commit(ref: str) -> dict[str, Any]:
     encoded = parse.quote(ref, safe="")
     req = request.Request(
@@ -566,6 +586,11 @@ async def run_update_check(
             **plugin_status,
         }
     except Exception as exc:
+        plugin_error = (
+            f"{type(exc).__name__}: plugin update check failed"
+            if bounded_reason == "scheduled"
+            else _manual_plugin_error(exc, command_spec=command_spec)
+        )
         result["plugin_update_check"] = {
             "schema": (
                 SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
@@ -574,7 +599,7 @@ async def run_update_check(
             ),
             "update_available": None,
             "decision": "target_unavailable",
-            "error": f"{type(exc).__name__}: plugin update check failed",
+            "error": plugin_error,
             "checked_at": datetime.now(timezone.utc)
             .replace(microsecond=0)
             .isoformat()
