@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.44 - 2026-07-13
+
 - Make `heal_hermes` prove a new systemd gateway generation before reporting a
   restart as healed, bound and contain the official restart attempt, and use a
   unit-scoped force-cycle when the old generation remains wedged. Preserve the
