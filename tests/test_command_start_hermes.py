@@ -289,6 +289,10 @@ def test_managed_start_does_not_duplicate_activating_supervisor() -> None:
             "hermes_runtime.commands.start_hermes.load_env_files_into_process",
             return_value={"loaded": True, "keys": []},
         ),
+        patch(
+            "hermes_runtime.commands.start_hermes.shutil.which",
+            return_value=None,
+        ),
     ):
         result = asyncio.run(
             start_hermes.run(
