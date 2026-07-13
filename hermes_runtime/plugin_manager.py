@@ -61,6 +61,7 @@ def _bounded_target_value(
     field: str,
     max_length: int,
     strict: bool,
+    reject_leading_hyphen: bool = False,
 ) -> str | None:
     if not isinstance(value, str):
         if strict and value is not None:
@@ -71,11 +72,33 @@ def _bounded_target_value(
         if strict:
             raise ValueError(f"{field} must not be empty")
         return None
-    if len(clean) > max_length or any(char in clean for char in ("\x00", "\r", "\n")):
+    if (
+        len(clean) > max_length
+        or any(char in clean for char in ("\x00", "\r", "\n"))
+        or (reject_leading_hyphen and clean.startswith("-"))
+    ):
         if strict:
             raise ValueError(f"{field} is malformed or too long")
         return None
     return clean
+
+
+def _environment_target_value(
+    value: str | None,
+    *,
+    field: str,
+    max_length: int,
+    reject_leading_hyphen: bool = False,
+) -> str | None:
+    if value is None or not value.strip():
+        return None
+    return _bounded_target_value(
+        value,
+        field=field,
+        max_length=max_length,
+        strict=True,
+        reject_leading_hyphen=reject_leading_hyphen,
+    )
 
 
 def _spec_target_value(
@@ -84,6 +107,7 @@ def _spec_target_value(
     *,
     field: str,
     max_length: int,
+    reject_leading_hyphen: bool = False,
 ) -> str | None:
     values = {
         value
@@ -95,6 +119,7 @@ def _spec_target_value(
                 field=field,
                 max_length=max_length,
                 strict=True,
+                reject_leading_hyphen=reject_leading_hyphen,
             )
         )
     }
@@ -128,20 +153,20 @@ def _select_plugin_target(
         ("plugin_ref", "ref"),
         field="plugin ref",
         max_length=MAX_PLUGIN_REF_LENGTH,
+        reject_leading_hyphen=True,
     )
-    environment_repo = _bounded_target_value(
-        (os.getenv("TINYHAT_PLUGIN_REPO_URL") or None)
+    environment_repo = _environment_target_value(
+        os.getenv("TINYHAT_PLUGIN_REPO_URL")
         if explicit_repo is None
         else None,
         field="TINYHAT_PLUGIN_REPO_URL",
         max_length=MAX_PLUGIN_REPO_URL_LENGTH,
-        strict=True,
     )
-    environment_ref = _bounded_target_value(
-        (os.getenv("TINYHAT_PLUGIN_REF") or None) if explicit_ref is None else None,
+    environment_ref = _environment_target_value(
+        os.getenv("TINYHAT_PLUGIN_REF") if explicit_ref is None else None,
         field="TINYHAT_PLUGIN_REF",
         max_length=MAX_PLUGIN_REF_LENGTH,
-        strict=True,
+        reject_leading_hyphen=True,
     )
     if explicit_repo or explicit_ref:
         return PluginTargetSelection(
@@ -180,6 +205,7 @@ def _select_plugin_target(
         field="installed plugin ref",
         max_length=MAX_PLUGIN_REF_LENGTH,
         strict=False,
+        reject_leading_hyphen=True,
     )
     if installed_repo and installed_ref:
         return PluginTargetSelection(
@@ -324,7 +350,15 @@ async def plugin_target_snapshot(
     if requested_commit is None:
         requested_commit = plugin_target_commit(command)
     checkout_ref = requested_commit or ref
-    checkout, commit, tmp = await _prepare_checkout(repo_url, checkout_ref)
+    checkout, commit, tmp = await _prepare_checkout(
+        repo_url,
+        checkout_ref,
+        fallback_ref=(
+            ref
+            if requested_commit and requested_commit.lower() != ref.lower()
+            else None
+        ),
+    )
     try:
         clean_commit = str(commit or "").strip().lower() or None
         if requested_commit and clean_commit != requested_commit:
@@ -467,33 +501,96 @@ def _raise_if_failed(action: str, result: dict[str, Any]) -> None:
     )
 
 
-async def _prepare_checkout(repo_url: str, ref: str) -> tuple[Path, str | None, tempfile.TemporaryDirectory[str]]:
+async def _prepare_checkout(
+    repo_url: str,
+    ref: str,
+    *,
+    fallback_ref: str | None = None,
+) -> tuple[Path, str | None, tempfile.TemporaryDirectory[str]]:
+    if ref.startswith("-") or (fallback_ref and fallback_ref.startswith("-")):
+        raise ValueError("plugin ref must not begin with '-'")
     tmp = tempfile.TemporaryDirectory(prefix="tinyhat-plugin-")
     checkout = Path(tmp.name) / "tinyhat"
     try:
-        clone = await _git(
-            ["clone", "--depth", "1", "--branch", ref, repo_url, str(checkout)],
-            timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-        )
-        if not clone.get("ok"):
-            clone = await _git(
-                ["clone", "--depth", "1", repo_url, str(checkout)],
-                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-            )
-            _raise_if_failed("clone", clone)
-            fetch = await _git(
-                ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
-                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
-            )
-            _raise_if_failed("fetch ref", fetch)
-            checkout_result = await _git(
-                ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+        exact_commit = ref.lower() if EXACT_COMMIT_RE.fullmatch(ref) else None
+        if exact_commit:
+            init = await _git(["init", str(checkout)], timeout_seconds=60)
+            _raise_if_failed("initialize checkout", init)
+            remote = await _git(
+                ["-C", str(checkout), "remote", "add", "origin", repo_url],
                 timeout_seconds=60,
             )
-            _raise_if_failed("checkout ref", checkout_result)
-        commit_result = await _git(["-C", str(checkout), "rev-parse", "HEAD"], timeout_seconds=60)
+            _raise_if_failed("configure checkout remote", remote)
+            fetch = await _git(
+                [
+                    "-C",
+                    str(checkout),
+                    "fetch",
+                    "--depth",
+                    "1",
+                    "origin",
+                    exact_commit,
+                ],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            if not fetch.get("ok") and fallback_ref:
+                fetch = await _git(
+                    [
+                        "-C",
+                        str(checkout),
+                        "fetch",
+                        "--depth",
+                        "1",
+                        "origin",
+                        fallback_ref,
+                    ],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+            _raise_if_failed("fetch exact commit", fetch)
+            checkout_result = await _git(
+                ["-C", str(checkout), "checkout", "--detach", exact_commit],
+                timeout_seconds=60,
+            )
+            _raise_if_failed("checkout exact commit", checkout_result)
+        else:
+            clone = await _git(
+                [
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    ref,
+                    repo_url,
+                    str(checkout),
+                ],
+                timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+            )
+            if not clone.get("ok"):
+                clone = await _git(
+                    ["clone", "--depth", "1", repo_url, str(checkout)],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+                _raise_if_failed("clone", clone)
+                fetch = await _git(
+                    ["-C", str(checkout), "fetch", "--depth", "1", "origin", ref],
+                    timeout_seconds=PLUGIN_COMMAND_TIMEOUT_SECONDS,
+                )
+                _raise_if_failed("fetch ref", fetch)
+                checkout_result = await _git(
+                    ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"],
+                    timeout_seconds=60,
+                )
+                _raise_if_failed("checkout ref", checkout_result)
+        commit_result = await _git(
+            ["-C", str(checkout), "rev-parse", "HEAD"],
+            timeout_seconds=60,
+        )
         _raise_if_failed("read commit", commit_result)
         commit = str(commit_result.get("stdout") or "").strip() or None
+        if exact_commit and str(commit or "").lower() != exact_commit:
+            raise RuntimeError(
+                "Tinyhat plugin checkout did not match the exact commit"
+            )
         return checkout, commit, tmp
     except Exception:
         tmp.cleanup()
@@ -530,6 +627,13 @@ async def _install_from_ref(
     checkout, commit, tmp = await _prepare_checkout(
         selection.repo_url,
         checkout_ref or selection.ref,
+        fallback_ref=(
+            selection.ref
+            if checkout_ref
+            and EXACT_COMMIT_RE.fullmatch(checkout_ref)
+            and checkout_ref.lower() != selection.ref.lower()
+            else None
+        ),
     )
     try:
         clean_commit = str(commit or "").strip().lower() or None

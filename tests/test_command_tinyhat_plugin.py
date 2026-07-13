@@ -16,7 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from hermes_runtime.commands import run_command  # noqa: E402
-from hermes_runtime.plugin_manager import plugin_target_selection  # noqa: E402
+from hermes_runtime.plugin_manager import (  # noqa: E402
+    _prepare_checkout,
+    plugin_target_selection,
+)
 
 
 TARGET_COMMIT = "a" * 40
@@ -78,7 +81,10 @@ def _write_plugin(
 async def _fake_checkout(
     repo_url: str,
     ref: str,
+    *,
+    fallback_ref: str | None = None,
 ) -> tuple[Path, str, FakeTmp]:
+    del fallback_ref
     checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
     (checkout / "plugin.yaml").write_text("name: tinyhat\nversion: 0.20.0\n")
     return checkout, TARGET_COMMIT, FakeTmp()
@@ -87,7 +93,10 @@ async def _fake_checkout(
 async def _fake_checkout_0201(
     repo_url: str,
     ref: str,
+    *,
+    fallback_ref: str | None = None,
 ) -> tuple[Path, str, FakeTmp]:
+    del fallback_ref
     checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
     (checkout / "plugin.yaml").write_text("name: tinyhat\nversion: 0.20.1\n")
     return checkout, NEW_TARGET_COMMIT, FakeTmp()
@@ -96,7 +105,10 @@ async def _fake_checkout_0201(
 async def _fake_checkout_same(
     _repo_url: str,
     _ref: str,
+    *,
+    fallback_ref: str | None = None,
 ) -> tuple[Path, str, FakeTmp]:
+    del fallback_ref
     checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
     (checkout / "plugin.yaml").write_text("name: tinyhat\nversion: 0.20.0\n")
     return checkout, "same", FakeTmp()
@@ -476,6 +488,148 @@ def test_plugin_target_precedence_and_malformed_installed_metadata() -> None:
     }
 
 
+def test_plugin_target_treats_whitespace_env_as_unset_and_rejects_option_refs(
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "hermes-home"
+        _write_plugin(
+            home,
+            source={
+                "repo_url": "https://github.com/installed/plugin.git",
+                "ref": "channels/latest",
+                "commit": TARGET_COMMIT,
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "TINYHAT_HERMES_HOME": str(home),
+                "TINYHAT_PLUGIN_REPO_URL": "   ",
+                "TINYHAT_PLUGIN_REF": "\t",
+            },
+            clear=True,
+        ):
+            whitespace_fallback = plugin_target_selection({})
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "TINYHAT_HERMES_HOME": str(home),
+                    "TINYHAT_PLUGIN_REF": "--upload-pack=malicious",
+                },
+                clear=True,
+            ),
+            unittest.TestCase().assertRaisesRegex(ValueError, "malformed"),
+        ):
+            plugin_target_selection({})
+
+        with unittest.TestCase().assertRaisesRegex(ValueError, "malformed"):
+            plugin_target_selection({"spec": {"plugin_ref": "--help"}})
+
+    assert whitespace_fallback == {
+        "source": "installed_metadata",
+        "repo_url": "https://github.com/installed/plugin.git",
+        "ref": "channels/latest",
+    }
+
+
+def test_exact_commit_checkout_skips_branch_clone() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_git(
+        args: list[str],
+        *,
+        timeout_seconds: int = 120,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        calls.append(args)
+        result = _ok(args)
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            result["stdout"] = TARGET_COMMIT + "\n"
+        return result
+
+    with patch("hermes_runtime.plugin_manager._git", fake_git):
+        _checkout, commit, temporary = asyncio.run(
+            _prepare_checkout(
+                "https://github.com/tinyhat-ai/tinyhat.git",
+                TARGET_COMMIT,
+                fallback_ref="channels/lts",
+            )
+        )
+        temporary.cleanup()
+
+    assert commit == TARGET_COMMIT
+    assert not any("clone" in call for call in calls)
+    fetches = [call for call in calls if "fetch" in call]
+    assert [call[-1] for call in fetches] == [TARGET_COMMIT]
+
+
+def test_exact_commit_checkout_falls_back_to_logical_ref_without_drift() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_git(
+        args: list[str],
+        *,
+        timeout_seconds: int = 120,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        calls.append(args)
+        result = _ok(args)
+        if "fetch" in args and args[-1] == TARGET_COMMIT:
+            result["ok"] = False
+            result["returncode"] = 128
+            result["stderr"] = "server does not allow request for unadvertised object"
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            result["stdout"] = TARGET_COMMIT + "\n"
+        return result
+
+    with patch("hermes_runtime.plugin_manager._git", fake_git):
+        _checkout, commit, temporary = asyncio.run(
+            _prepare_checkout(
+                "https://github.com/tinyhat-ai/tinyhat.git",
+                TARGET_COMMIT,
+                fallback_ref="channels/lts",
+            )
+        )
+        temporary.cleanup()
+
+    assert commit == TARGET_COMMIT
+    fetches = [call for call in calls if "fetch" in call]
+    assert [call[-1] for call in fetches] == [TARGET_COMMIT, "channels/lts"]
+
+
+def test_exact_commit_checkout_rejects_logical_ref_drift() -> None:
+    async def fake_git(
+        args: list[str],
+        *,
+        timeout_seconds: int = 120,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        result = _ok(args)
+        if "fetch" in args and args[-1] == TARGET_COMMIT:
+            result["ok"] = False
+            result["returncode"] = 128
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            result["stdout"] = NEW_TARGET_COMMIT + "\n"
+        return result
+
+    with (
+        patch("hermes_runtime.plugin_manager._git", fake_git),
+        unittest.TestCase().assertRaisesRegex(
+            RuntimeError,
+            "did not match the exact commit",
+        ),
+    ):
+        asyncio.run(
+            _prepare_checkout(
+                "https://github.com/tinyhat-ai/tinyhat.git",
+                TARGET_COMMIT,
+                fallback_ref="channels/lts",
+            )
+        )
+
+
 def test_plugin_status_uses_one_coherent_target_selection() -> None:
     lts_source = {
         "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
@@ -519,8 +673,10 @@ def test_update_tinyhat_plugin_installs_exact_commit_and_keeps_logical_ref() -> 
     async def fake_checkout(
         repo_url: str,
         ref: str,
+        *,
+        fallback_ref: str | None = None,
     ) -> tuple[Path, str, FakeTmp]:
-        del repo_url
+        del repo_url, fallback_ref
         checkout_refs.append(ref)
         checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
         (checkout / "plugin.yaml").write_text(
@@ -598,7 +754,10 @@ def test_update_tinyhat_plugin_installs_commit_checked_before_channel_moves() ->
     async def fake_checkout(
         _repo_url: str,
         ref: str,
+        *,
+        fallback_ref: str | None = None,
     ) -> tuple[Path, str, FakeTmp]:
+        del fallback_ref
         nonlocal channel_checks
         checkout_refs.append(ref)
         checkout = Path(tempfile.mkdtemp(prefix="tinyhat-plugin-test-"))
