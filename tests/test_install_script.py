@@ -391,8 +391,6 @@ counter = Path(os.environ["STUB_COUNTER"])
 stopped = Path(os.environ["STUB_STOPPED"])
 pid_file = Path(os.environ["STUB_PID"])
 count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
-counter.write_text(str(count + 1), encoding="utf-8")
-pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
 def handle_stop(signum, frame):
     stopped.write_text(f"stopped:{signum}", encoding="utf-8")
@@ -400,6 +398,8 @@ def handle_stop(signum, frame):
 
 signal.signal(signal.SIGTERM, handle_stop)
 signal.signal(signal.SIGINT, handle_stop)
+counter.write_text(str(count + 1), encoding="utf-8")
+pid_file.write_text(str(os.getpid()), encoding="utf-8")
 if count == 0:
     raise SystemExit(23)
 while True:
