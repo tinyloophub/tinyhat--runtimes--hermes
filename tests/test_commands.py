@@ -9,6 +9,7 @@ import os
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ from hermes_runtime.main import (  # noqa: E402
     _heartbeat_interval_seconds,
     _heartbeat_metrics,
     _heartbeat_once,
+    _inspect_gateway_state,
     _reexec_after_code_swap,
     _safe_activate_staged_on_startup,
     _run_one_command,
@@ -134,6 +136,190 @@ class CommandTests(TestCase):
                 asyncio.run(_heartbeat_once(ctx))
 
         self.assertEqual(ctx.platform_state, "assigned")
+
+    def test_gateway_heartbeat_reports_serving_draining_and_unknown(self) -> None:
+        async def inspect(
+            result: dict[str, Any],
+            *,
+            functional_ready: bool = False,
+        ) -> dict[str, Any]:
+            async def fake_run_process(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                return result
+
+            async def fake_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                return {
+                    "functionally_ready": functional_ready,
+                    "telegram_evidence": "journal",
+                }
+
+            discovery = {
+                "ok": True,
+                "reason": "gateway_service_owner_found",
+                "owner": {"manager": "user", "systemctl": "/bin/systemctl"},
+                "generation": {
+                    "manager": "user",
+                    "load_state": "loaded",
+                    "active_state": "active",
+                    "sub_state": "running",
+                    "main_pid": 42,
+                    "invocation_id": "invocation-1",
+                },
+            }
+
+            with (
+                patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}, clear=True),
+                patch(
+                    "hermes_runtime.main.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch("hermes_runtime.main.run_process", fake_run_process),
+                patch(
+                    "hermes_runtime.main.discover_gateway_service",
+                    return_value=discovery,
+                ),
+                patch(
+                    "hermes_runtime.main.probe_functional_readiness",
+                    fake_probe,
+                ),
+            ):
+                return await _inspect_gateway_state()
+
+        serving = asyncio.run(
+            inspect(
+                {"ok": True, "stdout": "Active: active (running)", "stderr": ""},
+                functional_ready=True,
+            )
+        )
+        serving_unverified = asyncio.run(
+            inspect(
+                {"ok": True, "stdout": "Active: active (running)", "stderr": ""}
+            )
+        )
+        draining = asyncio.run(
+            inspect(
+                {
+                    "ok": True,
+                    "stdout": "Gateway draining for restart",
+                    "stderr": "",
+                }
+            )
+        )
+        non_serving = asyncio.run(
+            inspect({"ok": True, "stdout": "Active: inactive (dead)", "stderr": ""})
+        )
+        non_serving_error = asyncio.run(
+            inspect(
+                {
+                    "ok": False,
+                    "stdout": "Active: inactive (dead)",
+                    "stderr": "gateway is not running",
+                }
+            )
+        )
+        unknown = asyncio.run(inspect({"ok": False, "stdout": "", "stderr": "timeout"}))
+        telegram_fatal = asyncio.run(
+            inspect(
+                {
+                    "ok": True,
+                    "stdout": (
+                        "Active: active (running)\nRecent gateway health:\n"
+                        "  ⚠ telegram: polling task stopped"
+                    ),
+                    "stderr": "",
+                },
+                functional_ready=True,
+            )
+        )
+
+        self.assertEqual((serving["status"], serving["ready"]), ("serving", True))
+        self.assertEqual(
+            (serving_unverified["status"], serving_unverified["ready"]),
+            ("serving_unverified", None),
+        )
+        self.assertIs(serving["details"]["functional_ready"], True)
+        self.assertIs(serving_unverified["details"]["functional_ready"], False)
+        self.assertEqual(
+            (draining["status"], draining["ready"]),
+            ("draining_restarting", False),
+        )
+        self.assertEqual(
+            (non_serving["status"], non_serving["ready"]),
+            ("non_serving", False),
+        )
+        self.assertEqual(
+            (non_serving_error["status"], non_serving_error["ready"]),
+            ("non_serving", False),
+        )
+        self.assertEqual((unknown["status"], unknown["ready"]), ("unknown", None))
+        self.assertEqual(
+            (telegram_fatal["status"], telegram_fatal["ready"]),
+            ("non_serving", False),
+        )
+        self.assertEqual(
+            telegram_fatal["reason"],
+            "gateway_status_telegram_fatal",
+        )
+
+    def test_gateway_heartbeat_rechecks_expired_functional_proof(self) -> None:
+        probes = 0
+
+        async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"ok": True, "stdout": "Active: active (running)", "stderr": ""}
+
+        async def fake_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            nonlocal probes
+            probes += 1
+            return {
+                "functionally_ready": True,
+                "telegram_evidence": "journal",
+            }
+
+        generation = {
+            "manager": "user",
+            "load_state": "loaded",
+            "active_state": "active",
+            "sub_state": "running",
+            "main_pid": 42,
+            "invocation_id": "invocation-1",
+        }
+        discovery = {
+            "ok": True,
+            "reason": "gateway_service_owner_found",
+            "owner": {"manager": "user", "systemctl": "/bin/systemctl"},
+            "generation": generation,
+        }
+        previous = {
+            "status": "serving",
+            "ready": True,
+            "details": {
+                "functional_ready": True,
+                "functional_verified_at_unix": int(time.time()) - 61,
+                "service_generation": generation,
+                "telegram_evidence": "journal",
+            },
+        }
+
+        with (
+            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}, clear=True),
+            patch(
+                "hermes_runtime.main.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.main.run_process", fake_status),
+            patch(
+                "hermes_runtime.main.discover_gateway_service",
+                return_value=discovery,
+            ),
+            patch("hermes_runtime.main.probe_functional_readiness", fake_probe),
+        ):
+            state = asyncio.run(_inspect_gateway_state(previous))
+
+        self.assertEqual(probes, 1)
+        self.assertEqual((state["status"], state["ready"]), ("serving", True))
+        self.assertGreater(
+            state["details"]["functional_verified_at_unix"],
+            previous["details"]["functional_verified_at_unix"],
+        )
 
     def test_assigned_heartbeat_starts_gateway_heal_when_telegram_configured(
         self,

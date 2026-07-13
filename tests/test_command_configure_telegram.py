@@ -1339,6 +1339,19 @@ def test_gateway_status_is_healthy_false_for_not_running_text() -> None:
     assert configure_telegram._gateway_status_is_healthy(status) is False
 
 
+def test_gateway_status_is_healthy_false_for_fatal_telegram_runtime_health() -> None:
+    status = {
+        "ok": True,
+        "stdout": (
+            "Active: active (running)\nRecent gateway health:\n"
+            "  ⚠ telegram: polling task stopped\n"
+        ),
+        "stderr": "",
+    }
+
+    assert configure_telegram._gateway_status_is_healthy(status) is False
+
+
 def test_gateway_status_is_healthy_false_when_status_not_ok() -> None:
     # Even a healthy-looking systemd line cannot rescue a non-zero probe.
     status = _status("     Active: active (running)\n", ok=False)

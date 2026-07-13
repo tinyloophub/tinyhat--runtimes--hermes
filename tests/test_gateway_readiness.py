@@ -48,17 +48,17 @@ def _status_process(stdout: str, *, ok: bool = True) -> dict[str, object]:
 # --- _log_telegram_evidence -------------------------------------------------
 
 
-def test_log_telegram_evidence_returns_none_when_marker_absent() -> None:
+def test_log_telegram_evidence_returns_false_when_fresh_marker_absent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "hermes-gateway.log"
         log.write_text(
             "gateway starting up\nconnecting to telegram ...\n",
             encoding="utf-8",
         )
-        # New bytes since offset 0, but none carry a positive marker: absence
-        # is reported as unavailable (None), never as a negative (False).
+        # The source is usable and has fresh bytes, so an absent marker is a
+        # real pending/not-ready observation rather than unavailable evidence.
         result = gateway_readiness._log_telegram_evidence(log, 0)
-    assert result is None
+    assert result is False
 
 
 def test_log_telegram_evidence_returns_true_when_marker_present() -> None:
@@ -90,7 +90,7 @@ def test_log_telegram_evidence_returns_none_when_path_missing() -> None:
 # --- _journal_telegram_evidence --------------------------------------------
 
 
-def test_journal_telegram_evidence_returns_none_when_marker_absent() -> None:
+def test_journal_telegram_evidence_returns_false_when_marker_absent() -> None:
     async def fake_run_process(
         args: list[str],
         *,
@@ -110,8 +110,13 @@ def test_journal_telegram_evidence_returns_none_when_marker_absent() -> None:
             fake_run_process,
         ),
     ):
-        result = asyncio.run(gateway_readiness._journal_telegram_evidence(1000.0))
-    assert result is None
+        result = asyncio.run(
+            gateway_readiness._journal_telegram_evidence(
+                1000.0,
+                service_invocation_id="new-invocation",
+            )
+        )
+    assert result is False
 
 
 def test_journal_telegram_evidence_returns_true_when_marker_present() -> None:
@@ -138,7 +143,12 @@ def test_journal_telegram_evidence_returns_true_when_marker_present() -> None:
             fake_run_process,
         ),
     ):
-        result = asyncio.run(gateway_readiness._journal_telegram_evidence(1000.0))
+        result = asyncio.run(
+            gateway_readiness._journal_telegram_evidence(
+                1000.0,
+                service_invocation_id="new-invocation",
+            )
+        )
     assert result is True
 
 
@@ -147,7 +157,12 @@ def test_journal_telegram_evidence_returns_none_when_journalctl_missing() -> Non
         "hermes_runtime.gateway_readiness.shutil.which",
         return_value=None,
     ):
-        result = asyncio.run(gateway_readiness._journal_telegram_evidence(1000.0))
+        result = asyncio.run(
+            gateway_readiness._journal_telegram_evidence(
+                1000.0,
+                service_invocation_id="new-invocation",
+            )
+        )
     assert result is None
 
 
@@ -184,11 +199,95 @@ def test_probe_ready_when_status_healthy_and_no_positive_telegram_marker() -> No
             )
 
     assert result["status_healthy"] is True
-    # No positive marker available -> connection evidence is unavailable, which
-    # must NOT block readiness.
+    # No positive marker available -> connection evidence is unavailable, so
+    # functional readiness remains unverified.
     assert result["telegram_connected"] is None
     assert result["telegram_evidence"] == "unavailable"
-    assert result["ready"] is True
+    assert result["ready"] is False
+    assert result["functionally_ready"] is False
+
+
+def test_probe_not_ready_while_fresh_journal_has_no_telegram_marker() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        calls.append(list(args))
+        if args[-1] == "status":
+            return _status_process("     Active: active (running)\n")
+        return {"ok": True, "stdout": "Connecting to Telegram ...\n", "stderr": ""}
+
+    with (
+        patch(
+            "hermes_runtime.gateway_readiness.shutil.which",
+            return_value="/usr/bin/journalctl",
+        ),
+        patch(
+            "hermes_runtime.gateway_readiness.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(
+            gateway_readiness.probe_functional_readiness(
+                Path("/usr/local/bin/hermes"),
+                since_unix=1000.0,
+                service_manager="system",
+                service_invocation_id="new-invocation",
+            )
+        )
+
+    assert result["status_healthy"] is True
+    assert result["telegram_connected"] is False
+    assert result["telegram_evidence"] == "journal"
+    assert result["ready"] is False
+    assert result["functionally_ready"] is False
+    journal_call = calls[-1]
+    assert "--user" not in journal_call
+    assert "_SYSTEMD_INVOCATION_ID=new-invocation" in journal_call
+
+
+def test_probe_service_invocation_ignores_unscoped_log_marker() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        if args[-1] == "status":
+            return _status_process("     Active: active (running)\n")
+        return {"ok": True, "stdout": "gateway starting\n", "stderr": ""}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "hermes-gateway.log"
+        log.write_text("[Telegram] Connected to Telegram\n", encoding="utf-8")
+        with (
+            patch(
+                "hermes_runtime.gateway_readiness.shutil.which",
+                return_value="/usr/bin/journalctl",
+            ),
+            patch(
+                "hermes_runtime.gateway_readiness.run_process",
+                fake_run_process,
+            ),
+        ):
+            result = asyncio.run(
+                gateway_readiness.probe_functional_readiness(
+                    Path("/usr/local/bin/hermes"),
+                    since_unix=1000.0,
+                    log_path=log,
+                    service_invocation_id="new-invocation",
+                )
+            )
+
+    assert result["telegram_evidence"] == "journal"
+    assert result["telegram_connected"] is False
+    assert result["functionally_ready"] is False
 
 
 def test_probe_not_ready_when_status_unhealthy() -> None:
@@ -219,6 +318,51 @@ def test_probe_not_ready_when_status_unhealthy() -> None:
             )
 
     assert result["status_healthy"] is False
+    assert result["ready"] is False
+
+
+def test_probe_rejects_fatal_telegram_status_even_with_old_connect_marker() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        if args[-1] == "status":
+            return _status_process(
+                "Active: active (running)\n"
+                "Recent gateway health:\n"
+                "  ⚠ telegram: polling task stopped\n"
+            )
+        return {
+            "ok": True,
+            "stdout": "[Telegram] Connected to Telegram\n",
+            "stderr": "",
+        }
+
+    with (
+        patch(
+            "hermes_runtime.gateway_readiness.shutil.which",
+            return_value="/usr/bin/journalctl",
+        ),
+        patch(
+            "hermes_runtime.gateway_readiness.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(
+            gateway_readiness.probe_functional_readiness(
+                Path("/usr/local/bin/hermes"),
+                since_unix=0,
+                service_invocation_id="current-invocation",
+            )
+        )
+
+    assert result["telegram_fatal"] is True
+    assert result["status_healthy"] is False
+    assert result["telegram_connected"] is True
+    assert result["functionally_ready"] is False
     assert result["ready"] is False
 
 

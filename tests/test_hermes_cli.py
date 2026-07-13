@@ -66,6 +66,57 @@ def test_run_process_waits_for_child_after_timeout_kill() -> None:
     assert result["stderr"] == "command timed out after 0.001s"
 
 
+def test_run_process_kills_restart_process_group_after_timeout() -> None:
+    class FakeProcess:
+        pid = 4321
+        returncode: int | None = None
+        killed = False
+        waited = False
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.waited = True
+            self.returncode = -9
+            return self.returncode
+
+    process = FakeProcess()
+    create_kwargs: dict[str, object] = {}
+
+    async def fake_create_subprocess_exec(
+        *_args: object, **kwargs: object
+    ) -> FakeProcess:
+        create_kwargs.update(kwargs)
+        return process
+
+    with (
+        patch(
+            "hermes_runtime.hermes_cli.asyncio.create_subprocess_exec",
+            fake_create_subprocess_exec,
+        ),
+        patch.object(hermes_cli.os, "name", "posix"),
+        patch("hermes_runtime.hermes_cli.os.killpg") as killpg,
+    ):
+        result = asyncio.run(
+            hermes_cli.run_process(
+                ["hermes", "gateway", "restart"],
+                timeout_seconds=0.001,
+                kill_process_group=True,
+            )
+        )
+
+    assert create_kwargs["start_new_session"] is True
+    killpg.assert_called_once_with(4321, hermes_cli.signal.SIGKILL)
+    assert process.killed is False
+    assert process.waited is True
+    assert result["timed_out"] is True
+
+
 def test_debian_prerequisites_include_media_vision_and_build_tools() -> None:
     calls: list[str] = []
 

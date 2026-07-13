@@ -24,6 +24,14 @@ from hermes_runtime.commands.configure_telegram import (
     _compact_process,
     _gateway_status_is_healthy,
 )
+from hermes_runtime.gateway_readiness import (
+    gateway_status_reports_telegram_fatal,
+    probe_functional_readiness,
+)
+from hermes_runtime.gateway_service import (
+    discover_gateway_service,
+    public_gateway_generation,
+)
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
@@ -45,6 +53,7 @@ DEFAULT_CURRENT_VERSION = "0.0.1"
 DEFAULT_UNASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 1.0
 DEFAULT_ASSIGNED_HEARTBEAT_INTERVAL_SECONDS = 10.0
 GATEWAY_STATE_PROBE_TIMEOUT_SECONDS = 15
+GATEWAY_FUNCTIONAL_RECHECK_SECONDS = 60
 ASSIGNED_PLATFORM_STATES = {"assigned", "active"}
 
 
@@ -272,6 +281,18 @@ def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
         "source": "heal_hermes",
         "healed": bool(result.get("healed")),
     }
+    restart = result.get("restart")
+    if isinstance(restart, dict):
+        details["functional_ready"] = (
+            restart.get("functionally_verified")
+            if isinstance(restart.get("functionally_verified"), bool)
+            else None
+        )
+        generation = restart.get("generation")
+        if isinstance(generation, dict):
+            details["service_generation"] = generation.get("after")
+        if details.get("functional_ready") is True:
+            details["functional_verified_at_unix"] = int(time.time())
     gateway = result.get("gateway")
     if isinstance(gateway, dict):
         details["gateway"] = gateway
@@ -283,7 +304,9 @@ def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def _inspect_gateway_state() -> dict[str, Any]:
+async def _inspect_gateway_state(
+    previous_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not _telegram_env_configured():
         return _gateway_state_payload(
             status="not_configured",
@@ -301,12 +324,128 @@ async def _inspect_gateway_state() -> dict[str, Any]:
         [str(hermes_bin), "gateway", "status"],
         timeout_seconds=GATEWAY_STATE_PROBE_TIMEOUT_SECONDS,
     )
-    ready = _gateway_status_is_healthy(status)
+    text = f"{status.get('stdout') or ''}\n{status.get('stderr') or ''}".lower()
+    draining = any(
+        marker in text
+        for marker in (
+            "gateway draining",
+            "draining for restart",
+            "restart in progress",
+            "gateway restarting",
+            "active: deactivating",
+            "active: reloading",
+        )
+    )
+    known_non_serving = any(
+        marker in text
+        for marker in (
+            "active: inactive",
+            "active: failed",
+            "inactive (dead)",
+            "not running",
+            "service not found",
+            "could not be found",
+            "not installed",
+        )
+    )
+    telegram_fatal = gateway_status_reports_telegram_fatal(status)
+    details: dict[str, Any] = {"gateway_status": _compact_process(status)}
+    if telegram_fatal:
+        lifecycle = "non_serving"
+        ready = False
+        reason = "gateway_status_telegram_fatal"
+        details["functional_ready"] = False
+    elif draining:
+        lifecycle = "draining_restarting"
+        ready: bool | None = False
+        reason = "gateway_status_draining_restarting"
+    elif _gateway_status_is_healthy(status):
+        discovery = await discover_gateway_service()
+        generation = (
+            discovery.get("generation") if discovery.get("ok") else None
+        )
+        owner = discovery.get("owner") if discovery.get("ok") else None
+        invocation_id = (
+            str(generation.get("invocation_id") or "").strip()
+            if isinstance(generation, dict)
+            else ""
+        )
+        previous_details = (
+            previous_state.get("details")
+            if isinstance(previous_state, dict)
+            and isinstance(previous_state.get("details"), dict)
+            else {}
+        )
+        previous_generation = previous_details.get("service_generation")
+        previous_invocation_id = (
+            str(previous_generation.get("invocation_id") or "").strip()
+            if isinstance(previous_generation, dict)
+            else ""
+        )
+        previous_verified_at = previous_details.get(
+            "functional_verified_at_unix"
+        )
+        proof_fresh = bool(
+            isinstance(previous_verified_at, int | float)
+            and time.time() - float(previous_verified_at)
+            <= GATEWAY_FUNCTIONAL_RECHECK_SECONDS
+        )
+        functional_ready = bool(
+            invocation_id
+            and invocation_id == previous_invocation_id
+            and previous_details.get("functional_ready") is True
+            and proof_fresh
+        )
+        telegram_evidence = previous_details.get("telegram_evidence")
+        functional_verified_at = (
+            int(float(previous_verified_at)) if functional_ready else None
+        )
+        if (
+            not functional_ready
+            and isinstance(owner, dict)
+            and isinstance(generation, dict)
+            and invocation_id
+        ):
+            readiness = await probe_functional_readiness(
+                hermes_bin,
+                since_unix=0,
+                service_manager=str(owner.get("manager") or "user"),
+                service_invocation_id=invocation_id,
+            )
+            functional_ready = readiness.get("functionally_ready") is True
+            telegram_evidence = readiness.get("telegram_evidence")
+            if functional_ready:
+                functional_verified_at = int(time.time())
+        details.update(
+            {
+                "functional_ready": functional_ready,
+                "telegram_evidence": telegram_evidence or "unavailable",
+                "functional_verified_at_unix": functional_verified_at,
+                "service_generation": public_gateway_generation(generation),
+                "service_discovery_reason": discovery.get("reason"),
+            }
+        )
+        if functional_ready:
+            lifecycle = "serving"
+            ready = True
+            reason = "gateway_functionally_ready"
+        else:
+            lifecycle = "serving_unverified"
+            ready = None
+            reason = "gateway_functional_readiness_unverified"
+    elif status.get("ok") or known_non_serving:
+        lifecycle = "non_serving"
+        ready = False
+        reason = "gateway_status_not_ready"
+    else:
+        lifecycle = "unknown"
+        ready = None
+        reason = "gateway_status_unavailable"
     return _gateway_state_payload(
-        status="ready" if ready else "not_ready",
+        status=lifecycle,
         ready=ready,
-        reason="gateway_status_ready" if ready else "gateway_status_not_ready",
-        details={"gateway_status": _compact_process(status)},
+        reason=reason,
+        details=details,
     )
 
 
@@ -315,7 +454,7 @@ async def _refresh_gateway_state(ctx: RuntimeContext) -> None:
     if state not in ASSIGNED_PLATFORM_STATES:
         return
     try:
-        ctx.gateway_state = await _inspect_gateway_state()
+        ctx.gateway_state = await _inspect_gateway_state(ctx.gateway_state)
     except Exception as exc:  # noqa: BLE001 - heartbeat must remain best-effort.
         ctx.gateway_state = _gateway_state_payload(
             status="unknown",

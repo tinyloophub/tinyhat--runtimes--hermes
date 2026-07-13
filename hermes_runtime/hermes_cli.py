@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import os
+import signal
 import shlex
 import shutil
 from pathlib import Path
@@ -81,8 +82,9 @@ def root_user_manager_env() -> dict[str, str]:
 async def run_process(
     args: list[str],
     *,
-    timeout_seconds: int,
+    timeout_seconds: float,
     env: dict[str, str] | None = None,
+    kill_process_group: bool = False,
 ) -> dict[str, Any]:
     started = asyncio.get_running_loop().time()
     merged_env = os.environ.copy()
@@ -90,11 +92,19 @@ async def run_process(
     if env:
         merged_env.update(env)
     try:
+        subprocess_kwargs: dict[str, Any] = {}
+        if kill_process_group and os.name == "posix":
+            # The Hermes restart CLI can launch systemctl children.  Put that
+            # one recovery attempt in a fresh session so a runtime timeout can
+            # terminate the complete command tree before applying its own
+            # unit-scoped fallback.
+            subprocess_kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
+            **subprocess_kwargs,
         )
         stdout, stderr = await asyncio.wait_for(
             process.communicate(),
@@ -103,8 +113,18 @@ async def run_process(
         returncode = process.returncode
         timed_out = False
     except asyncio.TimeoutError:
-        with suppress(ProcessLookupError):
-            process.kill()
+        killed_group = False
+        if kill_process_group and os.name == "posix":
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                    killed_group = True
+                except (OSError, ProcessLookupError):
+                    pass
+        if not killed_group:
+            with suppress(ProcessLookupError):
+                process.kill()
         await process.wait()
         returncode = None
         stdout = b""

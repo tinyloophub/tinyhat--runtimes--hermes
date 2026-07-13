@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Make `heal_hermes` prove a new systemd gateway generation before reporting a
+  restart as healed, bound and contain the official restart attempt, and use a
+  unit-scoped force-cycle when the old generation remains wedged. Preserve the
+  original admin Heal button by defaulting its exact legacy reason to restart,
+  while explicit `restart=false` and assignment-time reconciliation remain
+  start-only. Functional success requires Telegram evidence scoped to the new
+  systemd invocation. Heartbeats now distinguish verified serving,
+  serving-but-unverified, draining/restarting, non-serving, and unknown states.
+
 ## 0.0.43 - 2026-07-12
 
 - Make successful `/codex_auth` updates concise: an explicit restart notice

@@ -1642,6 +1642,12 @@ def _gateway_status_is_healthy(status: dict[str, Any] | None) -> bool:
         "active: activating",
         "active: deactivating",
         "active: reloading",
+        "gateway draining",
+        "draining for restart",
+        "restart in progress",
+        "gateway restarting",
+        "⚠ telegram:",
+        "warning: telegram:",
     )
     if any(marker in text for marker in negative_markers):
         return False
