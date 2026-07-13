@@ -456,6 +456,14 @@ then `channels/lts`. This keeps Computers already following `channels/latest`,
 a custom tag, or a commit SHA on that same target unless explicitly changed.
 Reports omit local plugin paths.
 
+Scheduled plugin projections declare
+`tinyhat_hermes_plugin_update_check_v2`. Version 2 is the bounded platform
+contract: it omits `installed.plugin_dir` and `installed.manifest`, and it
+replaces raw target errors with one generic status. Manual admin checks keep
+the fuller `tinyhat_hermes_plugin_update_check_v1` result for local diagnosis.
+The enclosing scheduled report remains `tinyhat_hermes_update_check_v1`, so
+saved same-day retry files stay readable across this change.
+
 The result is not embedded into heartbeat metrics. Use the admin `check_update`
 command when you want to run the same check immediately from Hat admin; manual
 checks keep their existing result shape and do not receive a scheduled `run_id`.

@@ -2358,6 +2358,10 @@ class CommandTests(TestCase):
             ).read_text(encoding="utf-8").strip()
             self.assertEqual(result["run_id"], f"scheduled:{scheduled_date}")
             self.assertEqual(result["scheduled_local_date"], scheduled_date)
+            self.assertEqual(
+                result["plugin_update_check"]["schema"],
+                "tinyhat_hermes_plugin_update_check_v2",
+            )
             installed_plugin = result["plugin_update_check"].get("installed", {})
             self.assertNotIn("plugin_dir", installed_plugin)
             self.assertNotIn("manifest", installed_plugin)
@@ -2546,6 +2550,10 @@ class CommandTests(TestCase):
                 )
             )
             self.assertEqual(latest_result, manual_result)
+            self.assertEqual(
+                manual_result["plugin_update_check"]["schema"],
+                "tinyhat_hermes_plugin_update_check_v1",
+            )
             self.assertNotEqual(latest_result["reason"], saved_result["reason"])
             self.assertEqual(
                 json.loads(pending_path.read_text(encoding="utf-8")),

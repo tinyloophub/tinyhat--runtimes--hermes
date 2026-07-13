@@ -38,6 +38,8 @@ SCHEDULED_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
 MAX_RUN_REASON_LENGTH = 64
 PENDING_SCHEDULED_RESULT_FILE = "pending_scheduled_check.json"
+PLUGIN_UPDATE_CHECK_SCHEMA = "tinyhat_hermes_plugin_update_check_v1"
+SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA = "tinyhat_hermes_plugin_update_check_v2"
 
 
 @dataclass(frozen=True)
@@ -556,12 +558,20 @@ async def run_update_check(
         if bounded_reason == "scheduled":
             plugin_status = _scheduled_plugin_report(plugin_status)
         result["plugin_update_check"] = {
-            "schema": "tinyhat_hermes_plugin_update_check_v1",
+            "schema": (
+                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                if bounded_reason == "scheduled"
+                else PLUGIN_UPDATE_CHECK_SCHEMA
+            ),
             **plugin_status,
         }
     except Exception as exc:
         result["plugin_update_check"] = {
-            "schema": "tinyhat_hermes_plugin_update_check_v1",
+            "schema": (
+                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                if bounded_reason == "scheduled"
+                else PLUGIN_UPDATE_CHECK_SCHEMA
+            ),
             "update_available": None,
             "decision": "target_unavailable",
             "error": f"{type(exc).__name__}: plugin update check failed",
