@@ -105,6 +105,83 @@ def test_discover_fails_closed_when_second_loaded_unit_is_inactive() -> None:
     assert result["reason"] == "gateway_service_owner_ambiguous"
 
 
+def test_discover_reports_explicitly_absent_systemd_managers() -> None:
+    environments: list[dict[str, str] | None] = []
+
+    async def fake_run_process(
+        args: list[str], *, timeout_seconds: float, env: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        del timeout_seconds
+        environments.append(env)
+        error = (
+            "Failed to connect to bus: No medium found"
+            if "--user" in args
+            else "System has not been booted with systemd as init system (PID 1)."
+        )
+        return {"ok": False, "returncode": 1, "stdout": "", "stderr": error}
+
+    with (
+        patch("hermes_runtime.gateway_service.shutil.which", return_value="/bin/systemctl"),
+        patch("hermes_runtime.gateway_service.run_process", fake_run_process),
+    ):
+        result = asyncio.run(gateway_service.discover_gateway_service())
+
+    assert result["ok"] is False
+    assert result["reason"] == "systemd_manager_absent"
+    assert environments == [
+        {"LC_ALL": "C", "LANG": "C"},
+        {"LC_ALL": "C", "LANG": "C"},
+    ]
+
+
+def test_discover_selects_loaded_unit_when_other_manager_is_absent() -> None:
+    async def fake_run_process(
+        args: list[str], *, timeout_seconds: float, env: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        if "--user" in args:
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "Failed to connect to bus: Host is down",
+            }
+        return {"ok": True, "stdout": _show(invocation="system-1", pid=52)}
+
+    with (
+        patch("hermes_runtime.gateway_service.shutil.which", return_value="/bin/systemctl"),
+        patch("hermes_runtime.gateway_service.run_process", fake_run_process),
+    ):
+        result = asyncio.run(gateway_service.discover_gateway_service())
+
+    assert result["ok"] is True
+    assert result["owner"]["manager"] == "system"
+
+
+def test_discover_keeps_generic_bus_failure_fail_closed() -> None:
+    async def fake_run_process(
+        args: list[str], *, timeout_seconds: float, env: dict[str, str] | None = None
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        if "--user" in args:
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "Failed to connect to bus: Access denied",
+            }
+        return {"ok": True, "stdout": "LoadState=not-found\n"}
+
+    with (
+        patch("hermes_runtime.gateway_service.shutil.which", return_value="/bin/systemctl"),
+        patch("hermes_runtime.gateway_service.run_process", fake_run_process),
+    ):
+        result = asyncio.run(gateway_service.discover_gateway_service())
+
+    assert result["ok"] is False
+    assert result["reason"] == "gateway_service_probe_unavailable"
+
+
 def test_generation_change_prefers_invocation_id_and_falls_back_to_pid() -> None:
     before = {"manager": "user", "invocation_id": "one", "main_pid": 10}
     reused_pid = {"manager": "user", "invocation_id": "two", "main_pid": 10}

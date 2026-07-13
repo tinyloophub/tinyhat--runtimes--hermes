@@ -274,6 +274,305 @@ class CommandTests(TestCase):
         self.assertEqual(started, 990.0)
         self.assertEqual(missing, 1_000.0)
 
+    def test_gateway_heartbeat_reports_verified_foreground_as_serving(self) -> None:
+        runtime_generation = {
+            "pid": 321,
+            "start_time": 654,
+            "started_at_unix": 1000.0,
+            "argv": [
+                "gateway",
+                "run",
+                "--replace",
+                "--force",
+                "--accept-hooks",
+            ],
+        }
+        foreground_generation = {
+            "schema": "tinyhat_hermes_foreground_gateway_v1",
+            "pid": 321,
+            "process_start_time": 654,
+            "started_at_unix": 1000.0,
+            "log_offset": 27,
+            "argv": runtime_generation["argv"],
+        }
+
+        async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "stdout": "Active: active (running)",
+                "stderr": "",
+            }
+
+        async def fake_probe(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+            self.assertEqual(kwargs["since_unix"], 1000.0)
+            self.assertEqual(kwargs["log_offset"], 27)
+            self.assertEqual(kwargs["service_main_pid"], 321)
+            self.assertEqual(kwargs["expected_process_start_time"], 654)
+            self.assertEqual(
+                kwargs["expected_gateway_argv"], runtime_generation["argv"]
+            )
+            self.assertTrue(
+                str(kwargs["log_path"]).endswith("hermes-gateway.log")
+            )
+            self.assertNotIn("service_invocation_id", kwargs)
+            return {
+                "functionally_ready": True,
+                "telegram_evidence": "runtime_state",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "TELEGRAM_BOT_TOKEN": "token",
+                        "TINYHAT_RUNTIME_STATE_DIR": tmp,
+                    },
+                    clear=True,
+                ),
+                patch(
+                    "hermes_runtime.main.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch("hermes_runtime.main.run_process", fake_status),
+                patch(
+                    "hermes_runtime.main.discover_gateway_service",
+                    return_value={
+                        "ok": False,
+                        "reason": "systemctl_unavailable",
+                        "owner": None,
+                        "generation": None,
+                    },
+                ),
+                patch(
+                    "hermes_runtime.main.read_gateway_runtime_generation",
+                    return_value=runtime_generation,
+                ),
+                patch(
+                    "hermes_runtime.main._active_gateway_foreground_generation",
+                    return_value=foreground_generation,
+                ),
+                patch(
+                    "hermes_runtime.main.probe_functional_readiness",
+                    fake_probe,
+                ),
+            ):
+                state = asyncio.run(_inspect_gateway_state())
+
+        self.assertEqual((state["status"], state["ready"]), ("serving", True))
+        self.assertIs(state["details"]["functional_ready"], True)
+        self.assertEqual(
+            state["details"]["telegram_evidence"], "runtime_state"
+        )
+        self.assertEqual(
+            state["details"]["runtime_generation"],
+            {
+                "pid": 321,
+                "process_start_time": 654,
+                "started_at_unix": 1000.0,
+                "command_kind": "gateway_run",
+                "identity_verified": True,
+            },
+        )
+        self.assertEqual(
+            state["details"]["foreground_generation"],
+            {
+                "pid": 321,
+                "process_start_time": 654,
+                "started_at_unix": 1000.0,
+                "command_kind": "gateway_run",
+                "identity_verified": True,
+                "matches_runtime": True,
+            },
+        )
+        self.assertIsNone(state["details"]["service_generation"])
+
+    def test_gateway_heartbeat_caches_only_matching_foreground_generation(
+        self,
+    ) -> None:
+        generation = {
+            "pid": 321,
+            "start_time": 654,
+            "started_at_unix": 1000.0,
+            "argv": ["gateway", "run"],
+        }
+
+        async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "stdout": "Active: active (running)",
+                "stderr": "",
+            }
+
+        async def fail_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("fresh matching proof should be cached")
+
+        previous = {
+            "status": "serving",
+            "ready": True,
+            "details": {
+                "functional_ready": True,
+                "functional_verified_at_unix": int(time.time()),
+                "runtime_generation": generation,
+                "telegram_evidence": "log",
+                "service_generation": None,
+            },
+        }
+        with (
+            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}, clear=True),
+            patch(
+                "hermes_runtime.main.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.main.run_process", fake_status),
+            patch(
+                "hermes_runtime.main.discover_gateway_service",
+                return_value={
+                    "ok": False,
+                    "reason": "gateway_service_not_found",
+                    "owner": None,
+                    "generation": None,
+                },
+            ),
+            patch(
+                "hermes_runtime.main.read_gateway_runtime_generation",
+                return_value=generation,
+            ),
+            patch(
+                "hermes_runtime.main._active_gateway_foreground_generation",
+                return_value=None,
+            ),
+            patch(
+                "hermes_runtime.main.probe_functional_readiness",
+                fail_probe,
+            ),
+        ):
+            state = asyncio.run(_inspect_gateway_state(previous))
+
+        self.assertEqual((state["status"], state["ready"]), ("serving", True))
+        self.assertEqual(state["details"]["telegram_evidence"], "log")
+
+    def test_gateway_heartbeat_reports_non_systemd_supervisor_as_serving(
+        self,
+    ) -> None:
+        generation = {
+            "pid": 444,
+            "start_time": 4004,
+            "started_at_unix": 1100.0,
+            "argv": ["--profile", "work", "gateway", "run"],
+        }
+
+        async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "stdout": "Active: active (running)",
+                "stderr": "",
+            }
+
+        async def fake_probe(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+            self.assertEqual(kwargs["service_main_pid"], 444)
+            self.assertEqual(kwargs["expected_process_start_time"], 4004)
+            self.assertEqual(
+                kwargs["expected_gateway_argv"], generation["argv"]
+            )
+            self.assertIsNone(kwargs["log_path"])
+            return {
+                "functionally_ready": True,
+                "telegram_evidence": "runtime_state",
+            }
+
+        with (
+            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}, clear=True),
+            patch(
+                "hermes_runtime.main.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.main.run_process", fake_status),
+            patch(
+                "hermes_runtime.main.discover_gateway_service",
+                return_value={
+                    "ok": False,
+                    "reason": "systemd_manager_absent",
+                    "owner": None,
+                    "generation": None,
+                },
+            ),
+            patch(
+                "hermes_runtime.main.read_gateway_runtime_generation",
+                return_value=generation,
+            ),
+            patch(
+                "hermes_runtime.main._active_gateway_foreground_generation",
+                return_value=None,
+            ),
+            patch(
+                "hermes_runtime.main.probe_functional_readiness",
+                fake_probe,
+            ),
+        ):
+            state = asyncio.run(_inspect_gateway_state())
+
+        self.assertEqual((state["status"], state["ready"]), ("serving", True))
+        self.assertEqual(
+            state["details"]["runtime_generation"],
+            {
+                "pid": 444,
+                "process_start_time": 4004,
+                "started_at_unix": 1100.0,
+                "command_kind": "gateway_run",
+                "identity_verified": True,
+            },
+        )
+        self.assertIsNone(state["details"]["foreground_generation"])
+
+    def test_gateway_heartbeat_keeps_unproven_foreground_unverified(self) -> None:
+        async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "stdout": "Active: active (running)",
+                "stderr": "",
+            }
+
+        async def fail_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("unproven foreground owner must not be probed")
+
+        with (
+            patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "token"}, clear=True),
+            patch(
+                "hermes_runtime.main.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch("hermes_runtime.main.run_process", fake_status),
+            patch(
+                "hermes_runtime.main.discover_gateway_service",
+                return_value={
+                    "ok": False,
+                    "reason": "systemctl_unavailable",
+                    "owner": None,
+                    "generation": None,
+                },
+            ),
+            patch(
+                "hermes_runtime.main.read_gateway_runtime_generation",
+                return_value=None,
+            ),
+            patch(
+                "hermes_runtime.main._active_gateway_foreground_generation",
+                return_value=None,
+            ),
+            patch(
+                "hermes_runtime.main.probe_functional_readiness",
+                fail_probe,
+            ),
+        ):
+            state = asyncio.run(_inspect_gateway_state())
+
+        self.assertEqual(
+            (state["status"], state["ready"]),
+            ("serving_unverified", None),
+        )
+        self.assertIs(state["details"]["functional_ready"], False)
+
     def test_gateway_heartbeat_rechecks_expired_functional_proof(self) -> None:
         probes = 0
 

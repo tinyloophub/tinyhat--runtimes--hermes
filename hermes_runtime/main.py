@@ -21,14 +21,21 @@ from hermes_runtime.client import (
 )
 from hermes_runtime.commands import run_command
 from hermes_runtime.commands.configure_telegram import (
+    _active_gateway_foreground_generation,
     _compact_process,
+    _gateway_log_path,
     _gateway_status_is_healthy,
 )
 from hermes_runtime.gateway_readiness import (
     gateway_status_reports_telegram_fatal,
     probe_functional_readiness,
+    public_gateway_foreground_generation,
+    public_gateway_runtime_generation,
+    public_gateway_runtime_generation_same,
+    read_gateway_runtime_generation,
 )
 from hermes_runtime.gateway_service import (
+    GATEWAY_SERVICE_UNOWNED_REASONS,
     discover_gateway_service,
     public_gateway_generation,
 )
@@ -290,7 +297,13 @@ def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
         )
         generation = restart.get("generation")
         if isinstance(generation, dict):
-            details["service_generation"] = generation.get("after")
+            if generation.get("owner") in {
+                "foreground",
+                "hermes_supervisor",
+            }:
+                details["runtime_generation"] = generation.get("after")
+            else:
+                details["service_generation"] = generation.get("after")
         if details.get("functional_ready") is True:
             details["functional_verified_at_unix"] = int(time.time())
     gateway = result.get("gateway")
@@ -381,6 +394,7 @@ async def _inspect_gateway_state(
         reason = "gateway_status_draining_restarting"
     elif _gateway_status_is_healthy(status):
         discovery = await discover_gateway_service()
+        discovery_reason = str(discovery.get("reason") or "service_unknown")
         generation = (
             discovery.get("generation") if discovery.get("ok") else None
         )
@@ -390,6 +404,28 @@ async def _inspect_gateway_state(
             if isinstance(generation, dict)
             else ""
         )
+        runtime_generation = (
+            read_gateway_runtime_generation()
+            if not discovery.get("ok")
+            and discovery_reason in GATEWAY_SERVICE_UNOWNED_REASONS
+            else None
+        )
+        foreground_generation = (
+            _active_gateway_foreground_generation(hermes_bin)
+            if isinstance(runtime_generation, dict)
+            else None
+        )
+        if not (
+            isinstance(runtime_generation, dict)
+            and isinstance(foreground_generation, dict)
+            and foreground_generation.get("pid")
+            == runtime_generation.get("pid")
+            and foreground_generation.get("process_start_time")
+            == runtime_generation.get("start_time")
+            and foreground_generation.get("argv")
+            == runtime_generation.get("argv")
+        ):
+            foreground_generation = None
         previous_details = (
             previous_state.get("details")
             if isinstance(previous_state, dict)
@@ -402,6 +438,23 @@ async def _inspect_gateway_state(
             if isinstance(previous_generation, dict)
             else ""
         )
+        previous_runtime_generation = previous_details.get("runtime_generation")
+        if (
+            public_gateway_runtime_generation_same(
+                runtime_generation, previous_runtime_generation
+            )
+            and isinstance(runtime_generation, dict)
+            and isinstance(previous_runtime_generation, dict)
+            and isinstance(
+                previous_runtime_generation.get("started_at_unix"), int | float
+            )
+        ):
+            runtime_generation = {
+                **runtime_generation,
+                "started_at_unix": previous_runtime_generation[
+                    "started_at_unix"
+                ],
+            }
         previous_verified_at = previous_details.get(
             "functional_verified_at_unix"
         )
@@ -410,9 +463,20 @@ async def _inspect_gateway_state(
             and time.time() - float(previous_verified_at)
             <= GATEWAY_FUNCTIONAL_RECHECK_SECONDS
         )
+        generation_matches = bool(
+            (
+                invocation_id
+                and invocation_id == previous_invocation_id
+            )
+            or (
+                isinstance(runtime_generation, dict)
+                and public_gateway_runtime_generation_same(
+                    runtime_generation, previous_runtime_generation
+                )
+            )
+        )
         functional_ready = bool(
-            invocation_id
-            and invocation_id == previous_invocation_id
+            generation_matches
             and previous_details.get("functional_ready") is True
             and proof_fresh
         )
@@ -443,13 +507,49 @@ async def _inspect_gateway_state(
             telegram_evidence = readiness.get("telegram_evidence")
             if functional_ready:
                 functional_verified_at = int(time.time())
+        elif not functional_ready and isinstance(runtime_generation, dict):
+            # Non-systemd supervisors and foreground gateways have no systemd
+            # invocation. Hermes' atomic state is bound to the live PID,
+            # process-start fingerprint, and exact profile-preserving argv.
+            # Only a matching Tinyhat-owned detached generation may also use
+            # bytes appended after its persisted managed-log offset.
+            readiness = await probe_functional_readiness(
+                hermes_bin,
+                since_unix=float(runtime_generation["started_at_unix"]),
+                log_path=(
+                    _gateway_log_path()
+                    if isinstance(foreground_generation, dict)
+                    else None
+                ),
+                log_offset=(
+                    int(foreground_generation["log_offset"])
+                    if isinstance(foreground_generation, dict)
+                    else 0
+                ),
+                service_main_pid=int(runtime_generation["pid"]),
+                expected_process_start_time=int(
+                    runtime_generation["start_time"]
+                ),
+                expected_gateway_argv=list(runtime_generation["argv"]),
+            )
+            functional_ready = readiness.get("functionally_ready") is True
+            telegram_evidence = readiness.get("telegram_evidence")
+            if functional_ready:
+                functional_verified_at = int(time.time())
         details.update(
             {
                 "functional_ready": functional_ready,
                 "telegram_evidence": telegram_evidence or "unavailable",
                 "functional_verified_at_unix": functional_verified_at,
                 "service_generation": public_gateway_generation(generation),
-                "service_discovery_reason": discovery.get("reason"),
+                "runtime_generation": public_gateway_runtime_generation(
+                    runtime_generation
+                ),
+                "foreground_generation": public_gateway_foreground_generation(
+                    foreground_generation,
+                    matches_runtime=isinstance(foreground_generation, dict),
+                ),
+                "service_discovery_reason": discovery_reason,
             }
         )
         if functional_ready:

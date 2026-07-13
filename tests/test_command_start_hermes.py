@@ -13,7 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hermes_runtime.commands import run_command  # noqa: E402
+from hermes_runtime.commands import run_command, start_hermes  # noqa: E402
 
 
 def load_tests(
@@ -152,6 +152,157 @@ def test_start_hermes_runs_gateway_start_when_not_healthy() -> None:
     assert result["already_running"] is False
     assert result["gateway"]["mode"] == "service"
     assert result["env_reload"]["keys"] == ["EXA_API_KEY"]
+
+
+def test_managed_start_preserves_independent_foreground_recovery_slice() -> None:
+    clock = {"now": 0.0}
+    calls: list[tuple[list[str], float, bool]] = []
+    foreground_calls: list[float] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+        kill_process_group: bool = False,
+    ) -> dict[str, object]:
+        del env
+        calls.append((args, timeout_seconds, kill_process_group))
+        clock["now"] += timeout_seconds
+        return {
+            "args": args,
+            "returncode": None,
+            "ok": False,
+            "timed_out": True,
+            "duration_ms": int(timeout_seconds * 1000),
+            "stdout": "",
+            "stderr": (
+                "Service start is not applicable inside a Docker container."
+                if args[-1] == "start"
+                else "command timed out"
+            ),
+        }
+
+    async def fake_foreground(
+        _hermes_bin: Path, *, startup_wait_seconds: float
+    ) -> dict[str, object]:
+        foreground_calls.append(startup_wait_seconds)
+        clock["now"] += startup_wait_seconds
+        return {
+            "started": True,
+            "mode": "foreground_detached",
+            "log_path": None,
+        }
+
+    with (
+        patch(
+            "hermes_runtime.commands.start_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes.run_process",
+            fake_run_process,
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes._monotonic",
+            side_effect=lambda: clock["now"],
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes._start_gateway_foreground",
+            fake_foreground,
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes.read_gateway_runtime_generation",
+            return_value=None,
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes.load_env_files_into_process",
+            return_value={"loaded": True, "keys": []},
+        ),
+    ):
+        result = asyncio.run(
+            start_hermes.run(
+                SimpleNamespace(),
+                {"kind": "start_hermes"},
+                deadline_monotonic=10.0,
+                gateway_known_stopped=True,
+                include_hermes_status=False,
+            )
+        )
+
+    assert calls == [
+        (["/usr/local/bin/hermes", "gateway", "start"], 3.0, True),
+        (["/usr/local/bin/hermes", "gateway", "status"], 2.0, False),
+        (["/usr/local/bin/hermes", "gateway", "status"], 2.0, False),
+    ]
+    assert foreground_calls == [2.0], foreground_calls
+    assert result["gateway"]["deadline_exceeded"] is False
+    assert result["healthy"] is False
+    assert result["started"] is True
+    assert result["gateway"]["mode"] == "foreground_detached"
+    assert result["hermes"] is None
+
+
+def test_managed_start_does_not_duplicate_activating_supervisor() -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: float,
+        env: dict[str, str] | None = None,
+        kill_process_group: bool = False,
+    ) -> dict[str, object]:
+        del timeout_seconds, env, kill_process_group
+        calls.append(args)
+        return {
+            "args": args,
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "duration_ms": 5,
+            "stdout": (
+                "Active: activating (start)"
+                if args[-1] == "status"
+                else "Gateway start requested"
+            ),
+            "stderr": "",
+        }
+
+    async def fail_foreground(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("an activating supervisor must not get a second gateway")
+
+    with (
+        patch(
+            "hermes_runtime.commands.start_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes.run_process",
+            fake_run_process,
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes._start_gateway_foreground",
+            fail_foreground,
+        ),
+        patch(
+            "hermes_runtime.commands.start_hermes.load_env_files_into_process",
+            return_value={"loaded": True, "keys": []},
+        ),
+    ):
+        result = asyncio.run(
+            start_hermes.run(
+                SimpleNamespace(),
+                {"kind": "start_hermes"},
+                deadline_monotonic=start_hermes._monotonic() + 10,
+                gateway_known_stopped=True,
+                include_hermes_status=False,
+            )
+        )
+
+    assert [call[-1] for call in calls] == ["start", "status"]
+    assert result["gateway"]["foreground"] is None
+    assert result["gateway"]["healthy"] is False
 
 
 def _systemctl_result(args: list[str], returncode: int) -> dict[str, object]:

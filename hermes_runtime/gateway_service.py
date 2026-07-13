@@ -16,6 +16,18 @@ from hermes_runtime.hermes_cli import run_process
 GATEWAY_SERVICE_NAME = "hermes-gateway.service"
 SYSTEMCTL_PROBE_TIMEOUT_SECONDS = 5
 SYSTEMCTL_ACTION_TIMEOUT_SECONDS = 5
+GATEWAY_SERVICE_UNOWNED_REASONS = frozenset(
+    {
+        "systemctl_unavailable",
+        "gateway_service_not_found",
+        "systemd_manager_absent",
+    }
+)
+_SYSTEMD_MANAGER_ABSENT_MARKERS = (
+    "system has not been booted with systemd",
+    "failed to connect to bus: host is down",
+    "failed to connect to bus: no medium found",
+)
 _SHOW_PROPERTIES = (
     "LoadState,ActiveState,SubState,Result,MainPID,InvocationID,"
     "ActiveEnterTimestampMonotonic,ExecMainStartTimestampMonotonic"
@@ -89,8 +101,14 @@ async def _probe_gateway_service(
             f"--property={_SHOW_PROPERTIES}",
         ),
         timeout_seconds=timeout_seconds,
+        env={"LC_ALL": "C", "LANG": "C"},
     )
     if not result.get("ok"):
+        error_text = (
+            f"{result.get('stdout') or ''}\n{result.get('stderr') or ''}"
+        ).lower()
+        if any(marker in error_text for marker in _SYSTEMD_MANAGER_ABSENT_MARKERS):
+            return {"state": "manager_absent", "snapshot": None}
         return {"state": "unavailable", "snapshot": None}
     properties = _parse_properties(str(result.get("stdout") or ""))
     if properties.get("LoadState") != "loaded":
@@ -141,6 +159,7 @@ async def discover_gateway_service() -> dict[str, Any]:
 
     candidates: list[tuple[dict[str, str], dict[str, Any]]] = []
     unavailable_managers: list[str] = []
+    absent_managers: list[str] = []
     for manager in ("system", "user"):
         owner = {"manager": manager, "systemctl": systemctl}
         probe = await _probe_gateway_service(owner)
@@ -149,6 +168,8 @@ async def discover_gateway_service() -> dict[str, Any]:
             candidates.append((owner, snapshot))
         elif probe.get("state") == "unavailable":
             unavailable_managers.append(manager)
+        elif probe.get("state") == "manager_absent":
+            absent_managers.append(manager)
 
     if not candidates:
         return {
@@ -156,6 +177,8 @@ async def discover_gateway_service() -> dict[str, Any]:
             "reason": (
                 "gateway_service_probe_unavailable"
                 if unavailable_managers
+                else "systemd_manager_absent"
+                if absent_managers
                 else "gateway_service_not_found"
             ),
             "owner": None,
@@ -340,6 +363,7 @@ async def run_gateway_service_action(
 
 
 __all__ = [
+    "GATEWAY_SERVICE_UNOWNED_REASONS",
     "discover_gateway_service",
     "gateway_generation_active",
     "gateway_generation_changed",

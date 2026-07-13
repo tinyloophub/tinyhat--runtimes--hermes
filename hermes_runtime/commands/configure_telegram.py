@@ -1810,7 +1810,13 @@ def _gateway_needs_foreground_run(
         return True
     if "run the gateway directly" in text:
         return True
-    return not _gateway_status_is_healthy(status)
+    if "run manually: hermes gateway" in text:
+        return True
+    if "run the gateway in foreground mode instead" in text:
+        return True
+    if "not supported on this platform" in text:
+        return True
+    return False
 
 
 def _gateway_log_path() -> Path:
@@ -1818,6 +1824,96 @@ def _gateway_log_path() -> Path:
         (os.getenv("TINYHAT_RUNTIME_STATE_DIR") or "/var/lib/tinyhat-hermes-runtime")
     )
     return state_dir / "hermes-gateway.log"
+
+
+FOREGROUND_GATEWAY_STATE_SCHEMA = "tinyhat_hermes_foreground_gateway_v1"
+TINYHAT_FOREGROUND_GATEWAY_ARGV = [
+    "gateway",
+    "run",
+    "--replace",
+    "--force",
+    "--accept-hooks",
+]
+
+
+def _gateway_foreground_state_path() -> Path:
+    return _gateway_log_path().with_name("hermes-gateway-foreground.json")
+
+
+def _read_gateway_foreground_state() -> dict[str, Any] | None:
+    """Read Tinyhat's own foreground generation record, if well-formed."""
+    path = _gateway_foreground_state_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("schema") != (
+        FOREGROUND_GATEWAY_STATE_SCHEMA
+    ):
+        return None
+    try:
+        pid = int(payload.get("pid") or 0)
+        process_start_time = int(payload.get("process_start_time") or 0)
+        log_offset = int(payload.get("log_offset") or 0)
+        started_at_unix = float(payload.get("started_at_unix") or 0)
+    except (TypeError, ValueError):
+        return None
+    if (
+        pid <= 0
+        or process_start_time <= 0
+        or log_offset < 0
+        or started_at_unix <= 0
+        or payload.get("argv") != TINYHAT_FOREGROUND_GATEWAY_ARGV
+    ):
+        return None
+    return {
+        "schema": FOREGROUND_GATEWAY_STATE_SCHEMA,
+        "pid": pid,
+        "process_start_time": process_start_time,
+        "started_at_unix": started_at_unix,
+        "log_offset": log_offset,
+        "argv": list(TINYHAT_FOREGROUND_GATEWAY_ARGV),
+    }
+
+
+def _active_gateway_foreground_generation(
+    hermes_bin: Path | None,
+) -> dict[str, Any] | None:
+    """Return one exact runtime-owned foreground process generation.
+
+    The record is trusted only when Hermes' current live gateway-state
+    generation has the same PID, process-start fingerprint, and exact argv.
+    Another profile, stale state, and PID reuse therefore fail closed.
+    """
+    state = _read_gateway_foreground_state()
+    if state is None:
+        return None
+    del hermes_bin
+    # Local import avoids the module-load cycle: readiness uses the public
+    # status helpers from this module, while foreground startup calls back into
+    # readiness only after both modules are loaded.
+    from hermes_runtime.gateway_readiness import read_gateway_runtime_generation
+
+    generation = read_gateway_runtime_generation()
+    if (
+        not isinstance(generation, dict)
+        or generation.get("pid") != state["pid"]
+        or generation.get("start_time") != state["process_start_time"]
+        or generation.get("argv") != state["argv"]
+    ):
+        return None
+    return state
+
+
+def _write_gateway_foreground_state(payload: dict[str, Any]) -> None:
+    path = _gateway_foreground_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp_path, path)
 
 
 def _gateway_log_has_adapter_failure(path: Path | None) -> bool:
@@ -1835,32 +1931,58 @@ def _gateway_log_has_adapter_failure(path: Path | None) -> bool:
     return any(needle in text for needle in needles)
 
 
-async def _start_gateway_foreground(hermes_bin: Path) -> dict[str, Any]:
+async def _start_gateway_foreground(
+    hermes_bin: Path, *, startup_wait_seconds: float = 2.0
+) -> dict[str, Any]:
     log_path = _gateway_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        log_offset = log_path.stat().st_size
+    except OSError:
+        log_offset = 0
+    started_at_unix = time.time()
     with log_path.open("ab") as log_file:
+        command = [str(hermes_bin), *TINYHAT_FOREGROUND_GATEWAY_ARGV]
         process = subprocess.Popen(
-            [
-                str(hermes_bin),
-                "gateway",
-                "run",
-                "--replace",
-                "--force",
-                "--accept-hooks",
-            ],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
             start_new_session=True,
         )
-    await asyncio.sleep(2)
+    await asyncio.sleep(max(0.0, min(2.0, startup_wait_seconds)))
     returncode = process.poll()
+    generation: dict[str, Any] | None = None
+    if returncode is None:
+        from hermes_runtime.gateway_readiness import read_gateway_runtime_generation
+
+        runtime_generation = read_gateway_runtime_generation()
+        if (
+            isinstance(runtime_generation, dict)
+            and runtime_generation.get("pid") == process.pid
+            and runtime_generation.get("argv")
+            == TINYHAT_FOREGROUND_GATEWAY_ARGV
+        ):
+            generation = {
+                "schema": FOREGROUND_GATEWAY_STATE_SCHEMA,
+                "pid": process.pid,
+                "process_start_time": runtime_generation["start_time"],
+                "started_at_unix": started_at_unix,
+                "log_offset": log_offset,
+                "argv": list(TINYHAT_FOREGROUND_GATEWAY_ARGV),
+            }
+            _write_gateway_foreground_state(generation)
+        else:
+            _gateway_foreground_state_path().unlink(missing_ok=True)
+    else:
+        _gateway_foreground_state_path().unlink(missing_ok=True)
     return {
         "mode": "foreground_detached",
         "pid": process.pid,
         "started": returncode is None,
         "returncode": returncode,
         "log_path": str(log_path),
+        "generation": generation,
     }
 
 

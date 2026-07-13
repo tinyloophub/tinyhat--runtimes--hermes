@@ -1226,13 +1226,31 @@ def test_start_gateway_foreground_uses_detached_popen() -> None:
         old_env = os.environ.copy()
         os.environ.update({"TINYHAT_RUNTIME_STATE_DIR": tmp})
         try:
-            with patch(
-                "hermes_runtime.commands.configure_telegram.subprocess.Popen",
-                fake_popen,
+            with (
+                patch(
+                    "hermes_runtime.commands.configure_telegram.subprocess.Popen",
+                    fake_popen,
+                ),
+                patch(
+                    "hermes_runtime.gateway_readiness.read_gateway_runtime_generation",
+                    return_value={
+                        "pid": 1234,
+                        "start_time": 98765,
+                        "argv": list(
+                            configure_telegram.TINYHAT_FOREGROUND_GATEWAY_ARGV
+                        ),
+                        "started_at_unix": 1000.0,
+                    },
+                ),
             ):
                 result = asyncio.run(
                     configure_telegram._start_gateway_foreground(
                         Path("/usr/local/bin/hermes")
+                    )
+                )
+                state = json.loads(
+                    (Path(tmp) / "hermes-gateway-foreground.json").read_text(
+                        encoding="utf-8"
                     )
                 )
         finally:
@@ -1241,6 +1259,10 @@ def test_start_gateway_foreground_uses_detached_popen() -> None:
 
     assert result["started"] is True
     assert result["pid"] == 1234
+    assert result["generation"]["pid"] == 1234
+    assert result["generation"]["process_start_time"] == 98765
+    assert result["generation"]["log_offset"] == 0
+    assert state == result["generation"]
     assert popen_calls
     call = popen_calls[0]
     assert call["args"][0][:3] == [
@@ -1249,6 +1271,90 @@ def test_start_gateway_foreground_uses_detached_popen() -> None:
         "run",
     ]
     assert call["kwargs"]["start_new_session"] is True
+
+
+def test_active_gateway_foreground_generation_requires_exact_single_process() -> None:
+    generation = {
+        "schema": configure_telegram.FOREGROUND_GATEWAY_STATE_SCHEMA,
+        "pid": 1234,
+        "process_start_time": 98765,
+        "started_at_unix": 1000.5,
+        "log_offset": 25,
+        "argv": list(configure_telegram.TINYHAT_FOREGROUND_GATEWAY_ARGV),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        state_path = Path(tmp) / "hermes-gateway-foreground.json"
+        state_path.write_text(json.dumps(generation), encoding="utf-8")
+        with (
+            patch.dict(
+                os.environ,
+                {"TINYHAT_RUNTIME_STATE_DIR": tmp},
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.gateway_readiness.read_gateway_runtime_generation",
+                return_value={
+                    "pid": 1234,
+                    "start_time": 98765,
+                    "argv": list(
+                        configure_telegram.TINYHAT_FOREGROUND_GATEWAY_ARGV
+                    ),
+                    "started_at_unix": 1000.0,
+                },
+            ),
+        ):
+            active = configure_telegram._active_gateway_foreground_generation(
+                Path("/usr/local/bin/hermes")
+            )
+
+    assert active == generation
+
+
+def test_active_gateway_foreground_generation_rejects_pid_reuse_and_missing_state() -> None:
+    generation = {
+        "schema": configure_telegram.FOREGROUND_GATEWAY_STATE_SCHEMA,
+        "pid": 1234,
+        "process_start_time": 98765,
+        "started_at_unix": 1000.5,
+        "log_offset": 25,
+        "argv": list(configure_telegram.TINYHAT_FOREGROUND_GATEWAY_ARGV),
+    }
+    reused_generation = {
+        "pid": 1234,
+        "start_time": 99999,
+        "argv": list(configure_telegram.TINYHAT_FOREGROUND_GATEWAY_ARGV),
+        "started_at_unix": 1000.0,
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "hermes-gateway-foreground.json").write_text(
+            json.dumps(generation), encoding="utf-8"
+        )
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_RUNTIME_STATE_DIR": tmp},
+            clear=True,
+        ):
+            with patch(
+                "hermes_runtime.gateway_readiness.read_gateway_runtime_generation",
+                return_value=reused_generation,
+            ):
+                reused = (
+                    configure_telegram._active_gateway_foreground_generation(
+                        Path("/usr/local/bin/hermes")
+                    )
+                )
+            with patch(
+                "hermes_runtime.gateway_readiness.read_gateway_runtime_generation",
+                return_value=None,
+            ):
+                missing = (
+                    configure_telegram._active_gateway_foreground_generation(
+                        Path("/usr/local/bin/hermes")
+                    )
+                )
+
+    assert reused is None
+    assert missing is None
 
 
 def test_install_codex_auth_quick_commands_preserves_existing_config() -> None:
@@ -1556,6 +1662,36 @@ def test_gateway_status_is_healthy_true_for_active_running() -> None:
         "     Active: active (running) since Tue 2026-07-08 10:00:00 UTC\n"
     )
     assert configure_telegram._gateway_status_is_healthy(status) is True
+
+
+def test_gateway_foreground_fallback_requires_explicit_no_supervisor_guidance() -> None:
+    status = {
+        "ok": True,
+        "stdout": "Active: activating (start)",
+        "stderr": "",
+    }
+    assert (
+        configure_telegram._gateway_needs_foreground_run(
+            start={"ok": True, "stdout": "Gateway start requested", "stderr": ""},
+            status=status,
+        )
+        is False
+    )
+
+    for marker in (
+        "Service start is not applicable inside a Docker container.",
+        "Run the gateway directly",
+        "Run manually: hermes gateway",
+        "Run the gateway in foreground mode instead:",
+        "Not supported on this platform.",
+    ):
+        assert (
+            configure_telegram._gateway_needs_foreground_run(
+                start={"ok": False, "stdout": "", "stderr": marker},
+                status={"ok": False, "stdout": "", "stderr": ""},
+            )
+            is True
+        )
 
 
 def test_gateway_status_is_healthy_false_for_inactive_dead() -> None:

@@ -10,8 +10,20 @@
   start-only. Functional success requires Telegram evidence scoped to the new
   systemd invocation, preferring Hermes' PID-matched atomic gateway state over
   info-level journal markers that normal production services suppress.
-  Heartbeats now distinguish verified serving,
-  serving-but-unverified, draining/restarting, non-serving, and unknown states.
+  On non-systemd supervisors, avoid the blocking manual restart fallback:
+  prove Hermes' exact kind/PID/process-start/argv generation, run bounded
+  documented stop/start paths, and require a changed live generation plus
+  connected Telegram state. If documented stop leaves that exact generation
+  stuck on Linux, recovery uses pidfd-scoped TERM/KILL only after revalidating
+  its profile, process start, and argv before each signal; other platforms,
+  ambiguous identity, and reused PIDs fail closed. Tinyhat-owned detached
+  gateways persist a PID-reuse-safe generation and managed-log boundary, so
+  foreground heartbeats can report verified serving without trusting an old
+  append-only marker. Public heartbeat and heal results project only allowlisted
+  process identity metadata; exact argv remains local and never becomes
+  platform-visible.
+  Heartbeats now distinguish verified serving, serving-but-unverified,
+  draining/restarting, non-serving, and unknown states.
 - Seed Hermes' documented Telegram fallback endpoints when no operator value is
   configured, before Telegram setup or a Heal restart. This bypasses Hermes'
   unbounded system-DNS discovery task without replacing its normal DNS-first
