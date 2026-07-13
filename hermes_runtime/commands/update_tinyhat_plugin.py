@@ -1,10 +1,11 @@
 """Update the Tinyhat Hermes plugin to the latest available version.
 
 What it does:
-    Resolves the configured Tinyhat plugin ref (``channels/lts`` by default)
-    and compares it with the repo/ref/commit metadata recorded next to the
-    installed plugin. If the target changed, the runtime prepares that exact
-    checkout and asks Hermes to reinstall from it:
+    Resolves the selected logical Tinyhat plugin ref and compares it with the
+    repo/ref/commit metadata recorded next to the installed plugin. A full
+    ``target_commit`` or ``target_sha`` may pin the checked commit while the
+    logical channel/tag remains in installed metadata. If the target changed,
+    the runtime prepares that exact checkout and asks Hermes to reinstall it:
 
         hermes plugins install file:///prepared/tinyhat-checkout --enable --force
 
@@ -20,7 +21,10 @@ When to use it:
     use for plugin-level feature rollout.
 
 Example input:
-    {"kind": "update_tinyhat_plugin", "spec": {}}
+    {"kind": "update_tinyhat_plugin", "spec": {
+      "plugin_ref": "channels/lts",
+      "target_commit": "0123456789abcdef0123456789abcdef01234567"
+    }}
 
 Example output:
     {

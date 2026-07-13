@@ -47,7 +47,11 @@ from hermes_runtime.update_artifacts import (  # noqa: E402
     staged_bootstrap_file,
     staged_package_dir,
 )
-from hermes_runtime.update_check import scheduled_check_due  # noqa: E402
+from hermes_runtime.update_check import (  # noqa: E402
+    PENDING_SCHEDULED_RESULT_FILE,
+    run_update_check,
+    scheduled_check_due,
+)
 from tinyhat_hermes_runtime_bootstrap import (  # noqa: E402
     recover_interrupted_package_swap as bootstrap_recover_interrupted_package_swap,
 )
@@ -69,6 +73,20 @@ class FakePlatform:
     async def get_json(self, path: str) -> dict:
         self.gets.append(path)
         return {"ok": True, "path": path}
+
+
+async def fake_plugin_update_status(_command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "plugin_ref": "channels/lts",
+        "installed": {
+            "installed": True,
+            "plugin_dir": "/private/plugin",
+            "manifest": "/private/plugin/plugin.yaml",
+        },
+        "target_commit": "a" * 40,
+        "update_available": False,
+        "decision": "installed_matches_target",
+    }
 
 
 class CommandTests(TestCase):
@@ -1811,6 +1829,7 @@ class CommandTests(TestCase):
                 platform.posts[0][1]["result"]["target_ref"],
                 "v0.20.0-dev.20260625T173000Z.next",
             )
+            self.assertNotIn("run_id", checked)
 
     def test_check_update_is_not_available_when_current_sha_matches_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2291,15 +2310,22 @@ class CommandTests(TestCase):
                 current_commit_sha=lambda: "b" * 40,
             )
 
-            with patch("hermes_runtime.main.__version__", "0.0.39"), patch(
-                "hermes_runtime.update_check._fetch_github_commit",
-                return_value={
-                    "ok": True,
-                    "status": "ok",
-                    "sha": "c" * 40,
-                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
-                    + "c" * 40,
-                },
+            with (
+                patch("hermes_runtime.main.__version__", "0.0.39"),
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    return_value={
+                        "ok": True,
+                        "status": "ok",
+                        "sha": "c" * 40,
+                        "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                        + "c" * 40,
+                    },
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    fake_plugin_update_status,
+                ),
             ):
                 result = asyncio.run(_scheduled_update_check(ctx))
 
@@ -2315,8 +2341,134 @@ class CommandTests(TestCase):
             self.assertTrue(
                 (state_dir / "updates" / "last_scheduled_check_date").is_file()
             )
+            scheduled_date = (
+                state_dir / "updates" / "last_scheduled_check_date"
+            ).read_text(encoding="utf-8").strip()
+            self.assertEqual(result["run_id"], f"scheduled:{scheduled_date}")
+            self.assertEqual(result["scheduled_local_date"], scheduled_date)
+            installed_plugin = result["plugin_update_check"].get("installed", {})
+            self.assertNotIn("plugin_dir", installed_plugin)
+            self.assertNotIn("manifest", installed_plugin)
+            self.assertFalse(
+                (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).exists()
+            )
 
-    def test_failed_scheduled_update_check_does_not_mark_date(self) -> None:
+    def test_scheduled_run_id_is_stable_for_retry_and_changes_next_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"},
+                    clear=True,
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    fake_plugin_update_status,
+                ),
+            ):
+                first = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="scheduled",
+                        scheduled_local_date="2026-07-13",
+                    )
+                )
+                retry = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="scheduled",
+                        scheduled_local_date="2026-07-13",
+                    )
+                )
+                next_day = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="scheduled",
+                        scheduled_local_date="2026-07-14",
+                    )
+                )
+
+        self.assertEqual(first["run_id"], "scheduled:2026-07-13")
+        self.assertEqual(retry["run_id"], first["run_id"])
+        self.assertNotEqual(next_day["run_id"], first["run_id"])
+        self.assertLessEqual(len(first["run_id"]), 64)
+
+    def test_scheduled_plugin_report_strips_repo_credentials_and_query(self) -> None:
+        async def credentialed_plugin_status(
+            _command: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {
+                "plugin_repo_url": (
+                    "https://build-user:password-secret@github.com/"
+                    "tinyhat-ai/tinyhat.git?token=query-secret#fragment-secret"
+                ),
+                "plugin_ref": "channels/lts",
+                "installed": {
+                    "installed": True,
+                    "plugin_dir": "/private/plugin",
+                    "manifest": "/private/plugin/plugin.yaml",
+                    "source": {
+                        "repo_url": (
+                            "https://github.com/tinyhat-ai/tinyhat.git"
+                            "?token=nested-secret"
+                        ),
+                        "ref": "channels/lts",
+                        "commit": "a" * 40,
+                        "credential": "raw-source-secret",
+                    },
+                },
+                "installed_commit": "a" * 40,
+                "target_commit": "b" * 40,
+                "update_available": True,
+                "decision": "target_ref_changed",
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    return_value={
+                        "ok": True,
+                        "status": "ok",
+                        "sha": "c" * 40,
+                    },
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    credentialed_plugin_status,
+                ),
+            ):
+                result = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="v0.0.43",
+                        reason="scheduled",
+                        scheduled_local_date="2026-07-13",
+                    )
+                )
+
+        plugin_result = result["plugin_update_check"]
+        self.assertEqual(
+            plugin_result["plugin_repo_url"],
+            "https://github.com/tinyhat-ai/tinyhat.git",
+        )
+        self.assertNotIn("password-secret", repr(result))
+        self.assertNotIn("query-secret", repr(result))
+        self.assertNotIn("fragment-secret", repr(result))
+        self.assertNotIn("nested-secret", repr(result))
+        self.assertNotIn("raw-source-secret", repr(result))
+        self.assertNotIn("/private/plugin", repr(result))
+        self.assertEqual(
+            set(plugin_result["installed"]["source"]),
+            {"repo_url", "ref", "commit"},
+        )
+
+    def test_failed_scheduled_result_delivery_survives_manual_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             config_dir = state_dir / "config"
@@ -2332,15 +2484,21 @@ class CommandTests(TestCase):
                 current_commit_sha=lambda: None,
             )
 
-            with patch(
-                "hermes_runtime.update_check._fetch_github_commit",
-                return_value={
-                    "ok": True,
-                    "status": "ok",
-                    "sha": "c" * 40,
-                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
-                    + "c" * 40,
-                },
+            with (
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    return_value={
+                        "ok": True,
+                        "status": "ok",
+                        "sha": "c" * 40,
+                        "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                        + "c" * 40,
+                    },
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    fake_plugin_update_status,
+                ),
             ):
                 with self.assertRaises(RuntimeError):
                     asyncio.run(_scheduled_update_check(ctx))
@@ -2348,6 +2506,80 @@ class CommandTests(TestCase):
             self.assertFalse(
                 (state_dir / "updates" / "last_scheduled_check_date").exists()
             )
+            pending_path = state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE
+            saved_result = json.loads(pending_path.read_text(encoding="utf-8"))
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"},
+                    clear=True,
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    fake_plugin_update_status,
+                ),
+            ):
+                manual_result = asyncio.run(
+                    run_update_check(
+                        state_dir=state_dir,
+                        current_version="channels/lts",
+                        spec={"channel": "custom", "target_ref": "manual-check"},
+                        reason="admin_check_update",
+                    )
+                )
+            latest_result = json.loads(
+                (state_dir / "updates" / "last_check.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(latest_result, manual_result)
+            self.assertNotEqual(latest_result["reason"], saved_result["reason"])
+            self.assertEqual(
+                json.loads(pending_path.read_text(encoding="utf-8")),
+                saved_result,
+            )
+
+            platform.fail_posts = False
+            with (
+                patch(
+                    "hermes_runtime.main.mark_scheduled_check_started",
+                    side_effect=OSError("date marker unavailable"),
+                ),
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    side_effect=AssertionError("runtime target was re-resolved"),
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    side_effect=AssertionError("plugin target was re-resolved"),
+                ),
+            ):
+                with self.assertRaisesRegex(OSError, "date marker unavailable"):
+                    asyncio.run(_scheduled_update_check(ctx))
+
+            self.assertTrue(pending_path.is_file())
+            self.assertFalse(
+                (state_dir / "updates" / "last_scheduled_check_date").exists()
+            )
+            with (
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    side_effect=AssertionError("runtime target was re-resolved"),
+                ),
+                patch(
+                    "hermes_runtime.update_check.tinyhat_plugin_status",
+                    side_effect=AssertionError("plugin target was re-resolved"),
+                ),
+            ):
+                retried = asyncio.run(_scheduled_update_check(ctx))
+
+            self.assertEqual(retried, saved_result)
+            self.assertEqual(platform.posts[-1][1]["result"], saved_result)
+            self.assertTrue(
+                (state_dir / "updates" / "last_scheduled_check_date").is_file()
+            )
+            self.assertFalse(pending_path.exists())
 
     def test_unknown_command_is_rejected(self) -> None:
         with self.assertRaises(ValueError):

@@ -44,7 +44,9 @@ from hermes_runtime.local_ledger import append_entry, utc_now_iso
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 from hermes_runtime.update_check import (
+    clear_scheduled_result_for_retry,
     mark_scheduled_check_started,
+    read_scheduled_result_for_retry,
     run_update_check,
     scheduled_check_due,
 )
@@ -848,18 +850,28 @@ async def _scheduled_update_check(ctx: RuntimeContext) -> dict[str, Any]:
     due, _config, date_key = scheduled_check_due(state_dir=ctx.state_dir)
     if not due:
         return {"status": "skipped", "reason": "not_due"}
-    result = await run_update_check(
+    result = read_scheduled_result_for_retry(
         state_dir=ctx.state_dir,
-        current_version=ctx.current_version(),
-        current_code_version=__version__,
-        current_sha=ctx.current_commit_sha(),
-        reason="scheduled",
+        date_key=date_key,
     )
+    if result is None:
+        result = await run_update_check(
+            state_dir=ctx.state_dir,
+            current_version=ctx.current_version(),
+            current_code_version=__version__,
+            current_sha=ctx.current_commit_sha(),
+            reason="scheduled",
+            scheduled_local_date=date_key,
+        )
     await ctx.platform.post_json(
         context_computer_api_path(ctx, "update-check-results/v1"),
         {"result": result},
     )
     mark_scheduled_check_started(state_dir=ctx.state_dir, date_key=date_key)
+    clear_scheduled_result_for_retry(
+        state_dir=ctx.state_dir,
+        date_key=date_key,
+    )
     return result
 
 

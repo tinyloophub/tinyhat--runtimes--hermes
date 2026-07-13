@@ -229,9 +229,9 @@ it.
 | `hermes_status` | `hermes_runtime/commands/hermes_status.py` | Checks Hermes Agent through its public CLI. | Read-only. Runs `hermes --version`, `hermes status`, and `hermes status --all`, then returns bounded stdout/stderr for Hat admin. |
 | `multimodal_status` | `hermes_runtime/commands/multimodal_status.py` | Shows the Hermes speech-to-text and image-understanding providers/models currently configured on the Computer. | Read-only. Reads Hermes config and env-file key presence, runs `hermes config show` when available, and reports active STT/vision providers, model IDs, OpenRouter command-provider readiness, and whether required OpenRouter env names are present. It masks values and never returns secret contents. |
 | `tinyhat_plugin_status` | `hermes_runtime/commands/tinyhat_plugin_status.py` | Shows the Tinyhat plugin version/commit installed in Hermes and the configured target version/commit. | Read-only. Reads the installed plugin manifest and source metadata, then uses a temporary checkout of the public plugin repo to read the target manifest. |
-| `check_tinyhat_plugin_update` | `hermes_runtime/commands/check_tinyhat_plugin_update.py` | Checks whether the configured Tinyhat plugin channel has moved beyond the installed plugin. | Read-only. Resolves the configured plugin ref, compares it with `.tinyhat-plugin-source.json`, and reports `update_available`; it does not install, enable, restart, or change Hermes. |
+| `check_tinyhat_plugin_update` | `hermes_runtime/commands/check_tinyhat_plugin_update.py` | Checks whether the selected Tinyhat plugin target has moved beyond the installed plugin. | Read-only. Target precedence is explicit command spec, environment configuration, installed `.tinyhat-plugin-source.json` repo/ref, then `channels/lts`. It reports the exact checked commit and `update_available`; it does not install, enable, restart, or change Hermes. |
 | `install_tinyhat_plugin` | `hermes_runtime/commands/install_tinyhat_plugin.py` | Installs the Tinyhat plugin after Hermes Agent is present, and skips reinstalling when the plugin already exists. | Resolves `TINYHAT_PLUGIN_REF` (default `channels/lts`) from `TINYHAT_PLUGIN_REPO_URL` (default `https://github.com/tinyhat-ai/tinyhat.git`), prepares that checkout, runs `hermes plugins install file://... --enable`, then runs `hermes plugins enable tinyhat`. Records repo/ref/commit in `.tinyhat-plugin-source.json`. Does not configure Telegram or read Tinyhat platform credentials. |
-| `update_tinyhat_plugin` | `hermes_runtime/commands/update_tinyhat_plugin.py` | Updates the Tinyhat plugin independently of the Tinyhat runtime. | Resolves the configured plugin ref, compares it with the installed repo/ref/commit metadata, and reinstalls through `hermes plugins install file://... --enable --force` only when the target changed or the plugin is missing. It verifies the installed plugin after the update. A long-running Hermes Telegram gateway may still need a Hermes restart to reload plugin commands. |
+| `update_tinyhat_plugin` | `hermes_runtime/commands/update_tinyhat_plugin.py` | Updates the Tinyhat plugin independently of the Tinyhat runtime. | Resolves the configured logical plugin ref, compares it with installed repo/ref/commit metadata, and reinstalls through `hermes plugins install file://... --enable --force` only when the target changed or the plugin is missing. `target_commit` or `target_sha` may pin the full checked commit while metadata keeps the logical channel/tag in `ref`; retries no-op when repo, logical ref, and commit already match. A long-running Hermes Telegram gateway may still need a Hermes restart to reload plugin commands. |
 | `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_HOME_CHANNEL`, and the platform OpenRouter key into Hermes env files, installs the Telegram quick commands documented below, configures OpenRouter `openai/gpt-4o-transcribe` command-provider STT with explicit sequential OpenRouter model fallbacks before local `small` faster-whisper, configures auxiliary vision through OpenRouter `google/gemini-2.5-flash` with up to three OpenRouter model fallbacks (override with `TINYHAT_HERMES_VISION_PROVIDER` / `TINYHAT_HERMES_VISION_MODEL` / `TINYHAT_HERMES_OPENROUTER_VISION_FALLBACK_MODELS`), preserves an explicit `TELEGRAM_FALLBACK_IPS` value or seeds Hermes' own last-resort endpoints so startup cannot hang in its unbounded system-DNS discovery task, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token and OpenRouter key are not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
 | `apply_config` | `hermes_runtime/commands/apply_config.py` | Applies Tinyhat runtime config changes after the settings Mini App saves a secret. | Fetches the latest computer-authenticated runtime secret map, writes the values into Hermes env files, reloads the updated keys into the runtime process, records Tinyhat-managed terminal aliases for every valid saved env name (`_HERMES_FORCE_<ENV_NAME>`), sends the owner a short notice, and restarts `hermes gateway` so Hermes loads added, updated, or removed secret env vars. Command results include only secret names and env-file paths, never secret values. |
 | `import_openclaw_state` | `hermes_runtime/commands/import_openclaw_state.py` | Imports compatible OpenClaw state after an in-place Tinyhat Computer migration. | Runs Hermes' public `hermes claw migrate` CLI against the OpenClaw source directory (`/var/lib/tinyhat-openclaw` by default, override with `TINYHAT_HERMES_OPENCLAW_MIGRATION_SOURCE` or command `spec.source`). Uses `--preset full --overwrite --yes` by default and imports the OpenClaw token/API-key env block only when `spec.include_private_values=true` (or the older `spec.migrate_secrets=true`) is explicitly passed, mapping that safe platform flag to Hermes' `--migrate-secrets`. Returns the bounded Hermes migration stdout/stderr and source path; no secret values are returned. |
@@ -403,9 +403,11 @@ Update checks use the same version rule everywhere:
   commits that contain the release tag, so the platform should resolve the
   channel to the final tag first and send that tag to `check_update`.
 
-The daily scheduled update check runs only the discovery part (`check_update`).
-It reports that an update is available, but it does not stage or activate a new
-version by itself.
+The daily scheduled update check runs only discovery (`check_update`) for both
+the runtime and Tinyhat plugin. It reports availability but does not stage or
+activate either component by itself. The platform may use the checked plugin
+commit to queue the existing `update_tinyhat_plugin` command; the runtime does
+not choose fleet rollout policy.
 
 Without `TINYHAT_RUNTIME_UPDATE_SOURCE_DIR`, staging downloads runtime source
 archives from `codeload.github.com`. Production Computers therefore need
@@ -437,9 +439,26 @@ Override the schedule by writing these files under the runtime state directory:
 | `config/update_check_ref` | `v0.20.0-dev.20260625T125559Z.pr2-smoke` | Optional exact ref. Required for custom checks. |
 
 The latest check result is stored at `updates/last_check.json` for local
-debugging and is reported through the platform update-check result API. It is
-not embedded into heartbeat metrics. Use the admin `check_update` command when
-you want to run the same check immediately from Hat admin.
+debugging and is reported through the platform update-check result API. Every
+scheduled result includes a bounded `run_id` shaped like
+`scheduled:YYYY-MM-DD`, using the configured timezone's local date. Retrying a
+failed delivery on that local day reuses the saved result, including its exact
+checked plugin commit, instead of resolving a moving channel again. It keeps
+the same id; the next local day gets a new id. Until platform acknowledgement,
+that result is atomically stored separately at
+`updates/pending_scheduled_check.json`, so a manual check can update
+`last_check.json` without replacing the pending scheduled plan. The pending
+file is cleared only after the acknowledged local date is recorded.
+
+The plugin portion checks, in order, an explicit command target,
+environment configuration, the installed plugin's logical repo/ref metadata,
+then `channels/lts`. This keeps Computers already following `channels/latest`,
+a custom tag, or a commit SHA on that same target unless explicitly changed.
+Reports omit local plugin paths.
+
+The result is not embedded into heartbeat metrics. Use the admin `check_update`
+command when you want to run the same check immediately from Hat admin; manual
+checks keep their existing result shape and do not receive a scheduled `run_id`.
 
 In the local Docker harness, the platform supplies the target ref and the
 runtime only compares that ref with the installed ref. It does not need

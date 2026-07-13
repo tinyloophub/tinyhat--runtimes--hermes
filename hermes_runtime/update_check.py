@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +34,10 @@ GITHUB_API_BASE = f"https://api.github.com/repos/{REPO}"
 DEFAULT_CHECK_TIME = "02:35"
 DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+SCHEDULED_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+MAX_RUN_REASON_LENGTH = 64
+PENDING_SCHEDULED_RESULT_FILE = "pending_scheduled_check.json"
 
 
 @dataclass(frozen=True)
@@ -52,17 +56,76 @@ def _read_file(path: Path) -> str | None:
     return value or None
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        temporary_path.unlink(missing_ok=True)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    _write_text_atomic(
+        path,
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def read_last_result(state_dir: Path) -> dict[str, Any] | None:
-    try:
-        payload = json.loads((state_dir / "updates" / "last_check.json").read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    return _read_json(state_dir / "updates" / "last_check.json")
+
+
+def read_scheduled_result_for_retry(
+    *,
+    state_dir: Path,
+    date_key: str,
+) -> dict[str, Any] | None:
+    """Return only the saved result for this exact scheduled local day."""
+
+    payload = _read_json(
+        state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE
+    )
+    expected_run_id = f"scheduled:{date_key}"
+    if not isinstance(payload, dict):
         return None
-    return payload if isinstance(payload, dict) else None
+    if payload.get("schema") != "tinyhat_hermes_update_check_v1":
+        return None
+    if payload.get("reason") != "scheduled":
+        return None
+    if payload.get("run_id") != expected_run_id:
+        return None
+    if payload.get("scheduled_local_date") != date_key:
+        return None
+    return payload
+
+
+def clear_scheduled_result_for_retry(*, state_dir: Path, date_key: str) -> None:
+    if read_scheduled_result_for_retry(state_dir=state_dir, date_key=date_key) is None:
+        return
+    (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).unlink(
+        missing_ok=True
+    )
 
 
 def read_config(state_dir: Path) -> UpdateCheckConfig:
@@ -108,8 +171,159 @@ def scheduled_check_due(
 
 def mark_scheduled_check_started(*, state_dir: Path, date_key: str) -> None:
     path = state_dir / "updates" / "last_scheduled_check_date"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(date_key + "\n", encoding="utf-8")
+    _write_text_atomic(path, date_key + "\n")
+
+
+def _bounded_run_reason(reason: Any) -> str:
+    clean = str(reason or "scheduled").strip() or "scheduled"
+    clean = "".join(char for char in clean if char not in {"\x00", "\r", "\n"})
+    return clean[:MAX_RUN_REASON_LENGTH] or "scheduled"
+
+
+def _scheduled_run_metadata(
+    *,
+    config: UpdateCheckConfig,
+    reason: str,
+    scheduled_local_date: str | None,
+) -> dict[str, str]:
+    date_key = str(scheduled_local_date or "").strip()
+    if not date_key:
+        date_key = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(config.timezone)
+        ).date().isoformat()
+    if SCHEDULED_DATE_RE.fullmatch(date_key) is None:
+        raise ValueError("scheduled_local_date must use YYYY-MM-DD")
+    try:
+        datetime.strptime(date_key, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("scheduled_local_date must be a valid local date") from exc
+    return {
+        "run_id": f"{reason}:{date_key}",
+        "scheduled_local_date": date_key,
+    }
+
+
+def _bounded_scheduled_text(value: Any, *, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value[:max_length]
+
+
+def _scheduled_text_fields(
+    value: Any,
+    fields: dict[str, int],
+) -> dict[str, str | None]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        key: _bounded_scheduled_text(source.get(key), max_length=max_length)
+        for key, max_length in fields.items()
+    }
+
+
+def _scheduled_plugin_repo_url(value: Any) -> str | None:
+    """Return only a credential-free HTTPS plugin source for platform reports."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = parse.urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "<redacted-plugin-source>"
+    if parsed.scheme.lower() != "https" or not hostname:
+        return "<redacted-plugin-source>"
+    hostname = hostname.lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = hostname if port is None else f"{hostname}:{port}"
+    return parse.urlunsplit(("https", netloc, parsed.path, "", ""))[:2_048]
+
+
+def _scheduled_plugin_source(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "repo_url": _scheduled_plugin_repo_url(value.get("repo_url")),
+        **_scheduled_text_fields(value, {"ref": 512, "commit": 40}),
+    }
+
+
+def _scheduled_plugin_report(value: Any) -> dict[str, Any]:
+    """Project plugin status onto the public, bounded scheduled-report schema."""
+
+    status = value if isinstance(value, dict) else {}
+    installed_value = status.get("installed")
+    installed = installed_value if isinstance(installed_value, dict) else {}
+    target_value = status.get("target")
+    target = target_value if isinstance(target_value, dict) else None
+    selection_value = status.get("target_selection")
+    selection = selection_value if isinstance(selection_value, dict) else {}
+
+    installed_report: dict[str, Any] = {
+        **_scheduled_text_fields(
+            installed,
+            {"name": 128, "manifest_name": 128, "version": 256},
+        ),
+        "installed": bool(installed.get("installed")),
+        "source": _scheduled_plugin_source(installed.get("source")),
+    }
+    target_report = (
+        {
+            "repo_url": _scheduled_plugin_repo_url(target.get("repo_url")),
+            **_scheduled_text_fields(
+                target,
+                {
+                    "ref": 512,
+                    "commit": 40,
+                    "requested_commit": 40,
+                    "version": 256,
+                    "manifest_name": 128,
+                },
+            ),
+        }
+        if target is not None
+        else None
+    )
+    return {
+        **_scheduled_text_fields(
+            status,
+            {
+                "plugin_name": 128,
+                "plugin_ref": 512,
+                "installed_version": 256,
+                "installed_commit": 40,
+                "target_version": 256,
+                "target_commit": 40,
+                "decision": 128,
+                "checked_at": 64,
+            },
+        ),
+        "plugin_repo_url": _scheduled_plugin_repo_url(
+            status.get("plugin_repo_url")
+        ),
+        "target_selection": {
+            **_scheduled_text_fields(
+                selection,
+                {"source": 64, "plugin_ref": 512},
+            ),
+            "plugin_repo_url": _scheduled_plugin_repo_url(
+                selection.get("plugin_repo_url")
+            ),
+        },
+        "installed": installed_report,
+        "target": target_report,
+        "update_available": (
+            status.get("update_available")
+            if isinstance(status.get("update_available"), bool)
+            else None
+        ),
+        "target_error": (
+            "Plugin target could not be resolved"
+            if status.get("target_error")
+            else None
+        ),
+    }
 
 
 def _fetch_github_commit(ref: str) -> dict[str, Any]:
@@ -267,9 +481,11 @@ async def run_update_check(
     current_sha: str | None = None,
     spec: dict[str, Any] | None = None,
     reason: str = "scheduled",
+    scheduled_local_date: str | None = None,
 ) -> dict[str, Any]:
     config = read_config(state_dir)
     command_spec = spec if isinstance(spec, dict) else {}
+    bounded_reason = _bounded_run_reason(reason)
     channel = str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
     target_ref = str(command_spec.get("target_ref") or config.target_ref or "").strip()
     if not target_ref and channel in {"lts", "latest"}:
@@ -304,7 +520,7 @@ async def run_update_check(
     )
     result = {
         "schema": "tinyhat_hermes_update_check_v1",
-        "reason": reason,
+        "reason": bounded_reason,
         "status": resolved.get("status") or "unknown",
         "repo": REPO,
         "channel": channel,
@@ -327,25 +543,41 @@ async def run_update_check(
             },
         },
     }
+    if bounded_reason == "scheduled":
+        result.update(
+            _scheduled_run_metadata(
+                config=config,
+                reason=bounded_reason,
+                scheduled_local_date=scheduled_local_date,
+            )
+        )
     if resolved.get("message"):
         result["message"] = resolved.get("message")
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
     try:
+        plugin_status = await tinyhat_plugin_status({"spec": command_spec})
+        if bounded_reason == "scheduled":
+            plugin_status = _scheduled_plugin_report(plugin_status)
         result["plugin_update_check"] = {
             "schema": "tinyhat_hermes_plugin_update_check_v1",
-            **(await tinyhat_plugin_status({"spec": command_spec})),
+            **plugin_status,
         }
     except Exception as exc:
         result["plugin_update_check"] = {
             "schema": "tinyhat_hermes_plugin_update_check_v1",
             "update_available": None,
             "decision": "target_unavailable",
-            "error": str(exc)[:500],
+            "error": f"{type(exc).__name__}: plugin update check failed",
             "checked_at": datetime.now(timezone.utc)
             .replace(microsecond=0)
             .isoformat()
             .replace("+00:00", "Z"),
         }
+    if bounded_reason == "scheduled":
+        _write_json(
+            state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE,
+            result,
+        )
     _write_json(state_dir / "updates" / "last_check.json", result)
     return result

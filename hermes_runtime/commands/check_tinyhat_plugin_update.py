@@ -1,10 +1,11 @@
 """Check whether the Tinyhat plugin has an available update.
 
 What it does:
-    Resolves the configured Tinyhat plugin ref, ``channels/lts`` by default,
-    reads that plugin manifest, and compares the target commit with the commit
-    recorded next to the installed plugin. It only looks and reports; it does
-    not install or update the plugin.
+    Selects the Tinyhat plugin target from an explicit command, environment
+    configuration, installed source metadata, or ``channels/lts`` (in that
+    order), reads that plugin manifest, and compares the target commit with the
+    commit recorded next to the installed plugin. It only looks and reports;
+    it does not install or update the plugin.
 
 When to use it:
     Use this from Hat admin before running ``update_tinyhat_plugin``, or when

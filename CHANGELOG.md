@@ -28,6 +28,10 @@
   configured, before Telegram setup or a Heal restart. This bypasses Hermes'
   unbounded system-DNS discovery task without replacing its normal DNS-first
   transport, and preserves any explicit `TELEGRAM_FALLBACK_IPS` override.
+- Make daily runtime/plugin update reports safe for platform automation by
+  keeping same-day retries on one saved result and deterministic run id,
+  following the installed plugin's logical source unless explicitly changed,
+  and pinning plugin installation to the exact commit that was checked.
 
 ## 0.0.43 - 2026-07-12
 
