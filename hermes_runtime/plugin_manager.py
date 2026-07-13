@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -594,6 +595,9 @@ async def _prepare_checkout(
                 "Tinyhat plugin checkout did not match the exact commit"
             )
         return checkout, commit, tmp
+    except asyncio.CancelledError:
+        tmp.cleanup()
+        raise
     except Exception:
         tmp.cleanup()
         raise

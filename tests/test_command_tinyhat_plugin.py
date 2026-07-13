@@ -634,6 +634,36 @@ def test_exact_commit_checkout_rejects_logical_ref_drift() -> None:
         )
 
 
+def test_prepare_checkout_cleans_temporary_directory_when_cancelled() -> None:
+    temporary = unittest.mock.Mock()
+    temporary.name = "/tmp/tinyhat-plugin-cancelled"
+
+    async def cancelled_git(
+        args: list[str],
+        *,
+        timeout_seconds: int = 120,
+    ) -> dict[str, object]:
+        del args, timeout_seconds
+        raise asyncio.CancelledError
+
+    with (
+        patch(
+            "hermes_runtime.plugin_manager.tempfile.TemporaryDirectory",
+            return_value=temporary,
+        ),
+        patch("hermes_runtime.plugin_manager._git", cancelled_git),
+        unittest.TestCase().assertRaises(asyncio.CancelledError),
+    ):
+        asyncio.run(
+            _prepare_checkout(
+                "https://github.com/tinyhat-ai/tinyhat.git",
+                "channels/lts",
+            )
+        )
+
+    temporary.cleanup.assert_called_once_with()
+
+
 def test_plugin_status_uses_one_coherent_target_selection() -> None:
     lts_source = {
         "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
