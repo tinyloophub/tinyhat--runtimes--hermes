@@ -360,6 +360,11 @@ async def _run_gateway_restart(
                 service_manager=str(owner.get("manager") or "user"),
                 service_invocation_id=str(after.get("invocation_id") or "")
                 or None,
+                service_main_pid=(
+                    int(after.get("main_pid") or 0)
+                    if isinstance(after, dict)
+                    else None
+                ),
                 timeout_seconds=remaining,
             )
             if _remaining() <= 0:

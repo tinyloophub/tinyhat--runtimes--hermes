@@ -29,6 +29,7 @@ from hermes_runtime.main import (  # noqa: E402
     _heartbeat_metrics,
     _heartbeat_once,
     _inspect_gateway_state,
+    _service_generation_started_unix,
     _reexec_after_code_swap,
     _safe_activate_staged_on_startup,
     _run_one_command,
@@ -260,15 +261,30 @@ class CommandTests(TestCase):
             "gateway_status_telegram_fatal",
         )
 
+    def test_service_generation_start_is_converted_to_unix_time(self) -> None:
+        with (
+            patch("hermes_runtime.main.time.time", return_value=1_000.0),
+            patch("hermes_runtime.main.time.monotonic", return_value=50.0),
+        ):
+            started = _service_generation_started_unix(
+                {"exec_main_start_timestamp_monotonic": 40_000_000}
+            )
+            missing = _service_generation_started_unix({})
+
+        self.assertEqual(started, 990.0)
+        self.assertEqual(missing, 1_000.0)
+
     def test_gateway_heartbeat_rechecks_expired_functional_proof(self) -> None:
         probes = 0
 
         async def fake_status(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"ok": True, "stdout": "Active: active (running)", "stderr": ""}
 
-        async def fake_probe(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        async def fake_probe(*_args: Any, **kwargs: Any) -> dict[str, Any]:
             nonlocal probes
             probes += 1
+            self.assertEqual(kwargs["service_main_pid"], 42)
+            self.assertGreater(kwargs["since_unix"], 0)
             return {
                 "functionally_ready": True,
                 "telegram_evidence": "journal",

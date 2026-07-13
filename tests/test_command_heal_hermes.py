@@ -447,10 +447,12 @@ def test_heal_hermes_restart_runs_gateway_restart_then_verify() -> None:
         log_offset: int = 0,
         service_manager: str = "user",
         service_invocation_id: str | None = None,
+        service_main_pid: int | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         del hermes_bin, since_unix, log_path, log_offset, service_manager
         assert service_invocation_id == "new-invocation"
+        assert service_main_pid == 200
         assert timeout_seconds is not None and timeout_seconds > 0
         events.append("verify")
         return {
@@ -565,10 +567,12 @@ def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
         log_offset: int = 0,
         service_manager: str = "user",
         service_invocation_id: str | None = None,
+        service_main_pid: int | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         del hermes_bin, since_unix, log_path, log_offset, service_manager
         assert service_invocation_id == "new-invocation"
+        assert service_main_pid == 200
         assert timeout_seconds is not None and timeout_seconds > 0
         # Advance the injected clock past the (clamped) 30s deadline so the
         # first probe that is not ready ends the poll loop.
@@ -672,10 +676,12 @@ def test_heal_hermes_rejects_positive_readiness_returned_after_deadline() -> Non
         log_offset: int = 0,
         service_manager: str = "user",
         service_invocation_id: str | None = None,
+        service_main_pid: int | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         del hermes_bin, since_unix, log_path, log_offset, service_manager
         assert service_invocation_id == "new-invocation"
+        assert service_main_pid == 200
         assert timeout_seconds is not None and timeout_seconds > 0
         clock["now"] += 31.0
         return {
@@ -860,10 +866,12 @@ def test_heal_hermes_force_cycles_same_generation_after_official_failure() -> No
         log_offset: int = 0,
         service_manager: str = "user",
         service_invocation_id: str | None = None,
+        service_main_pid: int | None = None,
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
         del hermes_bin, since_unix, log_path, log_offset, service_manager
         assert service_invocation_id == "new-invocation"
+        assert service_main_pid == 200
         assert timeout_seconds is not None and timeout_seconds > 0
         return {
             "ready": True,

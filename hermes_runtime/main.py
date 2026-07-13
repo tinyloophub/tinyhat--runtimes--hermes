@@ -304,6 +304,26 @@ def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _service_generation_started_unix(generation: dict[str, Any]) -> float:
+    """Convert systemd's monotonic service-start timestamp to Unix time.
+
+    Invalid or missing values return the current Unix time. Readiness then
+    fails closed until Hermes writes a fresh adapter state.
+    """
+    now_unix = time.time()
+    now_monotonic = time.monotonic()
+    try:
+        started_monotonic = (
+            int(generation.get("exec_main_start_timestamp_monotonic") or 0)
+            / 1_000_000
+        )
+    except (TypeError, ValueError):
+        return now_unix
+    if not 0 < started_monotonic <= now_monotonic:
+        return now_unix
+    return now_unix - (now_monotonic - started_monotonic)
+
+
 async def _inspect_gateway_state(
     previous_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -406,11 +426,18 @@ async def _inspect_gateway_state(
             and isinstance(generation, dict)
             and invocation_id
         ):
+            # systemd exposes the service start on CLOCK_MONOTONIC. Convert it
+            # to the wall-clock domain used by Hermes' ISO runtime-state
+            # timestamps so a heartbeat cannot trust a Telegram row inherited
+            # from the prior gateway process. Missing/invalid evidence uses
+            # "now" and therefore fails closed until a fresh row is written.
+            service_started_unix = _service_generation_started_unix(generation)
             readiness = await probe_functional_readiness(
                 hermes_bin,
-                since_unix=0,
+                since_unix=service_started_unix,
                 service_manager=str(owner.get("manager") or "user"),
                 service_invocation_id=invocation_id,
+                service_main_pid=int(generation.get("main_pid") or 0) or None,
             )
             functional_ready = readiness.get("functionally_ready") is True
             telegram_evidence = readiness.get("telegram_evidence")

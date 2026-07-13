@@ -8,7 +8,9 @@
   original admin Heal button by defaulting its exact legacy reason to restart,
   while explicit `restart=false` and assignment-time reconciliation remain
   start-only. Functional success requires Telegram evidence scoped to the new
-  systemd invocation. Heartbeats now distinguish verified serving,
+  systemd invocation, preferring Hermes' PID-matched atomic gateway state over
+  info-level journal markers that normal production services suppress.
+  Heartbeats now distinguish verified serving,
   serving-but-unverified, draining/restarting, non-serving, and unknown states.
 - Seed Hermes' documented Telegram fallback endpoints when no operator value is
   configured, before Telegram setup or a Heal restart. This bypasses Hermes'
