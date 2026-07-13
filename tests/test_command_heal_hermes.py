@@ -527,6 +527,120 @@ def test_heal_hermes_restart_runs_gateway_restart_then_verify() -> None:
     assert "123456:token" not in str(result)
 
 
+def test_restart_preserves_official_command_without_systemd_owner() -> None:
+    for discovery_reason in (
+        "systemctl_unavailable",
+        "gateway_service_not_found",
+    ):
+        run_process_calls: list[list[str]] = []
+
+        async def fake_run_process(
+            args: list[str],
+            *,
+            timeout_seconds: float,
+            env: dict[str, str] | None = None,
+            kill_process_group: bool = False,
+        ) -> dict[str, object]:
+            del timeout_seconds, env
+            assert kill_process_group is True
+            run_process_calls.append(list(args))
+            return {
+                "args": list(args),
+                "returncode": 0,
+                "ok": True,
+                "timed_out": False,
+                "duration_ms": 12,
+                "stdout": "Gateway restarted\n",
+                "stderr": "",
+            }
+
+        async def fake_probe(
+            hermes_bin: Path,
+            *,
+            since_unix: float,
+            log_path: Path | None = None,
+            log_offset: int = 0,
+            service_manager: str = "user",
+            service_invocation_id: str | None = None,
+            service_main_pid: int | None = None,
+            timeout_seconds: float | None = None,
+        ) -> dict[str, object]:
+            del hermes_bin, since_unix, log_path, log_offset, service_manager
+            assert service_invocation_id is None
+            assert service_main_pid is None
+            assert timeout_seconds is not None and timeout_seconds > 0
+            return {
+                "ready": True,
+                "functionally_ready": True,
+                "status_healthy": True,
+                "telegram_evidence": "log",
+                "telegram_connected": True,
+                "status": {"ok": True, "stdout": "Gateway is running"},
+            }
+
+        async def fail_service_action(
+            *_args: object, **_kwargs: object
+        ) -> dict[str, object]:
+            raise AssertionError("foreground restart must not force-cycle systemd")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(os.environ, _configured_heal_env(tmp), clear=True),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.discover_gateway_service",
+                    return_value={
+                        "ok": False,
+                        "reason": discovery_reason,
+                        "owner": None,
+                        "generation": None,
+                    },
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.run_process",
+                    fake_run_process,
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.run_gateway_service_action",
+                    fail_service_action,
+                ),
+                patch(
+                    "hermes_runtime.commands.heal_hermes.probe_functional_readiness",
+                    fake_probe,
+                ),
+            ):
+                result = asyncio.run(
+                    run_command(
+                        SimpleNamespace(),
+                        {"kind": "heal_hermes", "spec": {"restart": True}},
+                    )
+                )
+
+        assert run_process_calls == [
+            ["/usr/local/bin/hermes", "gateway", "restart"]
+        ]
+        assert result["healthy"] is True
+        assert result["healed"] is True
+        assert result["reason"] == "gateway_restart_verified"
+        restart = result["restart"]
+        assert restart["performed"] is True
+        assert restart["verified"] is True
+        assert restart["functionally_verified"] is True
+        assert restart["method"] == "official_foreground"
+        assert restart["fallback_attempted"] is False
+        assert restart["telegram_evidence"] == "log"
+        assert restart["generation"] == {
+            "owner": "foreground",
+            "before": None,
+            "after": None,
+            "changed": False,
+            "active": False,
+        }
+
+
 def test_heal_hermes_restart_deadline_exceeded_reports_unhealthy() -> None:
     clock = {"now": 0.0}
     before = _generation("old-invocation", 100)
@@ -1293,6 +1407,42 @@ def test_restart_fails_closed_when_service_owner_is_ambiguous() -> None:
     assert result["restart"]["requested"] is True
     assert result["restart"]["performed"] is False
     assert result["restart"]["generation"]["changed"] is False
+
+
+def test_restart_fails_closed_when_service_probe_is_unavailable() -> None:
+    async def fail_official(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("unavailable ownership probe must prevent restart")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with (
+            patch.dict(os.environ, _configured_heal_env(tmp), clear=True),
+            patch(
+                "hermes_runtime.commands.heal_hermes.find_hermes_binary",
+                return_value=Path("/usr/local/bin/hermes"),
+            ),
+            patch(
+                "hermes_runtime.commands.heal_hermes.discover_gateway_service",
+                return_value={
+                    "ok": False,
+                    "reason": "gateway_service_probe_unavailable",
+                    "owner": None,
+                    "generation": None,
+                },
+            ),
+            patch("hermes_runtime.commands.heal_hermes.run_process", fail_official),
+        ):
+            result = asyncio.run(
+                run_command(
+                    SimpleNamespace(),
+                    {"kind": "heal_hermes", "spec": {"restart": True}},
+                )
+            )
+
+    assert result["healthy"] is False
+    assert result["healed"] is False
+    assert result["reason"] == "gateway_service_probe_unavailable"
+    assert result["restart"]["requested"] is True
+    assert result["restart"]["performed"] is False
 
 
 def test_heal_hermes_reports_missing_telegram_config() -> None:

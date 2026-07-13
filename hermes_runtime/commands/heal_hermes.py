@@ -10,15 +10,15 @@ present, and then either:
   button, an absent restart field plus the exact reason
   ``admin_heal_hermes`` requests a restart; explicit false remains start-only;
   or
-- ``spec.restart=true``: performs a durable one-shot gateway restart owned
-  end-to-end by this runtime process (which lives outside the gateway's
-  control group, so the follow-up start can never be orphaned by the stop's
-  kill sweep): reload env files, run the official ``hermes gateway
-  restart`` command for a bounded grace period.  If the same systemd
-  generation remains, it narrowly force-cycles only the proven owner of
-  ``hermes-gateway.service``.  It then verifies a different active generation,
-  healthy ``hermes gateway status``, and fresh Telegram connect evidence tied
-  to the new systemd invocation. Missing evidence never reports healed.
+- ``spec.restart=true``: reloads env files and runs the official ``hermes
+  gateway restart`` command for a bounded grace period. When exactly one
+  systemd unit owns the gateway, a stuck old generation is narrowly
+  force-cycled and success requires a different active generation plus fresh
+  Telegram evidence. In foreground/Docker mode, where systemd is unavailable
+  or no gateway unit exists, the official command is preserved without a
+  force-cycle and success requires fresh foreground-log Telegram evidence.
+  Ambiguous or unavailable systemd ownership still fails closed. Missing
+  evidence never reports healed.
 
 It does not call the Telegram setup endpoint, mint bot tokens, unassign the
 Computer, or restart the Tinyhat runtime service. No secret values are logged
@@ -84,6 +84,9 @@ RESTART_VERIFY_POLL_SECONDS = 2.0
 OFFICIAL_RESTART_GRACE_SECONDS = 20
 FORCE_FALLBACK_RESERVE_SECONDS = 15
 SERVICE_ACTION_TIMEOUT_SECONDS = 5
+OFFICIAL_ONLY_DISCOVERY_REASONS = frozenset(
+    {"systemctl_unavailable", "gateway_service_not_found"}
+)
 
 # Module alias so tests can inject a fake clock without touching the global
 # ``time`` module that asyncio itself relies on.
@@ -176,7 +179,7 @@ async def _run_gateway_restart(
     reason: str,
     deadline_seconds: int,
 ) -> dict[str, Any]:
-    """Restart one proven gateway unit and verify a new generation."""
+    """Restart a gateway and prove service or foreground functional readiness."""
     del ctx, reason
     started = _monotonic()
     since_unix = time.time()
@@ -205,9 +208,17 @@ async def _run_gateway_restart(
         "verified": None,
     }
     discovery = await discover_gateway_service()
+    discovery_reason = str(discovery.get("reason") or "service_unknown")
     owner = discovery.get("owner") if discovery.get("ok") else None
     before = discovery.get("generation") if discovery.get("ok") else None
-    if not isinstance(owner, dict) or not isinstance(before, dict):
+    official_only = (
+        not discovery.get("ok")
+        and discovery_reason in OFFICIAL_ONLY_DISCOVERY_REASONS
+    )
+    if (
+        not official_only
+        and (not isinstance(owner, dict) or not isinstance(before, dict))
+    ):
         return {
             "verified": False,
             "functionally_verified": False,
@@ -216,7 +227,7 @@ async def _run_gateway_restart(
             "performed": False,
             "method": None,
             "fallback_attempted": False,
-            "failure_reason": str(discovery.get("reason") or "service_unknown"),
+            "failure_reason": discovery_reason,
             "milestones_ms": milestones,
             "readiness": None,
             "restart_result": None,
@@ -246,6 +257,85 @@ async def _run_gateway_restart(
     milestones["official_done"] = _ms()
     restart_command_ok = bool(restart_result.get("ok"))
     performed = True
+    if official_only:
+        # Docker and explicit foreground installs have no systemd generation
+        # to inspect or force-cycle. Preserve Hermes' official restart
+        # behavior and require affirmative evidence from the foreground log;
+        # a healthy status alone may still describe the old process when the
+        # restart command failed.
+        milestones["restart_done"] = _ms()
+        readiness: dict[str, Any] | None = None
+        verified = False
+        deadline_exceeded = False
+        failure_reason = (
+            None if restart_command_ok else "gateway_restart_command_failed"
+        )
+        if not restart_command_ok and _remaining() > 0:
+            readiness = await probe_functional_readiness(
+                hermes_bin,
+                since_unix=since_unix,
+                log_path=log_path,
+                log_offset=log_offset,
+                timeout_seconds=_remaining(),
+            )
+        while restart_command_ok and not verified:
+            remaining = _remaining()
+            if remaining <= 0:
+                deadline_exceeded = True
+                failure_reason = "gateway_restart_deadline_exceeded"
+                break
+            readiness = await probe_functional_readiness(
+                hermes_bin,
+                since_unix=since_unix,
+                log_path=log_path,
+                log_offset=log_offset,
+                timeout_seconds=remaining,
+            )
+            if _remaining() <= 0:
+                deadline_exceeded = True
+                failure_reason = "gateway_restart_deadline_exceeded"
+                break
+            if readiness.get("ready"):
+                verified = True
+                milestones["verified"] = _ms()
+                break
+            remaining = _remaining()
+            if remaining <= 0:
+                deadline_exceeded = True
+                failure_reason = "gateway_restart_deadline_exceeded"
+                break
+            await asyncio.sleep(min(RESTART_VERIFY_POLL_SECONDS, remaining))
+
+        if _remaining() <= 0 and not verified:
+            deadline_exceeded = True
+        if deadline_exceeded and failure_reason is None:
+            failure_reason = "gateway_restart_deadline_exceeded"
+        return {
+            "verified": verified,
+            "generation_verified": False,
+            "functionally_verified": verified,
+            "deadline_exceeded": deadline_exceeded,
+            "restart_command_ok": restart_command_ok,
+            "performed": performed,
+            "method": "official_foreground",
+            "fallback_attempted": False,
+            "failure_reason": failure_reason,
+            "milestones_ms": milestones,
+            "readiness": readiness,
+            "restart_result": _compact_process(restart_result),
+            "fallback_actions": {},
+            "generation": {
+                "owner": "foreground",
+                "before": None,
+                "after": None,
+                "changed": False,
+                "active": False,
+            },
+        }
+
+    # From here on owner/before are guaranteed by the guarded service path.
+    assert isinstance(owner, dict)
+    assert isinstance(before, dict)
     after = await snapshot_gateway_service(
         owner,
         timeout_seconds=max(1.0, min(SERVICE_ACTION_TIMEOUT_SECONDS, _remaining())),
