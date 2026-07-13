@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -58,13 +59,63 @@ from hermes_runtime.commands.configure_telegram import (
     _gateway_status_is_healthy,
     _start_gateway_foreground,
 )
-from hermes_runtime.gateway_readiness import GATEWAY_SERVICE_NAME
+from hermes_runtime.gateway_readiness import (
+    GATEWAY_SERVICE_NAME,
+    read_gateway_runtime_generation,
+)
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     probe_hermes_status,
     run_process,
 )
 from hermes_runtime.runtime_env import load_env_files_into_process
+
+_monotonic = time.monotonic
+
+# A heal restart reserves ten seconds after destructive stop admission. Keep
+# each recovery leg independently bounded so a wedged service helper cannot
+# consume the foreground fallback's chance to put messaging back online.
+RECOVERY_SERVICE_START_TIMEOUT_SECONDS = 3.0
+RECOVERY_STATUS_TIMEOUT_SECONDS = 2.0
+RECOVERY_FOREGROUND_WAIT_SECONDS = 2.0
+
+
+class _StartDeadlineExceeded(Exception):
+    """Internal control flow for a start transaction whose budget expired."""
+
+
+def _remaining_seconds(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    return max(0.0, deadline_monotonic - _monotonic())
+
+
+async def _run_gateway_process(
+    args: list[str],
+    *,
+    timeout_seconds: float,
+    deadline_monotonic: float | None,
+    env: dict[str, str] | None = None,
+    mutating: bool = False,
+) -> dict[str, Any]:
+    """Run one CLI leg without letting it outlive a caller's deadline.
+
+    Deadline-scoped mutating commands run in a dedicated process group. This
+    lets :func:`run_process` cancel the Hermes CLI and any management-process
+    children together if the budget expires.
+    """
+    remaining = _remaining_seconds(deadline_monotonic)
+    if remaining is not None:
+        if remaining <= 0:
+            raise _StartDeadlineExceeded
+        timeout_seconds = min(timeout_seconds, remaining)
+    kwargs: dict[str, Any] = {
+        "timeout_seconds": timeout_seconds,
+        "env": env,
+    }
+    if deadline_monotonic is not None and mutating:
+        kwargs["kill_process_group"] = True
+    return await run_process(args, **kwargs)
 
 
 def _user_systemd_env() -> dict[str, str] | None:
@@ -122,7 +173,9 @@ def _service_reported_failed(result: dict[str, Any] | None) -> bool:
     return isinstance(result, dict) and result.get("returncode") == 0
 
 
-async def _reset_failed_gateway_service() -> dict[str, Any] | None:
+async def _reset_failed_gateway_service(
+    *, deadline_monotonic: float | None = None
+) -> dict[str, Any] | None:
     """Reset a failed/start-limited gateway unit on the manager that owns it.
 
     Detection is by exit code only (never by matching CLI prose). Returns a
@@ -133,17 +186,20 @@ async def _reset_failed_gateway_service() -> dict[str, Any] | None:
     if not systemctl:
         return None
     for manager in _systemctl_manager_commands(systemctl):
-        is_failed = await run_process(
+        is_failed = await _run_gateway_process(
             manager["is_failed"],
             timeout_seconds=30,
+            deadline_monotonic=deadline_monotonic,
             env=manager["env"],
         )
         if not _service_reported_failed(is_failed):
             continue
-        reset = await run_process(
+        reset = await _run_gateway_process(
             manager["reset_failed"],
             timeout_seconds=30,
+            deadline_monotonic=deadline_monotonic,
             env=manager["env"],
+            mutating=True,
         )
         return {
             "manager": manager["manager"],
@@ -155,84 +211,169 @@ async def _reset_failed_gateway_service() -> dict[str, Any] | None:
     return None
 
 
-async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
-    status_before = await run_process(
-        [str(hermes_bin), "gateway", "status"],
-        timeout_seconds=45,
-    )
-    if _gateway_status_is_healthy(status_before):
-        return {
-            "already_running": True,
-            "started": True,
-            "healthy": True,
-            "mode": "existing",
-            "adapter_ready": True,
-            "status_before": _compact_process(status_before),
-            "start": None,
-            "foreground": None,
-            "status_after": _compact_process(status_before),
-        }
-
-    reset_failed = await _reset_failed_gateway_service()
-
-    start = await run_process(
-        [str(hermes_bin), "gateway", "start"],
-        timeout_seconds=180,
-    )
-    status_after = await run_process(
-        [str(hermes_bin), "gateway", "status"],
-        timeout_seconds=45,
-    )
-    if not _gateway_status_is_healthy(status_after) and reset_failed is None:
-        reset_failed = await _reset_failed_gateway_service()
-        if reset_failed is not None:
-            start = await run_process(
-                [str(hermes_bin), "gateway", "start"],
-                timeout_seconds=180,
-            )
-            status_after = await run_process(
-                [str(hermes_bin), "gateway", "status"],
-                timeout_seconds=45,
-            )
+async def _start_gateway(
+    hermes_bin: Path,
+    *,
+    deadline_monotonic: float | None = None,
+    gateway_known_stopped: bool = False,
+) -> dict[str, Any]:
+    status_before: dict[str, Any] | None = None
+    status_after: dict[str, Any] | None = None
+    reset_failed: dict[str, Any] | None = None
+    start: dict[str, Any] | None = None
     install: dict[str, Any] | None = None
-    if (
-        not _gateway_status_is_healthy(status_after)
-        and _gateway_service_is_missing(start, status_after)
-    ):
-        install = await run_process(
-            [str(hermes_bin), "gateway", "install"],
-            timeout_seconds=180,
-        )
-        if install.get("ok"):
-            start = await run_process(
-                [str(hermes_bin), "gateway", "start"],
-                timeout_seconds=180,
-            )
-            status_after = await run_process(
+    foreground: dict[str, Any] | None = None
+    deadline_exceeded = False
+    try:
+        if not gateway_known_stopped:
+            status_before = await _run_gateway_process(
                 [str(hermes_bin), "gateway", "status"],
                 timeout_seconds=45,
+                deadline_monotonic=deadline_monotonic,
             )
-    foreground: dict[str, Any] | None = None
-    if _gateway_needs_foreground_run(
-        start=start,
-        status=status_after,
-        install=install,
-    ):
-        foreground = await _start_gateway_foreground(hermes_bin)
-        status_after = await run_process(
-            [str(hermes_bin), "gateway", "status"],
-            timeout_seconds=45,
+            if _gateway_status_is_healthy(status_before):
+                return {
+                    "already_running": True,
+                    "started": True,
+                    "healthy": True,
+                    "mode": "existing",
+                    "adapter_ready": True,
+                    "deadline_exceeded": False,
+                    "status_before": _compact_process(status_before),
+                    "start": None,
+                    "foreground": None,
+                    "status_after": _compact_process(status_before),
+                }
+
+            reset_failed = await _reset_failed_gateway_service(
+                deadline_monotonic=deadline_monotonic
+            )
+
+        # A heal transaction that admitted the paired stop goes straight to
+        # this recovery sequence. Each leg has its own cap: a wedged service
+        # start/status probe must still leave enough time to launch Tinyhat's
+        # detached foreground gateway.
+        start = await _run_gateway_process(
+            [str(hermes_bin), "gateway", "start"],
+            timeout_seconds=(
+                RECOVERY_SERVICE_START_TIMEOUT_SECONDS
+                if gateway_known_stopped
+                else 180
+            ),
+            deadline_monotonic=deadline_monotonic,
+            mutating=True,
         )
+        status_after = await _run_gateway_process(
+            [str(hermes_bin), "gateway", "status"],
+            timeout_seconds=(
+                RECOVERY_STATUS_TIMEOUT_SECONDS if gateway_known_stopped else 45
+            ),
+            deadline_monotonic=deadline_monotonic,
+        )
+        if (
+            gateway_known_stopped
+            and not _gateway_status_is_healthy(status_after)
+            and _gateway_needs_foreground_run(
+                start=start,
+                status=status_after,
+                install=None,
+            )
+            and read_gateway_runtime_generation() is None
+        ):
+            remaining = _remaining_seconds(deadline_monotonic)
+            if remaining is not None and remaining <= 0:
+                raise _StartDeadlineExceeded
+            foreground = await _start_gateway_foreground(
+                hermes_bin,
+                startup_wait_seconds=(
+                    min(RECOVERY_FOREGROUND_WAIT_SECONDS, remaining)
+                    if remaining is not None
+                    else RECOVERY_FOREGROUND_WAIT_SECONDS
+                ),
+            )
+            status_after = await _run_gateway_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=RECOVERY_STATUS_TIMEOUT_SECONDS,
+                deadline_monotonic=deadline_monotonic,
+            )
+        elif not _gateway_status_is_healthy(status_after) and reset_failed is None:
+            reset_failed = await _reset_failed_gateway_service(
+                deadline_monotonic=deadline_monotonic
+            )
+            if reset_failed is not None:
+                start = await _run_gateway_process(
+                    [str(hermes_bin), "gateway", "start"],
+                    timeout_seconds=180,
+                    deadline_monotonic=deadline_monotonic,
+                    mutating=True,
+                )
+                status_after = await _run_gateway_process(
+                    [str(hermes_bin), "gateway", "status"],
+                    timeout_seconds=45,
+                    deadline_monotonic=deadline_monotonic,
+                )
+        if (
+            not _gateway_status_is_healthy(status_after)
+            and isinstance(start, dict)
+            and _gateway_service_is_missing(start, status_after)
+        ):
+            install = await _run_gateway_process(
+                [str(hermes_bin), "gateway", "install"],
+                timeout_seconds=180,
+                deadline_monotonic=deadline_monotonic,
+                mutating=True,
+            )
+            if install.get("ok"):
+                start = await _run_gateway_process(
+                    [str(hermes_bin), "gateway", "start"],
+                    timeout_seconds=180,
+                    deadline_monotonic=deadline_monotonic,
+                    mutating=True,
+                )
+                status_after = await _run_gateway_process(
+                    [str(hermes_bin), "gateway", "status"],
+                    timeout_seconds=45,
+                    deadline_monotonic=deadline_monotonic,
+                )
+        if (
+            not gateway_known_stopped
+            and isinstance(start, dict)
+            and _gateway_needs_foreground_run(
+            start=start,
+            status=status_after,
+            install=install,
+            )
+        ):
+            remaining = _remaining_seconds(deadline_monotonic)
+            if remaining is not None and remaining <= 0:
+                raise _StartDeadlineExceeded
+            foreground = await _start_gateway_foreground(
+                hermes_bin,
+                startup_wait_seconds=(
+                    min(2.0, remaining) if remaining is not None else 2.0
+                ),
+            )
+            status_after = await _run_gateway_process(
+                [str(hermes_bin), "gateway", "status"],
+                timeout_seconds=45,
+                deadline_monotonic=deadline_monotonic,
+            )
+    except _StartDeadlineExceeded:
+        deadline_exceeded = True
     foreground_log = (
         Path(str(foreground.get("log_path")))
         if isinstance(foreground, dict) and foreground.get("log_path")
         else None
     )
     adapter_failure = _gateway_log_has_adapter_failure(foreground_log)
-    healthy = _gateway_status_is_healthy(status_after) and not adapter_failure
+    healthy = (
+        not deadline_exceeded
+        and _gateway_status_is_healthy(status_after)
+        and not adapter_failure
+    )
     return {
         "already_running": False,
-        "started": bool(start.get("ok"))
+        "started": bool(isinstance(start, dict) and start.get("ok"))
         or bool(foreground and foreground.get("started")),
         "healthy": healthy,
         "mode": (
@@ -241,6 +382,7 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
             else "service"
         ),
         "adapter_ready": not adapter_failure,
+        "deadline_exceeded": deadline_exceeded,
         "status_before": _compact_process(status_before),
         "reset_failed": reset_failed,
         "start": _compact_process(start),
@@ -250,7 +392,14 @@ async def _start_gateway(hermes_bin: Path) -> dict[str, Any]:
     }
 
 
-async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
+async def run(
+    _ctx: Any,
+    _command: dict[str, Any],
+    *,
+    deadline_monotonic: float | None = None,
+    gateway_known_stopped: bool = False,
+    include_hermes_status: bool = True,
+) -> dict[str, Any]:
     hermes_bin = find_hermes_binary()
     if hermes_bin is None:
         return {
@@ -266,8 +415,12 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         }
 
     env_reload = load_env_files_into_process(_env_file_candidates())
-    gateway = await _start_gateway(hermes_bin)
-    hermes_status = await probe_hermes_status()
+    gateway = await _start_gateway(
+        hermes_bin,
+        deadline_monotonic=deadline_monotonic,
+        gateway_known_stopped=gateway_known_stopped,
+    )
+    hermes_status = await probe_hermes_status() if include_hermes_status else None
     return {
         "schema": "tinyhat_hermes_start_v1",
         "started": bool(gateway.get("started")),
@@ -277,9 +430,15 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "hermes_bin": str(hermes_bin),
         "env_reload": env_reload,
         "gateway": gateway,
-        "hermes": _compact_hermes_status(hermes_status),
+        "hermes": (
+            _compact_hermes_status(hermes_status)
+            if isinstance(hermes_status, dict)
+            else None
+        ),
         "message": (
-            "Hermes gateway was already running."
+            "Hermes gateway start deadline was exceeded."
+            if gateway.get("deadline_exceeded")
+            else "Hermes gateway was already running."
             if gateway.get("already_running")
             else "Hermes gateway start requested."
         ),

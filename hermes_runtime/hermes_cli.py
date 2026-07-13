@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import os
+import signal
 import shlex
 import shutil
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import Any
 HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
 DEFAULT_HERMES_INSTALL_ARGS = ("--skip-browser",)
 MAX_OUTPUT_CHARS = 12_000
+COMMUNICATE_SETTLE_SECONDS = 0.05
+COMMUNICATE_DRAIN_SECONDS = 1.0
 DEBIAN_PREREQUISITE_COMMANDS: dict[str, str] = {
     "curl": "curl",
     "git": "git",
@@ -78,38 +81,131 @@ def root_user_manager_env() -> dict[str, str]:
     }
 
 
+async def _wait_for_communicate(
+    task: asyncio.Task[tuple[bytes, bytes]], *, timeout_seconds: float
+) -> tuple[bytes, bytes]:
+    """Wait without cancelling the pipe-drain task on caller timeout/cancel."""
+    return await asyncio.wait_for(
+        asyncio.shield(task),
+        timeout=timeout_seconds,
+    )
+
+
 async def run_process(
     args: list[str],
     *,
-    timeout_seconds: int,
+    timeout_seconds: float,
     env: dict[str, str] | None = None,
+    kill_process_group: bool = False,
 ) -> dict[str, Any]:
     started = asyncio.get_running_loop().time()
     merged_env = os.environ.copy()
     merged_env.update(root_user_manager_env())
     if env:
         merged_env.update(env)
+    process: asyncio.subprocess.Process | None = None
+    communicate_task: asyncio.Task[tuple[bytes, bytes]] | None = None
+
+    async def _communication_settled(timeout_seconds: float) -> bool:
+        if communicate_task is None:
+            return True
+        if communicate_task.done():
+            return True
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(communicate_task),
+                timeout=timeout_seconds,
+            )
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def _drain_communication() -> None:
+        if communicate_task is None:
+            return
+        if not communicate_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(communicate_task),
+                    timeout=COMMUNICATE_DRAIN_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                communicate_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await communicate_task
+                return
+        if communicate_task.done():
+            with suppress(asyncio.CancelledError, Exception):
+                communicate_task.result()
+
+    async def _terminate_process() -> None:
+        if process is None:
+            return
+        leader_exited = process.returncode is not None
+        communication_settled = communicate_task is None or communicate_task.done()
+        if leader_exited and not communication_settled:
+            # Cancellation can race delivery of an already-complete
+            # communicate(). Give EOF a short chance to settle. If it remains
+            # blocked after the leader exited, a descendant inherited one of
+            # the captured pipes and the fresh process group still needs
+            # cleanup.
+            communication_settled = await _communication_settled(
+                COMMUNICATE_SETTLE_SECONDS
+            )
+        killed_group = False
+        if (
+            kill_process_group
+            and os.name == "posix"
+            and (not leader_exited or not communication_settled)
+        ):
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                    killed_group = True
+                except (OSError, ProcessLookupError):
+                    pass
+        if not killed_group and not leader_exited:
+            with suppress(ProcessLookupError):
+                process.kill()
+        await process.wait()
+        await _drain_communication()
+
     try:
+        subprocess_kwargs: dict[str, Any] = {}
+        if kill_process_group and os.name == "posix":
+            # The Hermes restart CLI can launch systemctl children.  Put that
+            # one recovery attempt in a fresh session so a runtime timeout can
+            # terminate the complete command tree before applying its own
+            # unit-scoped fallback.
+            subprocess_kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
+            **subprocess_kwargs,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout_seconds,
+        communicate_task = asyncio.create_task(process.communicate())
+        stdout, stderr = await _wait_for_communicate(
+            communicate_task,
+            timeout_seconds=timeout_seconds,
         )
         returncode = process.returncode
         timed_out = False
     except asyncio.TimeoutError:
-        with suppress(ProcessLookupError):
-            process.kill()
-        await process.wait()
+        await _terminate_process()
         returncode = None
         stdout = b""
         stderr = f"command timed out after {timeout_seconds}s".encode()
         timed_out = True
+    except asyncio.CancelledError:
+        # Callers may impose a larger transaction deadline. Cancellation must
+        # not orphan the Hermes CLI or any systemctl/supervisor child it
+        # spawned; reap the same process group used by timeout handling, then
+        # preserve cancellation semantics for the caller.
+        await _terminate_process()
+        raise
     duration_ms = int((asyncio.get_running_loop().time() - started) * 1000)
     stdout_text = stdout.decode("utf-8", errors="replace")
     stderr_text = stderr.decode("utf-8", errors="replace")
