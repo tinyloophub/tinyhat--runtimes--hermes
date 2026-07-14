@@ -797,11 +797,11 @@ async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None
         result=result,
     )
     if kind == "check_and_stage_updates" and platform_ack.get("ignored") is False:
-        # A plugin install remains recoverable until the platform durably
-        # accepts this exact command result. A successful HTTP response with
+        # Update notices remain recoverable until the platform durably accepts
+        # this exact command result. A successful HTTP response with
         # ``ignored=true`` means the command was stale or no longer active and
-        # must not consume the recovery marker. Import lazily to avoid coupling
-        # the heartbeat module to command implementations during startup.
+        # must not consume either recovery marker. Import lazily to avoid
+        # coupling the heartbeat module to command implementations at startup.
         from hermes_runtime.update_orchestrator import (
             acknowledge_check_and_stage_result,
         )

@@ -186,6 +186,42 @@ def _current_plugin_discovery() -> dict[str, Any]:
     return discovery
 
 
+def _runtime_discovery(*, update_available: bool) -> dict[str, Any]:
+    discovery = _current_plugin_discovery()
+    discovery["update_available"] = update_available
+    if not update_available:
+        discovery.update(
+            {
+                "current_version": "v0.0.45",
+                "current_code_version": "0.0.45",
+                "current_sha": RUNTIME_SHA,
+                "current_matches_target": True,
+                "decision": "current_matches_target",
+            }
+        )
+    return discovery
+
+
+def _runtime_notice_marker(
+    *,
+    attempts: int = 0,
+    sent: bool | None = None,
+) -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "schema": "tinyhat_hermes_runtime_notice_v1",
+        "state": "staged_unacknowledged",
+        "target_ref": "v0.0.45",
+        "target_sha": RUNTIME_SHA,
+        "notice_attempts": attempts,
+    }
+    if sent is not None:
+        marker["notice_outcome"] = {
+            "sent": sent,
+            "http_status": 200 if sent else 503,
+        }
+    return marker
+
+
 def _settlement_marker(
     *,
     attempts: int = 0,
@@ -664,6 +700,7 @@ def test_notification_failure_keeps_update_and_retry_marker() -> None:
 
     assert result["status"] == "updated"
     assert result["notification"] == {
+        "kind": "plugin_update",
         "attempted": True,
         "sent": False,
         "http_status": 503,
@@ -681,6 +718,332 @@ def test_notification_failure_keeps_update_and_retry_marker() -> None:
     assert marker["notice_outcome"]["sent"] is False
     assert acknowledged is False
     assert marker_remained is True
+
+
+def test_runtime_notice_failure_retries_on_next_daily_composite() -> None:
+    delivery_results = iter(
+        [
+            {"ok": False, "http_status": 503},
+            {"ok": True, "http_status": 200},
+        ]
+    )
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return next(delivery_results)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        platform = FakePlatform()
+        ctx.platform = platform
+        ctx.computer_id = "local-dev"
+        command = _composite_command()
+        recovery_command = _composite_command()
+        recovery_command["spec"]["runtime_recovery_required"] = True
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _runtime_discovery(update_available=True),
+                        _runtime_discovery(update_available=False),
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.stage_update.run",
+                AsyncMock(side_effect=_fake_stage),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(),
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            asyncio.run(_run_one_command(ctx, command))
+            first_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            first_marker["private_marker_detail"] = "/root/private/diagnostic"
+            marker_path.write_text(json.dumps(first_marker), encoding="utf-8")
+            scheduled = _scheduled_discovery(ctx.state_dir)
+
+            # Simulate the small runtime restart activating the staged target.
+            ctx.activation_marker.unlink()
+            ctx.restart_requested = False
+            asyncio.run(_run_one_command(ctx, recovery_command))
+            retry_result = platform.posts[-1][1]["result"]["result"]
+
+    assert first_marker["notice_attempts"] == 1
+    assert first_marker["notice_outcome"]["sent"] is False
+    assert scheduled["runtime_recovery"] == {"pending": True}
+    assert "private_marker_detail" not in json.dumps(scheduled, sort_keys=True)
+    assert retry_result["status"] == "current"
+    assert retry_result["runtime"]["changed"] is False
+    assert retry_result["runtime_restart_requested"] is False
+    assert retry_result["notification"] == {
+        "kind": "runtime_update",
+        "attempted": True,
+        "sent": True,
+        "http_status": 200,
+        "error": None,
+        "attempt": 2,
+        "retry_pending": False,
+        "retry_exhausted": False,
+    }
+    assert len(messages) == 2
+    assert marker_path.exists() is False
+    assert ctx.restart_requested is False
+
+
+def test_runtime_notice_success_survives_lost_platform_ack_without_duplicate() -> None:
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": True, "http_status": 200}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        platform = FakePlatform()
+        platform.fail_results = True
+        ctx.platform = platform
+        ctx.computer_id = "local-dev"
+        command = _composite_command()
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _runtime_discovery(update_available=True),
+                        _runtime_discovery(update_available=False),
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.stage_update.run",
+                AsyncMock(side_effect=_fake_stage),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(),
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            with unittest.TestCase().assertRaisesRegex(
+                RuntimeError,
+                "result delivery failed",
+            ):
+                asyncio.run(_run_one_command(ctx, command))
+            lost_ack_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+            ctx.activation_marker.unlink()
+            ctx.restart_requested = False
+            platform.fail_results = False
+            # No recovery flag: an ordinary exact-target admin command must
+            # settle the same local obligation as the daily command.
+            asyncio.run(_run_one_command(ctx, command))
+            replayed = platform.posts[-1][1]["result"]["result"]
+
+    assert lost_ack_marker["notice_attempts"] == 1
+    assert lost_ack_marker["notice_outcome"]["sent"] is True
+    assert len(messages) == 1
+    assert replayed["status"] == "current"
+    assert replayed["runtime_restart_requested"] is False
+    assert replayed["notification"]["kind"] == "runtime_update"
+    assert replayed["notification"]["sent"] is True
+    assert replayed["notification"]["attempt"] == 1
+    assert marker_path.exists() is False
+    assert ctx.restart_requested is False
+
+
+def test_runtime_notice_exhausts_after_three_accepted_attempts() -> None:
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": False, "http_status": 503}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        platform = FakePlatform()
+        ctx.platform = platform
+        ctx.computer_id = "local-dev"
+        command = _composite_command()
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _runtime_discovery(update_available=True),
+                        _runtime_discovery(update_available=False),
+                        _runtime_discovery(update_available=False),
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.stage_update.run",
+                AsyncMock(side_effect=_fake_stage),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(),
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            asyncio.run(_run_one_command(ctx, command))
+            ctx.activation_marker.unlink()
+            ctx.restart_requested = False
+            asyncio.run(_run_one_command(ctx, command))
+            second = platform.posts[-1][1]["result"]["result"]
+            assert marker_path.exists() is True
+            asyncio.run(_run_one_command(ctx, command))
+            exhausted = platform.posts[-1][1]["result"]["result"]
+
+    assert len(messages) == 3
+    assert second["notification"]["attempt"] == 2
+    assert second["notification"]["retry_pending"] is True
+    assert second["runtime_restart_requested"] is False
+    assert exhausted["status"] == "current"
+    assert exhausted["notification"]["kind"] == "runtime_update"
+    assert exhausted["notification"]["attempt"] == 3
+    assert exhausted["notification"]["sent"] is False
+    assert exhausted["notification"]["retry_pending"] is False
+    assert exhausted["notification"]["retry_exhausted"] is True
+    assert exhausted["runtime_restart_requested"] is False
+    assert marker_path.exists() is False
+    assert ctx.restart_requested is False
+
+
+def test_stale_runtime_notice_promotes_to_current_exact_target() -> None:
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": True, "http_status": 200}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        platform = FakePlatform()
+        ctx.platform = platform
+        ctx.computer_id = "local-dev"
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        stale_marker = _runtime_notice_marker(attempts=2, sent=False)
+        stale_marker.update(
+            {
+                "target_ref": "v0.0.44",
+                "target_sha": "e" * 40,
+            }
+        )
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(json.dumps(stale_marker), encoding="utf-8")
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=_runtime_discovery(update_available=False)),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.stage_update.run",
+                AsyncMock(),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(),
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            asyncio.run(_run_one_command(ctx, _composite_command()))
+            result = platform.posts[-1][1]["result"]["result"]
+
+    assert messages == [
+        "Tinyhat runtime updated to version v0.0.45.\n\nIt is active now."
+    ]
+    assert result["status"] == "current"
+    assert result["runtime"]["current_sha"] == RUNTIME_SHA
+    assert result["runtime_restart_requested"] is False
+    assert result["notification"]["kind"] == "runtime_update"
+    assert result["notification"]["attempt"] == 1
+    assert result["notification"]["sent"] is True
+    assert marker_path.exists() is False
+    assert ctx.restart_requested is False
+
+
+def test_stale_runtime_notice_does_not_promote_on_version_only_match() -> None:
+    discovery = _runtime_discovery(update_available=False)
+    discovery["current_sha"] = "d" * 40
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        stale_marker = _runtime_notice_marker(attempts=2, sent=False)
+        stale_marker.update(
+            {
+                "target_ref": "v0.0.44",
+                "target_sha": "e" * 40,
+            }
+        )
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(json.dumps(stale_marker), encoding="utf-8")
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=AssertionError("must not notify"),
+            ),
+        ):
+            result = asyncio.run(run_command(ctx, _composite_command()))
+
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "current"
+    assert result["runtime"]["current_sha"] == "d" * 40
+    assert result["notification"]["attempted"] is False
+    assert result["runtime_restart_requested"] is False
+    assert marker["target_ref"] == "v0.0.44"
+    assert marker["target_sha"] == "e" * 40
+    assert ctx.restart_requested is False
+
+
+def test_matching_runtime_notice_does_not_replay_on_version_only_match() -> None:
+    discovery = _runtime_discovery(update_available=False)
+    discovery["current_sha"] = "d" * 40
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        platform = FakePlatform()
+        ctx.platform = platform
+        ctx.computer_id = "local-dev"
+        marker_path = Path(tmp) / "updates" / "pending_runtime_notice.json"
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(
+            json.dumps(_runtime_notice_marker(attempts=1, sent=False)),
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=AssertionError("must not notify"),
+            ),
+        ):
+            asyncio.run(_run_one_command(ctx, _composite_command()))
+            result = platform.posts[-1][1]["result"]["result"]
+
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert result["status"] == "current"
+    assert result["runtime"]["current_sha"] == "d" * 40
+    assert result["notification"]["attempted"] is False
+    assert result["runtime_restart_requested"] is False
+    assert marker["notice_attempts"] == 1
+    assert marker["notice_outcome"]["sent"] is False
+    assert ctx.restart_requested is False
 
 
 def test_failed_notice_retries_successfully_without_reinstall() -> None:
@@ -734,6 +1097,7 @@ def test_failed_notice_retries_successfully_without_reinstall() -> None:
     assert first_marker["notice_outcome"]["sent"] is False
     assert first_result["notification"]["retry_pending"] is True
     assert retry_result["notification"] == {
+        "kind": "plugin_update",
         "attempted": True,
         "sent": True,
         "http_status": 200,

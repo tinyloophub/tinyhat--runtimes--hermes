@@ -32,6 +32,9 @@ from hermes_runtime.plugin_manager import (
     tinyhat_plugin_status,
 )
 from hermes_runtime.plugin_settlement import plugin_update_recovery_pending
+from hermes_runtime.runtime_notice_settlement import (
+    runtime_notice_recovery_pending,
+)
 
 
 REPO = "tinyloophub/tinyhat--runtimes--hermes"
@@ -681,6 +684,11 @@ async def run_update_check(
         result["message"] = resolved.get("message")
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
+    if bounded_reason == "scheduled" and runtime_notice_recovery_pending(state_dir):
+        # The exact staged ref, SHA, and delivery outcome remain local. The
+        # platform only needs a one-bit signal to queue its independently
+        # resolved current target through the normal composite command.
+        result["runtime_recovery"] = {"pending": True}
     if include_plugin_check:
         recovery_pending = bool(
             bounded_reason == "scheduled" and plugin_update_recovery_pending(state_dir)

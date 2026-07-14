@@ -26,6 +26,13 @@ from hermes_runtime.plugin_settlement import (
     PLUGIN_REPAIR_SCHEMA,
     read_plugin_recovery,
 )
+from hermes_runtime.runtime_notice_settlement import (
+    MAX_RUNTIME_NOTICE_ATTEMPTS,
+    RUNTIME_NOTICE_FILE,
+    RUNTIME_NOTICE_SCHEMA,
+    RUNTIME_NOTICE_UNACKNOWLEDGED,
+    read_runtime_notice,
+)
 from hermes_runtime.telegram_codex_auth import _telegram_send
 from hermes_runtime.update_check import run_update_check
 
@@ -117,6 +124,71 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def _plugin_repair_path(ctx: Any) -> Path:
     return ctx.state_dir / "updates" / PLUGIN_REPAIR_FILE
+
+
+def _runtime_notice_path(ctx: Any) -> Path:
+    return ctx.state_dir / "updates" / RUNTIME_NOTICE_FILE
+
+
+def _runtime_notice_marker(
+    ctx: Any,
+    *,
+    target_ref: str,
+    target_sha: str,
+) -> dict[str, Any] | None:
+    payload = read_runtime_notice(ctx.state_dir)
+    if not (
+        payload
+        and payload.get("schema") == RUNTIME_NOTICE_SCHEMA
+        and payload.get("state") == RUNTIME_NOTICE_UNACKNOWLEDGED
+        and payload.get("target_ref") == target_ref
+        and str(payload.get("target_sha") or "").lower() == target_sha
+    ):
+        return None
+    return payload
+
+
+def _record_runtime_notice(
+    ctx: Any,
+    *,
+    target_ref: str,
+    target_sha: str,
+) -> None:
+    _write_json_atomic(
+        _runtime_notice_path(ctx),
+        {
+            "schema": RUNTIME_NOTICE_SCHEMA,
+            "state": RUNTIME_NOTICE_UNACKNOWLEDGED,
+            "target_ref": target_ref,
+            "target_sha": target_sha,
+            "notice_attempts": 0,
+        },
+    )
+
+
+def _runtime_notice_attempts(marker: dict[str, Any]) -> int:
+    value = marker.get("notice_attempts")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return min(value, MAX_RUNTIME_NOTICE_ATTEMPTS)
+
+
+def _clear_runtime_notice(
+    ctx: Any,
+    *,
+    target_ref: str,
+    target_sha: str,
+) -> None:
+    if (
+        _runtime_notice_marker(
+            ctx,
+            target_ref=target_ref,
+            target_sha=target_sha,
+        )
+        is None
+    ):
+        return
+    _runtime_notice_path(ctx).unlink(missing_ok=True)
 
 
 def _plugin_target_matches(
@@ -281,6 +353,25 @@ def _activation_matches(ctx: Any, *, target_ref: str) -> bool:
     return value == target_ref
 
 
+def _runtime_current_target_matches(
+    discovery: dict[str, Any],
+    *,
+    target_ref: str,
+    target_sha: str,
+) -> bool:
+    """Require the platform-selected ref and exact commit on the current disk."""
+
+    return bool(
+        discovery.get("decision") == "current_matches_target"
+        and discovery.get("current_matches_target") is True
+        and _clean_text(discovery.get("target_ref"), max_length=512) == target_ref
+        and (_clean_text(discovery.get("target_sha"), max_length=40) or "").lower()
+        == target_sha
+        and (_clean_text(discovery.get("current_sha"), max_length=40) or "").lower()
+        == target_sha
+    )
+
+
 def _plugin_proof(value: Any) -> dict[str, Any]:
     source = value.get("source") if isinstance(value, dict) else None
     source = source if isinstance(source, dict) else {}
@@ -313,7 +404,9 @@ def _capabilities_message(version: str | None) -> str:
     )
 
 
-def _runtime_update_message(version: str) -> str:
+def _runtime_update_message(version: str, *, current: bool) -> str:
+    if current:
+        return f"Tinyhat runtime updated to version {version}.\n\nIt is active now."
     return (
         f"Tinyhat runtime update staged to version {version}.\n\n"
         "It will be activated automatically."
@@ -352,8 +445,12 @@ async def _send_update_notice(version: str | None) -> dict[str, Any]:
     return await _send_notice(_capabilities_message(version))
 
 
-async def _send_runtime_update_notice(version: str) -> dict[str, Any]:
-    return await _send_notice(_runtime_update_message(version))
+async def _send_runtime_update_notice(
+    version: str,
+    *,
+    current: bool,
+) -> dict[str, Any]:
+    return await _send_notice(_runtime_update_message(version, current=current))
 
 
 def _with_notice_retry_metadata(
@@ -372,6 +469,116 @@ def _with_notice_retry_metadata(
         }
     )
     return result
+
+
+async def _settle_runtime_update_notice(
+    ctx: Any,
+    *,
+    target_ref: str,
+    target_sha: str,
+    current: bool,
+) -> dict[str, Any]:
+    """Send or redispatch one runtime-only notice with a durable bound."""
+
+    marker = _runtime_notice_marker(
+        ctx,
+        target_ref=target_ref,
+        target_sha=target_sha,
+    )
+    if marker is None:
+        return {
+            "kind": "runtime_update",
+            **_with_notice_retry_metadata(
+                {
+                    "attempted": False,
+                    "sent": False,
+                    "http_status": None,
+                    "error": {
+                        "code": "runtime_notice_state_unavailable",
+                        "message": "Telegram notification state unavailable",
+                    },
+                },
+                attempt=0,
+                can_retry=True,
+            ),
+        }
+
+    attempts = _runtime_notice_attempts(marker)
+    stored_outcome = marker.get("notice_outcome")
+    stored_outcome = stored_outcome if isinstance(stored_outcome, dict) else {}
+    stored_sent = stored_outcome.get("sent") is True
+    if stored_sent or attempts >= MAX_RUNTIME_NOTICE_ATTEMPTS:
+        return {
+            "kind": "runtime_update",
+            **_with_notice_retry_metadata(
+                {
+                    # A lost platform response must not duplicate a successful
+                    # owner message or consume an unbounded fourth attempt.
+                    "attempted": True,
+                    "sent": stored_sent,
+                    "http_status": (
+                        stored_outcome.get("http_status")
+                        if isinstance(stored_outcome.get("http_status"), int)
+                        else None
+                    ),
+                    "error": (
+                        None
+                        if stored_sent
+                        else {
+                            "code": "telegram_delivery_failed",
+                            "message": "Telegram notification failed",
+                        }
+                    ),
+                },
+                attempt=attempts,
+                can_retry=False,
+            ),
+        }
+
+    attempts += 1
+    marker["notice_attempts"] = attempts
+    marker.pop("notice_outcome", None)
+    try:
+        _write_json_atomic(_runtime_notice_path(ctx), marker)
+    except Exception as exc:  # noqa: BLE001 - keep the staged notice recoverable.
+        return {
+            "kind": "runtime_update",
+            **_with_notice_retry_metadata(
+                {
+                    "attempted": False,
+                    "sent": False,
+                    "http_status": None,
+                    "error": _generic_error(
+                        exc,
+                        component="Telegram notification state",
+                    ),
+                },
+                attempt=attempts - 1,
+                can_retry=True,
+            ),
+        }
+
+    notification = await _send_runtime_update_notice(
+        target_ref,
+        current=current,
+    )
+    notification = _with_notice_retry_metadata(
+        notification,
+        attempt=attempts,
+        can_retry=(
+            notification.get("sent") is not True
+            and attempts < MAX_RUNTIME_NOTICE_ATTEMPTS
+        ),
+    )
+    marker["notice_outcome"] = {
+        "sent": notification.get("sent") is True,
+        "http_status": notification.get("http_status"),
+    }
+    try:
+        _write_json_atomic(_runtime_notice_path(ctx), marker)
+    except Exception:  # noqa: BLE001 - the reserved attempt remains the safe bound.
+        pass
+    return {"kind": "runtime_update", **notification}
 
 
 async def _send_plugin_update_notice(
@@ -395,41 +602,47 @@ async def _send_plugin_update_notice(
         # exact target landed despite an installer error. Its repair marker
         # remains responsible for retrying the install itself.
         notification = await _send_update_notice(version)
-        return _with_notice_retry_metadata(
-            notification,
-            attempt=1,
-            can_retry=False,
-        )
+        return {
+            "kind": "plugin_update",
+            **_with_notice_retry_metadata(
+                notification,
+                attempt=1,
+                can_retry=False,
+            ),
+        }
 
     attempts = _plugin_notice_attempts(marker)
     stored_outcome = marker.get("notice_outcome")
     stored_outcome = stored_outcome if isinstance(stored_outcome, dict) else {}
     stored_sent = stored_outcome.get("sent") is True
     if stored_sent or attempts >= MAX_PLUGIN_NOTICE_ATTEMPTS:
-        return _with_notice_retry_metadata(
-            {
-                # The attempt may belong to an earlier execution whose result
-                # POST was lost. Redispatch its durable outcome without another
-                # owner message or an unbounded fourth attempt.
-                "attempted": True,
-                "sent": stored_sent,
-                "http_status": (
-                    stored_outcome.get("http_status")
-                    if isinstance(stored_outcome.get("http_status"), int)
-                    else None
-                ),
-                "error": (
-                    None
-                    if stored_sent
-                    else {
-                        "code": "telegram_delivery_failed",
-                        "message": "Telegram notification failed",
-                    }
-                ),
-            },
-            attempt=attempts,
-            can_retry=False,
-        )
+        return {
+            "kind": "plugin_update",
+            **_with_notice_retry_metadata(
+                {
+                    # The attempt may belong to an earlier execution whose result
+                    # POST was lost. Redispatch its durable outcome without another
+                    # owner message or an unbounded fourth attempt.
+                    "attempted": True,
+                    "sent": stored_sent,
+                    "http_status": (
+                        stored_outcome.get("http_status")
+                        if isinstance(stored_outcome.get("http_status"), int)
+                        else None
+                    ),
+                    "error": (
+                        None
+                        if stored_sent
+                        else {
+                            "code": "telegram_delivery_failed",
+                            "message": "Telegram notification failed",
+                        }
+                    ),
+                },
+                attempt=attempts,
+                can_retry=False,
+            ),
+        }
 
     # Reserve before Telegram I/O. A crash after this write consumes one try,
     # which is conservative and keeps the bound strict.
@@ -439,19 +652,22 @@ async def _send_plugin_update_notice(
     try:
         _write_json_atomic(_plugin_repair_path(ctx), marker)
     except Exception as exc:  # noqa: BLE001 - keep the installed update recoverable.
-        return _with_notice_retry_metadata(
-            {
-                "attempted": False,
-                "sent": False,
-                "http_status": None,
-                "error": _generic_error(
-                    exc,
-                    component="Telegram notification state",
-                ),
-            },
-            attempt=attempts - 1,
-            can_retry=True,
-        )
+        return {
+            "kind": "plugin_update",
+            **_with_notice_retry_metadata(
+                {
+                    "attempted": False,
+                    "sent": False,
+                    "http_status": None,
+                    "error": _generic_error(
+                        exc,
+                        component="Telegram notification state",
+                    ),
+                },
+                attempt=attempts - 1,
+                can_retry=True,
+            ),
+        }
     notification = await _send_update_notice(version)
     notification = _with_notice_retry_metadata(
         notification,
@@ -469,26 +685,71 @@ async def _send_plugin_update_notice(
         _write_json_atomic(_plugin_repair_path(ctx), marker)
     except Exception:  # noqa: BLE001 - the reserved attempt remains the safe bound.
         pass
-    return notification
+    return {"kind": "plugin_update", **notification}
 
 
-def acknowledge_check_and_stage_result(
+def _notice_outcome_settled(notification: Any) -> bool:
+    return bool(
+        isinstance(notification, dict)
+        and (
+            notification.get("sent") is True
+            or notification.get("retry_exhausted") is True
+        )
+    )
+
+
+def _acknowledge_runtime_notice(
     ctx: Any,
-    command: dict[str, Any],
+    *,
+    spec: dict[str, Any],
     result: dict[str, Any],
 ) -> bool:
-    """Clear a delivered plugin marker after the platform accepted its result.
-
-    The caller must invoke this only after the command-result POST succeeds.
-    Keeping that ordering makes plugin installation, the Telegram restart notice,
-    and platform settlement recoverable when the process crashes or result
-    delivery fails.
-    """
-
-    if command.get("kind") != "check_and_stage_updates":
+    notification = result.get("notification")
+    if not (
+        isinstance(notification, dict)
+        and notification.get("kind") == "runtime_update"
+        and _notice_outcome_settled(notification)
+    ):
         return False
-    if result.get("schema") != SCHEMA:
+    runtime = result.get("runtime")
+    if not isinstance(runtime, dict) or runtime.get("error") is not None:
         return False
+    try:
+        target_ref = _required_text(spec, "target_ref")
+        target_sha = _required_sha(spec, "target_sha")
+    except ValueError:
+        return False
+    if (
+        runtime.get("status") not in {"current", "staged", "already_staged"}
+        or runtime.get("target_ref") != target_ref
+        or str(runtime.get("target_sha") or "").lower() != target_sha
+        or _runtime_notice_marker(
+            ctx,
+            target_ref=target_ref,
+            target_sha=target_sha,
+        )
+        is None
+    ):
+        return False
+    if runtime.get("status") == "current" and (
+        str(runtime.get("current_sha") or "").lower() != target_sha
+    ):
+        return False
+    _clear_runtime_notice(
+        ctx,
+        target_ref=target_ref,
+        target_sha=target_sha,
+    )
+    return True
+
+
+def _acknowledge_plugin_notice(
+    ctx: Any,
+    *,
+    spec: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    notification = result.get("notification")
     plugin = result.get("plugin")
     if not isinstance(plugin, dict):
         return False
@@ -496,22 +757,10 @@ def acknowledge_check_and_stage_result(
         plugin.get("status") != "updated"
         or plugin.get("changed") is not True
         or plugin.get("error") is not None
+        or not isinstance(notification, dict)
+        or notification.get("kind") != "plugin_update"
+        or not _notice_outcome_settled(notification)
     ):
-        return False
-    notification = result.get("notification")
-    if not isinstance(notification, dict):
-        return False
-    if (
-        notification.get("sent") is not True
-        and notification.get("retry_exhausted") is not True
-    ):
-        # A successful platform settlement must not consume the only durable
-        # path for retrying a failed owner notice. Exhausted notices may settle
-        # so a permanently broken Telegram configuration cannot wedge updates.
-        return False
-
-    spec = command.get("spec")
-    if not isinstance(spec, dict):
         return False
     try:
         repo_url = _required_plugin_repo_url(spec)
@@ -544,6 +793,38 @@ def acknowledge_check_and_stage_result(
         commit=commit,
     )
     return True
+
+
+def acknowledge_check_and_stage_result(
+    ctx: Any,
+    command: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    """Clear settled local markers after the platform accepts this result.
+
+    The caller invokes this only after the command-result POST succeeds. Keeping
+    that ordering makes both runtime-only and plugin notices recoverable when a
+    process exits or the platform response is lost.
+    """
+
+    if command.get("kind") != "check_and_stage_updates":
+        return False
+    if result.get("schema") != SCHEMA:
+        return False
+    spec = command.get("spec")
+    if not isinstance(spec, dict):
+        return False
+    runtime_acknowledged = _acknowledge_runtime_notice(
+        ctx,
+        spec=spec,
+        result=result,
+    )
+    plugin_acknowledged = _acknowledge_plugin_notice(
+        ctx,
+        spec=spec,
+        result=result,
+    )
+    return runtime_acknowledged or plugin_acknowledged
 
 
 async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, Any]:
@@ -882,6 +1163,80 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                 # remains pending for the next run.
                 plugin_code_changed_now = plugin_changed
 
+    plugin_owns_notice = bool(plugin_changed and plugin_error is None)
+    any_runtime_notice = read_runtime_notice(ctx.state_dir)
+    runtime_notice_marker = _runtime_notice_marker(
+        ctx,
+        target_ref=target_ref,
+        target_sha=target_sha,
+    )
+    runtime_current_target_proven = bool(
+        not runtime_update_available
+        and _runtime_current_target_matches(
+            discovery,
+            target_ref=target_ref,
+            target_sha=target_sha,
+        )
+    )
+    if (
+        runtime_error is None
+        and runtime_notice_marker is None
+        and any_runtime_notice is not None
+        and not runtime_activation_pending
+        and runtime_current_target_proven
+    ):
+        try:
+            # The channel may advance or another operator path may activate a
+            # newer exact target while an older notice is unsettled. Fresh
+            # discovery proves the platform-selected target is now on disk, so
+            # replace the stale obligation with one truthful notice for it.
+            _record_runtime_notice(
+                ctx,
+                target_ref=target_ref,
+                target_sha=target_sha,
+            )
+            runtime_notice_marker = _runtime_notice_marker(
+                ctx,
+                target_ref=target_ref,
+                target_sha=target_sha,
+            )
+            if runtime_notice_marker is None:
+                raise RuntimeError("Runtime notice state was not promoted")
+        except Exception as exc:  # noqa: BLE001 - preserve the old marker.
+            runtime_error = _generic_error(
+                exc,
+                component="Runtime notice state",
+            )
+    runtime_notice_needed_for_new_activation = bool(
+        runtime_error is None
+        and not plugin_owns_notice
+        and not runtime_activation_pending
+        and runtime_update_available
+        and (runtime_staged_now or runtime_already_staged)
+    )
+    if runtime_notice_needed_for_new_activation and runtime_notice_marker is None:
+        try:
+            # Reserve durable settlement before making the staged runtime
+            # activatable. If this write fails, the current runtime remains in
+            # place and the already-staged target can retry on the next run.
+            _record_runtime_notice(
+                ctx,
+                target_ref=target_ref,
+                target_sha=target_sha,
+            )
+            runtime_notice_marker = _runtime_notice_marker(
+                ctx,
+                target_ref=target_ref,
+                target_sha=target_sha,
+            )
+            if runtime_notice_marker is None:
+                raise RuntimeError("Runtime notice state was not persisted")
+        except Exception as exc:  # noqa: BLE001 - fail closed before activation.
+            runtime_error = _generic_error(
+                exc,
+                component="Runtime notice state",
+            )
+
     runtime_ready_to_activate = bool(
         runtime_error is None
         and (
@@ -908,10 +1263,25 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     runtime_changed = bool(
         runtime_error is None and (runtime_staged_now or runtime_activation_requested)
     )
-    runtime_notice_required = bool(
+    runtime_notice_marker = _runtime_notice_marker(
+        ctx,
+        target_ref=target_ref,
+        target_sha=target_sha,
+    )
+    runtime_notice_for_new_activation = bool(
         runtime_error is None
         and runtime_activation_requested
         and (runtime_staged_now or runtime_activation_marker_created)
+        and runtime_notice_marker is not None
+    )
+    runtime_notice_replay = bool(
+        runtime_error is None
+        and not runtime_activation_requested
+        and runtime_notice_marker is not None
+        and runtime_current_target_proven
+    )
+    runtime_notice_required = bool(
+        runtime_notice_for_new_activation or runtime_notice_replay
     )
     changed = runtime_changed or plugin_changed
 
@@ -946,11 +1316,11 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             version=plugin_version if isinstance(plugin_version, str) else None,
         )
     elif runtime_notice_required:
-        runtime_notification = await _send_runtime_update_notice(target_ref)
-        notification = _with_notice_retry_metadata(
-            runtime_notification,
-            attempt=1,
-            can_retry=False,
+        notification = await _settle_runtime_update_notice(
+            ctx,
+            target_ref=target_ref,
+            target_sha=target_sha,
+            current=bool(runtime_notice_replay and runtime_current_target_proven),
         )
     runtime_restart_requested = bool(
         runtime_changed or plugin_code_changed_now or plugin_reconciled_out_of_band

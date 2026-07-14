@@ -11,9 +11,11 @@
   target discovery is unavailable. Failed owner notices retry from durable
   state up to three times without reinstalling or wedging future updates. A
   bounded scheduled recovery hint lets the next daily cycle retry an
-  interrupted plugin repair or settle a surviving owner notice against the
-  platform's current target, without exposing marker details. Notice-only
-  replays do not restart the runtime.
+  interrupted plugin repair or settle a surviving plugin or runtime-only owner
+  notice against the platform's current target, without exposing marker
+  details. Runtime-only notice success survives a lost platform response
+  without a duplicate Telegram message. Notice-only replays do not restart the
+  runtime.
   Production update discovery now resolves a moving LTS/latest channel's root
   `VERSION` to its concrete final tag and commit while retaining the requested
   channel selector for platform validation.

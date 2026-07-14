@@ -221,7 +221,7 @@ it.
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
 | `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves a production `channels/lts` or `channels/latest` selector through that channel's root `VERSION`, verifies the resulting final tag commit, and retains the requested selector in `requested_target_ref`. Local development uses a platform-supplied exact ref/SHA without network resolution. Writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, and does not stage or activate code. The result also includes `plugin_update_check`, which compares the installed Tinyhat plugin against its configured channel. |
-| `check_and_stage_updates` | `hermes_runtime/commands/check_and_stage_updates.py` | Runs the same exact-target update operation that scheduled maintenance and Hat admin can request. | Requires immutable runtime and plugin commit SHAs supplied and validated by the platform, rechecks both targets, stages changed runtime code and marks it for activation, updates a changed Tinyhat plugin checkout, and no-ops each component independently when current. If either changes, it sends a bounded Telegram notice and restarts only the small Tinyhat runtime process after command settlement. Failed plugin notices retry from durable state up to three times without reinstalling; an accepted success or final failure settles that state. It never restarts Hermes; the owner uses Hermes `/restart` to load new plugin capabilities. |
+| `check_and_stage_updates` | `hermes_runtime/commands/check_and_stage_updates.py` | Runs the same exact-target update operation that scheduled maintenance and Hat admin can request. | Requires immutable runtime and plugin commit SHAs supplied and validated by the platform, rechecks both targets, stages changed runtime code and marks it for activation, updates a changed Tinyhat plugin checkout, and no-ops each component independently when current. If either changes, it sends a bounded Telegram notice and restarts only the small Tinyhat runtime process after command settlement. Failed runtime-only and plugin notices retry from durable state up to three times without restaging or reinstalling; an accepted success or final failure settles the matching state. Notice-only replay does not restart the runtime. It never restarts Hermes; the owner uses Hermes `/restart` to load new plugin capabilities. |
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, startup activation errors, the last runtime update-check result, and the latest cached plugin update-check result. | Reads state files and the installed plugin manifest only. It does not contact GitHub or change code. |
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
@@ -352,7 +352,7 @@ activation marker (runtime changed only)
   - writes ACTIVATE_ON_RESTART
         |
         |  when either runtime or plugin changed:
-        |  - notify the Telegram owner (plugin failures retry at most 3 times)
+        |  - notify the Telegram owner (delivery retries at most 3 times)
         |  - report the bounded result to the platform
         |  - ask only tinyhat-hermes-runtime.service to exit
         |  - do not restart the Hermes gateway
@@ -485,6 +485,16 @@ keep the fuller `tinyhat_hermes_plugin_update_check_v1` result for local
 diagnosis. The enclosing scheduled report remains
 `tinyhat_hermes_update_check_v1`, so saved same-day retry files stay readable
 across this change.
+
+A scheduled report with an unsettled runtime-only Telegram notice adds only the
+top-level `runtime_recovery: {"pending": true}` hint. The runtime target, commit,
+attempt count, delivery result, local paths, and diagnostics stay in bounded
+local state. The platform independently resolves its configured runtime target
+and queues the same exact-target composite command. A matching manual admin
+command can settle that obligation too. Once runtime activation has completed,
+this notice-only replay sends no runtime restart request; a successful delivery
+or the third failed attempt is cleared only after the platform accepts the
+command result.
 
 The result is not embedded into heartbeat metrics. Use the admin `check_update`
 command when you want to run the same check immediately from Hat admin; manual
