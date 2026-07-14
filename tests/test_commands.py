@@ -134,7 +134,9 @@ class CommandTests(TestCase):
 
     def test_whoami_uses_gcloud_attestation_path(self) -> None:
         platform = FakePlatform()
-        ctx = SimpleNamespace(platform=platform, computer_id="123", platform_auth="gcloud")
+        ctx = SimpleNamespace(
+            platform=platform, computer_id="123", platform_auth="gcloud"
+        )
 
         result = asyncio.run(run_command(ctx, {"kind": "whoami"}))
 
@@ -211,9 +213,7 @@ class CommandTests(TestCase):
             )
         )
         serving_unverified = asyncio.run(
-            inspect(
-                {"ok": True, "stdout": "Active: active (running)", "stderr": ""}
-            )
+            inspect({"ok": True, "stdout": "Active: active (running)", "stderr": ""})
         )
         draining = asyncio.run(
             inspect(
@@ -330,9 +330,7 @@ class CommandTests(TestCase):
             self.assertEqual(
                 kwargs["expected_gateway_argv"], runtime_generation["argv"]
             )
-            self.assertTrue(
-                str(kwargs["log_path"]).endswith("hermes-gateway.log")
-            )
+            self.assertTrue(str(kwargs["log_path"]).endswith("hermes-gateway.log"))
             self.assertNotIn("service_invocation_id", kwargs)
             return {
                 "functionally_ready": True,
@@ -380,9 +378,7 @@ class CommandTests(TestCase):
 
         self.assertEqual((state["status"], state["ready"]), ("serving", True))
         self.assertIs(state["details"]["functional_ready"], True)
-        self.assertEqual(
-            state["details"]["telegram_evidence"], "runtime_state"
-        )
+        self.assertEqual(state["details"]["telegram_evidence"], "runtime_state")
         self.assertEqual(
             state["details"]["runtime_generation"],
             {
@@ -491,9 +487,7 @@ class CommandTests(TestCase):
         async def fake_probe(*_args: Any, **kwargs: Any) -> dict[str, Any]:
             self.assertEqual(kwargs["service_main_pid"], 444)
             self.assertEqual(kwargs["expected_process_start_time"], 4004)
-            self.assertEqual(
-                kwargs["expected_gateway_argv"], generation["argv"]
-            )
+            self.assertEqual(kwargs["expected_gateway_argv"], generation["argv"])
             self.assertIsNone(kwargs["log_path"])
             return {
                 "functionally_ready": True,
@@ -704,9 +698,9 @@ class CommandTests(TestCase):
                     await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
 
                     await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
-                    gateway_state = platform.posts[-1][1]["metrics"][
-                        "hermes_runtime"
-                    ]["gateway"]
+                    gateway_state = platform.posts[-1][1]["metrics"]["hermes_runtime"][
+                        "gateway"
+                    ]
                     self.assertEqual(gateway_state["status"], "unknown")
 
                 return commands
@@ -802,9 +796,9 @@ class CommandTests(TestCase):
                     self.assertIsNone(ctx.gateway_reconcile_task)
 
                     # The heartbeat still carries the observed gateway state.
-                    gateway_state = platform.posts[-1][1]["metrics"][
-                        "hermes_runtime"
-                    ]["gateway"]
+                    gateway_state = platform.posts[-1][1]["metrics"]["hermes_runtime"][
+                        "gateway"
+                    ]
                     self.assertEqual(gateway_state["status"], "unknown")
 
                 return commands
@@ -871,9 +865,7 @@ class CommandTests(TestCase):
                     with patch.dict(os.environ, configured_env, clear=True):
                         await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
                         assert ctx.gateway_reconcile_task is not None
-                        await asyncio.wait_for(
-                            ctx.gateway_reconcile_task, timeout=0.2
-                        )
+                        await asyncio.wait_for(ctx.gateway_reconcile_task, timeout=0.2)
                     self.assertTrue(ctx.gateway_reconciled)
 
                 return heal_commands
@@ -1210,15 +1202,11 @@ class CommandTests(TestCase):
                         },
                     )
                 )
-            self.assertEqual(
-                staged["target_ref"], "v0.20.0-dev.20260625T173000Z.smoke"
-            )
+            self.assertEqual(staged["target_ref"], "v0.20.0-dev.20260625T173000Z.smoke")
             self.assertEqual(staged["activation"], "requires_activate_update")
             self.assertTrue(staged["code_staged"])
             self.assertTrue((staged_package_dir(state_dir) / "__init__.py").is_file())
-            self.assertEqual(
-                ctx.staged_version(), "v0.20.0-dev.20260625T173000Z.smoke"
-            )
+            self.assertEqual(ctx.staged_version(), "v0.20.0-dev.20260625T173000Z.smoke")
 
             activated = asyncio.run(
                 run_command(ctx, {"kind": "activate_update", "spec": {}})
@@ -1285,7 +1273,9 @@ class CommandTests(TestCase):
                 activated = ctx.activate_staged_on_startup()
 
             self.assertEqual(activated, {"version": "v0.0.3", "code_swapped": True})
-            self.assertFalse((install_prefix / "hermes_runtime" / "old_only.py").exists())
+            self.assertFalse(
+                (install_prefix / "hermes_runtime" / "old_only.py").exists()
+            )
             self.assertTrue(
                 (install_prefix / "hermes_runtime" / "new_command.py").is_file()
             )
@@ -1378,12 +1368,15 @@ class CommandTests(TestCase):
                     encoding="utf-8",
                 )
 
-            with patch.dict(
-                "os.environ",
-                {"TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": ""},
-            ), patch(
-                "hermes_runtime.update_artifacts._download_source_ref",
-                side_effect=fake_download,
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"TINYHAT_RUNTIME_UPDATE_SOURCE_DIR": ""},
+                ),
+                patch(
+                    "hermes_runtime.update_artifacts._download_source_ref",
+                    side_effect=fake_download,
+                ),
             ):
                 staged = prepare_staged_runtime(
                     state_dir=state_dir,
@@ -1453,9 +1446,7 @@ class CommandTests(TestCase):
 
         self.assertTrue(ctx.restart_requested)
         self.assertEqual(result["message"], "runtime service restart requested")
-        self.assertEqual(
-            result["restart_target"], "tinyhat-hermes-runtime.service"
-        )
+        self.assertEqual(result["restart_target"], "tinyhat-hermes-runtime.service")
         self.assertEqual(result["effect"], "after_command_result")
 
     def test_update_status_reports_current_and_staged_versions(self) -> None:
@@ -1648,7 +1639,9 @@ class CommandTests(TestCase):
             self.assertFalse(last_check["update_available"])
 
     def test_running_version_reads_imported_runtime_code(self) -> None:
-        result = asyncio.run(run_command(SimpleNamespace(), {"kind": "running_version"}))
+        result = asyncio.run(
+            run_command(SimpleNamespace(), {"kind": "running_version"})
+        )
 
         self.assertEqual(result["schema"], "tinyhat_hermes_running_version_v1")
         self.assertEqual(result["code_version"], __version__)
@@ -1689,7 +1682,9 @@ class CommandTests(TestCase):
             state_dir = root / "var" / "lib" / "tinyhat-hermes-runtime"
             (install_root / "env").mkdir(parents=True)
             (state_dir / "current").mkdir(parents=True)
-            (install_root / "INSTALL_REF").write_text("channels/lts\n", encoding="utf-8")
+            (install_root / "INSTALL_REF").write_text(
+                "channels/lts\n", encoding="utf-8"
+            )
             (install_root / "env" / "runtime.env").write_text(
                 "TINYHAT_LOCAL_DEV_TOKEN=secret\n",
                 encoding="utf-8",
@@ -1721,12 +1716,15 @@ class CommandTests(TestCase):
                     "stderr": "",
                 }
 
-            with patch.dict(
-                "os.environ",
-                {"TINYHAT_RUNTIME_PREFIX": str(install_root)},
-            ), patch(
-                "hermes_runtime.commands.setup_snapshot._run_systemctl",
-                side_effect=fake_systemctl,
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"TINYHAT_RUNTIME_PREFIX": str(install_root)},
+                ),
+                patch(
+                    "hermes_runtime.commands.setup_snapshot._run_systemctl",
+                    side_effect=fake_systemctl,
+                ),
             ):
                 snapshot = asyncio.run(
                     run_command(ctx, {"kind": "setup_snapshot", "spec": {}})
@@ -1817,9 +1815,7 @@ class CommandTests(TestCase):
 
             self.assertEqual(checked["status"], "ok")
             self.assertTrue(checked["update_available"])
-            self.assertEqual(
-                checked["target_ref"], "v0.20.0-dev.20260625T173000Z.next"
-            )
+            self.assertEqual(checked["target_ref"], "v0.20.0-dev.20260625T173000Z.next")
             self.assertTrue((state_dir / "updates" / "last_check.json").is_file())
             self.assertFalse((state_dir / "staged" / "VERSION").exists())
             self.assertEqual(
@@ -1832,7 +1828,9 @@ class CommandTests(TestCase):
             )
             self.assertNotIn("run_id", checked)
 
-    def test_check_update_is_not_available_when_current_sha_matches_target(self) -> None:
+    def test_check_update_is_not_available_when_current_sha_matches_target(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
@@ -1846,10 +1844,11 @@ class CommandTests(TestCase):
             )
 
             with patch(
-                "hermes_runtime.update_check._fetch_github_commit",
+                "hermes_runtime.update_check._resolve_channel_final_target",
                 return_value={
                     "ok": True,
                     "status": "ok",
+                    "target_ref": "v0.0.44",
                     "sha": target_sha,
                     "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
                     + target_sha,
@@ -1870,12 +1869,16 @@ class CommandTests(TestCase):
 
             self.assertFalse(checked["update_available"])
             self.assertEqual(checked["current_sha"], target_sha)
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "v0.0.44")
             self.assertEqual(
                 platform.posts[0][0],
                 "/hapi/v1/computers/local-dev/update-check-results/v1",
             )
 
-    def test_check_update_is_not_available_when_current_ref_matches_target(self) -> None:
+    def test_check_update_is_not_available_when_current_ref_matches_target(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
@@ -1926,18 +1929,21 @@ class CommandTests(TestCase):
                 current_commit_sha=lambda: "4" * 40,
             )
 
-            with patch(
-                "hermes_runtime.commands.check_update.__version__",
-                "0.0.39",
-            ), patch(
-                "hermes_runtime.update_check._fetch_github_commit",
-                return_value={
-                    "ok": True,
-                    "status": "ok",
-                    "sha": target_sha,
-                    "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
-                    + target_sha,
-                },
+            with (
+                patch(
+                    "hermes_runtime.commands.check_update.__version__",
+                    "0.0.39",
+                ),
+                patch(
+                    "hermes_runtime.update_check._fetch_github_commit",
+                    return_value={
+                        "ok": True,
+                        "status": "ok",
+                        "sha": target_sha,
+                        "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
+                        + target_sha,
+                    },
+                ),
             ):
                 checked = asyncio.run(
                     run_command(
@@ -2032,29 +2038,27 @@ class CommandTests(TestCase):
                 checked["decision"], "channel_selector_needs_concrete_release"
             )
 
-    def test_check_update_treats_protected_channel_merge_sha_as_unresolved(
-        self,
-    ) -> None:
+    def test_check_update_resolves_channel_version_to_concrete_final_tag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
             release_tag_sha = "7" * 40
-            protected_channel_merge_sha = "8" * 40
             ctx = SimpleNamespace(
                 platform=platform,
                 state_dir=state_dir,
                 current_version=lambda: "v0.0.7",
-                current_commit_sha=lambda: release_tag_sha,
+                current_commit_sha=lambda: "6" * 40,
             )
 
             with patch(
-                "hermes_runtime.update_check._fetch_github_commit",
+                "hermes_runtime.update_check._resolve_channel_final_target",
                 return_value={
                     "ok": True,
                     "status": "ok",
-                    "sha": protected_channel_merge_sha,
+                    "target_ref": "v0.0.8",
+                    "sha": release_tag_sha,
                     "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
-                    + protected_channel_merge_sha,
+                    + release_tag_sha,
                 },
             ):
                 checked = asyncio.run(
@@ -2072,14 +2076,53 @@ class CommandTests(TestCase):
 
             self.assertTrue(checked["channel_eligible"])
             self.assertEqual(checked["current_version"], "v0.0.7")
-            self.assertEqual(checked["current_sha"], release_tag_sha)
-            self.assertEqual(checked["target_sha"], protected_channel_merge_sha)
-            self.assertIsNone(checked["target_final_version_is_newer"])
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "v0.0.8")
+            self.assertEqual(checked["target_sha"], release_tag_sha)
+            self.assertTrue(checked["target_final_version_is_newer"])
             self.assertFalse(checked["current_matches_target"])
-            self.assertFalse(checked["update_available"])
-            self.assertEqual(
-                checked["decision"], "channel_selector_needs_concrete_release"
+            self.assertTrue(checked["update_available"])
+            self.assertEqual(checked["decision"], "newer_final_release")
+
+    def test_check_update_reports_explicit_channel_version_resolution_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.7",
+                current_commit_sha=lambda: "6" * 40,
             )
+
+            with patch(
+                "hermes_runtime.update_check._resolve_channel_final_target",
+                return_value={
+                    "ok": False,
+                    "status": "channel_version_invalid",
+                    "message": "Channel VERSION is not a final release",
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "channels/lts",
+                            },
+                        },
+                    )
+                )
+
+            self.assertEqual(checked["status"], "channel_version_invalid")
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "channels/lts")
+            self.assertEqual(checked["decision"], "target_unavailable")
+            self.assertFalse(checked["update_available"])
 
     def test_check_update_matches_final_versions_with_or_without_v_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2137,11 +2180,11 @@ class CommandTests(TestCase):
 
             self.assertFalse(checked["channel_eligible"])
             self.assertFalse(checked["update_available"])
-            self.assertEqual(
-                checked["target_ref"], "v0.0.2-dev.20260625T173000Z.smoke"
-            )
+            self.assertEqual(checked["target_ref"], "v0.0.2-dev.20260625T173000Z.smoke")
 
-    def test_check_update_rejects_older_final_tag_for_bare_current_version(self) -> None:
+    def test_check_update_rejects_older_final_tag_for_bare_current_version(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
@@ -2221,6 +2264,23 @@ class CommandTests(TestCase):
 
             self.assertNotIn("update_check", metrics["hermes_runtime"])
 
+    def test_heartbeat_advertises_composite_update_command_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = SimpleNamespace(
+                state_dir=Path(tmp),
+                started_at=0.0,
+                current_version=lambda: "v0.0.2",
+                current_commit_sha=lambda: None,
+                staged_version=lambda: None,
+            )
+
+            metrics = _heartbeat_metrics(ctx, status="running")
+
+            self.assertIs(
+                metrics["hermes_runtime"]["capabilities"]["check_and_stage_updates"],
+                True,
+            )
+
     def test_startup_activation_failure_is_recorded_for_heartbeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
@@ -2257,10 +2317,15 @@ class CommandTests(TestCase):
             calls.append((executable, args))
             raise RuntimeError("stop")
 
-        with patch.dict(
-            "os.environ",
-            {"TINYHAT_RUNTIME_BOOTSTRAP": "/opt/tinyhat-hermes-runtime/bootstrap.py"},
-        ), patch("hermes_runtime.main.os.execv", side_effect=fake_execv):
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "TINYHAT_RUNTIME_BOOTSTRAP": "/opt/tinyhat-hermes-runtime/bootstrap.py"
+                },
+            ),
+            patch("hermes_runtime.main.os.execv", side_effect=fake_execv),
+        ):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 _reexec_after_code_swap({"version": "v0.0.3", "code_swapped": True})
 
@@ -2354,8 +2419,10 @@ class CommandTests(TestCase):
                 (state_dir / "updates" / "last_scheduled_check_date").is_file()
             )
             scheduled_date = (
-                state_dir / "updates" / "last_scheduled_check_date"
-            ).read_text(encoding="utf-8").strip()
+                (state_dir / "updates" / "last_scheduled_check_date")
+                .read_text(encoding="utf-8")
+                .strip()
+            )
             self.assertEqual(result["run_id"], f"scheduled:{scheduled_date}")
             self.assertEqual(result["scheduled_local_date"], scheduled_date)
             self.assertEqual(
@@ -2447,10 +2514,11 @@ class CommandTests(TestCase):
             state_dir = Path(tmp)
             with (
                 patch(
-                    "hermes_runtime.update_check._fetch_github_commit",
+                    "hermes_runtime.update_check._resolve_channel_final_target",
                     return_value={
                         "ok": True,
                         "status": "ok",
+                        "target_ref": "v0.0.44",
                         "sha": "c" * 40,
                     },
                 ),
@@ -2554,10 +2622,11 @@ class CommandTests(TestCase):
 
             with (
                 patch(
-                    "hermes_runtime.update_check._fetch_github_commit",
+                    "hermes_runtime.update_check._resolve_channel_final_target",
                     return_value={
                         "ok": True,
                         "status": "ok",
+                        "target_ref": "v0.0.44",
                         "sha": "c" * 40,
                         "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
                         + "c" * 40,
@@ -2597,9 +2666,7 @@ class CommandTests(TestCase):
                     )
                 )
             latest_result = json.loads(
-                (state_dir / "updates" / "last_check.json").read_text(
-                    encoding="utf-8"
-                )
+                (state_dir / "updates" / "last_check.json").read_text(encoding="utf-8")
             )
             self.assertEqual(latest_result, manual_result)
             self.assertEqual(

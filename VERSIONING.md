@@ -76,26 +76,29 @@ curl -fsSL https://raw.githubusercontent.com/tinyloophub/tinyhat--runtimes--herm
 
 ## Channel refs and update checks
 
-Channel branches are moving installer selectors. They are not, by themselves,
-proof that a Computer should update. This matters when branch protection is on:
-`channels/lts` and `channels/latest` may point at merge commits that contain a
-final release tag instead of pointing at the tag commit exactly.
+Channel branches are moving installer selectors. Their branch commit alone is
+not proof that a Computer should update. This matters when branch protection is
+on: `channels/lts` and `channels/latest` may point at merge commits that contain
+a final release tag instead of pointing at the tag commit exactly.
 
-The platform should resolve a channel to the concrete final tag it contains and
-send that tag to `check_update`, for example:
+For production discovery, the runtime reads the channel branch's short root
+`VERSION`, requires a final `X.Y.Z`, and resolves the matching immutable
+`vX.Y.Z` tag commit. It reports both the moving `requested_target_ref` and the
+concrete `target_ref`/`target_sha`. The platform validates those exact values
+against its configured source before it queues an update command. The platform
+may also send the exact final tag and SHA directly, for example:
 
 ```json
 {"channel": "lts", "target_ref": "v0.0.7"}
 ```
 
-If a runtime receives only `{"channel": "lts", "target_ref": "channels/lts"}`,
-it may confirm the selector is eligible, but it must not report
-`update_available=true`. That keeps a Computer already running `v0.0.7` from
-treating the protected `channels/lts` merge commit as a newer version. The
-platform should send the concrete final tag when it wants a version decision.
-When a Computer's installed runtime ref is itself a moving selector such as
-`channels/lts`, the runtime uses its imported package version
-(`current_code_version`) as the installed final version for that comparison.
+If channel `VERSION` is missing, is not a final version, or its matching tag
+cannot be resolved, discovery explicitly reports the target unavailable and
+does not claim an update. It never compares the protected channel merge commit
+as though that commit were a release tag. When a Computer's installed runtime
+ref is itself a moving selector such as `channels/lts`, the runtime uses its
+imported package version (`current_code_version`) as the installed final
+version for the comparison.
 
 Channel branch update example:
 

@@ -15,6 +15,7 @@ reported as an available LTS update.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -30,6 +31,10 @@ from hermes_runtime.plugin_manager import (
     public_plugin_target_error,
     tinyhat_plugin_status,
 )
+from hermes_runtime.plugin_settlement import plugin_update_recovery_pending
+from hermes_runtime.runtime_notice_settlement import (
+    runtime_notice_recovery_pending,
+)
 
 
 REPO = "tinyloophub/tinyhat--runtimes--hermes"
@@ -38,7 +43,10 @@ DEFAULT_CHECK_TIME = "02:35"
 DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 SCHEDULED_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+FINAL_RELEASE_RE = re.compile(
+    r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
+FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 MAX_RUN_REASON_LENGTH = 64
 PENDING_SCHEDULED_RESULT_FILE = "pending_scheduled_check.json"
 PLUGIN_UPDATE_CHECK_SCHEMA = "tinyhat_hermes_plugin_update_check_v1"
@@ -104,9 +112,7 @@ def read_scheduled_result_for_retry(
 ) -> dict[str, Any] | None:
     """Return only the saved result for this exact scheduled local day."""
 
-    payload = _read_json(
-        state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE
-    )
+    payload = _read_json(state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE)
     expected_run_id = f"scheduled:{date_key}"
     if not isinstance(payload, dict):
         return None
@@ -124,9 +130,7 @@ def read_scheduled_result_for_retry(
 def clear_scheduled_result_for_retry(*, state_dir: Path, date_key: str) -> None:
     if read_scheduled_result_for_retry(state_dir=state_dir, date_key=date_key) is None:
         return
-    (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).unlink(
-        missing_ok=True
-    )
+    (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).unlink(missing_ok=True)
 
 
 def read_config(state_dir: Path) -> UpdateCheckConfig:
@@ -135,7 +139,9 @@ def read_config(state_dir: Path) -> UpdateCheckConfig:
     if TIME_RE.fullmatch(local_time) is None:
         local_time = DEFAULT_CHECK_TIME
 
-    timezone = _read_file(config_dir / "update_check_timezone") or DEFAULT_CHECK_TIMEZONE
+    timezone = (
+        _read_file(config_dir / "update_check_timezone") or DEFAULT_CHECK_TIMEZONE
+    )
     try:
         ZoneInfo(timezone)
     except ZoneInfoNotFoundError:
@@ -189,9 +195,12 @@ def _scheduled_run_metadata(
 ) -> dict[str, str]:
     date_key = str(scheduled_local_date or "").strip()
     if not date_key:
-        date_key = datetime.now(timezone.utc).astimezone(
-            ZoneInfo(config.timezone)
-        ).date().isoformat()
+        date_key = (
+            datetime.now(timezone.utc)
+            .astimezone(ZoneInfo(config.timezone))
+            .date()
+            .isoformat()
+        )
     if SCHEDULED_DATE_RE.fullmatch(date_key) is None:
         raise ValueError("scheduled_local_date must use YYYY-MM-DD")
     try:
@@ -300,9 +309,7 @@ def _scheduled_plugin_report(value: Any) -> dict[str, Any]:
                 "checked_at": 64,
             },
         ),
-        "plugin_repo_url": _scheduled_plugin_repo_url(
-            status.get("plugin_repo_url")
-        ),
+        "plugin_repo_url": _scheduled_plugin_repo_url(status.get("plugin_repo_url")),
         "target_selection": {
             **_scheduled_text_fields(
                 selection,
@@ -344,6 +351,27 @@ def _manual_plugin_error(
     return f"{type(exc).__name__}: {detail}"[:500]
 
 
+def _plugin_check_spec(command_spec: dict[str, Any]) -> dict[str, Any]:
+    """Project only plugin target fields out of a combined update spec.
+
+    ``target_sha`` names the runtime commit in a combined update command, while
+    ``target_commit`` names the plugin commit. Standalone plugin commands do not
+    use this projection helper, so a runtime SHA must never be copied into the
+    plugin target.
+    """
+
+    plugin_keys = (
+        "plugin_name",
+        "plugin_repo_url",
+        "repo_url",
+        "plugin_ref",
+        "ref",
+        "target_commit",
+    )
+    plugin_spec = {key: command_spec[key] for key in plugin_keys if key in command_spec}
+    return plugin_spec
+
+
 def _fetch_github_commit(ref: str) -> dict[str, Any]:
     encoded = parse.quote(ref, safe="")
     req = request.Request(
@@ -365,20 +393,75 @@ def _fetch_github_commit(ref: str) -> dict[str, Any]:
             "http_status": exc.code,
             "message": detail[:500],
         }
-    except error.URLError as exc:
+    except (error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         return {
             "ok": False,
             "status": "unavailable",
-            "message": str(exc.reason),
+            "message": str(getattr(exc, "reason", exc)),
         }
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {
+            "ok": False,
+            "status": "malformed",
+            "message": "GitHub returned a malformed commit response",
+        }
     sha = str(payload.get("sha") or "").strip() if isinstance(payload, dict) else ""
+    if FULL_GIT_SHA_RE.fullmatch(sha) is None:
+        sha = ""
     return {
         "ok": bool(sha),
         "status": "ok" if sha else "malformed",
         "sha": sha or None,
         "html_url": payload.get("html_url") if isinstance(payload, dict) else None,
     }
+
+
+def _resolve_channel_final_target(channel_ref: str) -> dict[str, Any]:
+    """Resolve a moving channel's root VERSION to an immutable final tag."""
+
+    encoded_ref = parse.quote(channel_ref, safe="/")
+    req = request.Request(
+        f"https://raw.githubusercontent.com/{REPO}/{encoded_ref}/VERSION",
+        headers={"User-Agent": "tinyhat-hermes-runtime-update-check/0.0.1"},
+        method="GET",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw_version = response.read(128).decode("utf-8", errors="replace").strip()
+    except error.HTTPError as exc:
+        return {
+            "ok": False,
+            "status": "channel_version_unavailable",
+            "http_status": exc.code,
+            "message": "Channel VERSION could not be resolved",
+        }
+    except (error.URLError, TimeoutError, OSError, http.client.HTTPException):
+        return {
+            "ok": False,
+            "status": "channel_version_unavailable",
+            "message": "Channel VERSION could not be resolved",
+        }
+
+    version = _final_version_tuple(raw_version)
+    if version is None:
+        return {
+            "ok": False,
+            "status": "channel_version_invalid",
+            "message": "Channel VERSION is not a final release",
+        }
+    target_ref = f"v{version[0]}.{version[1]}.{version[2]}"
+    resolved = _fetch_github_commit(target_ref)
+    if not resolved.get("ok"):
+        return {
+            **resolved,
+            "ok": False,
+            "status": "channel_tag_unavailable",
+            "message": "Channel release tag could not be resolved",
+            "target_ref": target_ref,
+        }
+    return {**resolved, "target_ref": target_ref}
 
 
 def _final_version_tuple(value: str | None) -> tuple[int, int, int] | None:
@@ -500,18 +583,34 @@ async def run_update_check(
     spec: dict[str, Any] | None = None,
     reason: str = "scheduled",
     scheduled_local_date: str | None = None,
+    include_plugin_check: bool = True,
 ) -> dict[str, Any]:
     config = read_config(state_dir)
     command_spec = spec if isinstance(spec, dict) else {}
     bounded_reason = _bounded_run_reason(reason)
-    channel = str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
-    target_ref = str(command_spec.get("target_ref") or config.target_ref or "").strip()
-    if not target_ref and channel in {"lts", "latest"}:
-        target_ref = f"channels/{channel}"
-    if not target_ref:
+    channel = (
+        str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
+    )
+    requested_target_ref = str(
+        command_spec.get("target_ref") or config.target_ref or ""
+    ).strip()
+    if not requested_target_ref and channel in {"lts", "latest"}:
+        requested_target_ref = f"channels/{channel}"
+    if not requested_target_ref:
         raise ValueError("check_update requires target_ref for custom update checks")
+    target_ref = requested_target_ref
 
-    if os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
+    supplied_target_sha = str(command_spec.get("target_sha") or "").strip()
+    if supplied_target_sha:
+        if FULL_GIT_SHA_RE.fullmatch(supplied_target_sha) is None:
+            raise ValueError("target_sha must be a full git commit sha")
+        resolved = {
+            "ok": True,
+            "status": "provided_target_sha",
+            "sha": supplied_target_sha.lower(),
+            "html_url": None,
+        }
+    elif os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
         resolved = {
             "ok": True,
             "status": "dev_ref_check",
@@ -523,6 +622,14 @@ async def run_update_check(
                 "runtime container."
             ),
         }
+    elif _is_channel_selector(channel=channel, target_ref=target_ref):
+        resolved = await asyncio.to_thread(
+            _resolve_channel_final_target,
+            target_ref,
+        )
+        concrete_target_ref = str(resolved.get("target_ref") or "").strip()
+        if concrete_target_ref:
+            target_ref = concrete_target_ref
     else:
         resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
@@ -542,6 +649,7 @@ async def run_update_check(
         "status": resolved.get("status") or "unknown",
         "repo": REPO,
         "channel": channel,
+        "requested_target_ref": requested_target_ref,
         "target_ref": target_ref,
         "target_sha": target_sha,
         "target_url": resolved.get("html_url"),
@@ -549,7 +657,10 @@ async def run_update_check(
         "current_code_version": current_code_version,
         "current_sha": current_sha,
         **decision,
-        "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "checked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
         "schedule": {
             "time": config.local_time,
             "timezone": config.timezone,
@@ -573,38 +684,55 @@ async def run_update_check(
         result["message"] = resolved.get("message")
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
-    try:
-        plugin_status = await tinyhat_plugin_status({"spec": command_spec})
-        if bounded_reason == "scheduled":
-            plugin_status = _scheduled_plugin_report(plugin_status)
-        result["plugin_update_check"] = {
-            "schema": (
-                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
-                if bounded_reason == "scheduled"
-                else PLUGIN_UPDATE_CHECK_SCHEMA
-            ),
-            **plugin_status,
-        }
-    except Exception as exc:
-        plugin_error = (
-            f"{type(exc).__name__}: plugin update check failed"
-            if bounded_reason == "scheduled"
-            else _manual_plugin_error(exc, command_spec=command_spec)
+    if bounded_reason == "scheduled" and runtime_notice_recovery_pending(state_dir):
+        # The exact staged ref, SHA, and delivery outcome remain local. The
+        # platform only needs a one-bit signal to queue its independently
+        # resolved current target through the normal composite command.
+        result["runtime_recovery"] = {"pending": True}
+    if include_plugin_check:
+        recovery_pending = bool(
+            bounded_reason == "scheduled" and plugin_update_recovery_pending(state_dir)
         )
-        result["plugin_update_check"] = {
-            "schema": (
-                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+        try:
+            plugin_status = await tinyhat_plugin_status(
+                {"spec": _plugin_check_spec(command_spec)}
+            )
+            if bounded_reason == "scheduled":
+                plugin_status = _scheduled_plugin_report(plugin_status)
+            result["plugin_update_check"] = {
+                "schema": (
+                    SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                    if bounded_reason == "scheduled"
+                    else PLUGIN_UPDATE_CHECK_SCHEMA
+                ),
+                **plugin_status,
+            }
+        except Exception as exc:
+            plugin_error = (
+                f"{type(exc).__name__}: plugin update check failed"
                 if bounded_reason == "scheduled"
-                else PLUGIN_UPDATE_CHECK_SCHEMA
-            ),
-            "update_available": None,
-            "decision": "target_unavailable",
-            "error": plugin_error,
-            "checked_at": datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z"),
-        }
+                else _manual_plugin_error(exc, command_spec=command_spec)
+            )
+            result["plugin_update_check"] = {
+                "schema": (
+                    SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                    if bounded_reason == "scheduled"
+                    else PLUGIN_UPDATE_CHECK_SCHEMA
+                ),
+                "update_available": None,
+                "decision": "target_unavailable",
+                "error": plugin_error,
+                "checked_at": datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        if recovery_pending:
+            # This is intentionally an object containing one boolean. The
+            # marker can contain exact refs and notice outcomes that must remain
+            # local to the Computer; the platform only needs to know that its
+            # current, independently resolved target should be queued.
+            result["plugin_update_check"]["recovery"] = {"pending": True}
     if bounded_reason == "scheduled":
         _write_json(
             state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE,

@@ -220,7 +220,8 @@ it.
 | --- | --- | --- | --- |
 | `ping` | `hermes_runtime/commands/ping.py` | Basic liveness check from Hat admin. | None. Returns `pong`. |
 | `whoami` | `hermes_runtime/commands/whoami.py` | Asks the platform to attest which Computer this runtime identity belongs to. | None. In the current local-development foundation it calls `/hapi/v1/computers/local-dev/whoami`, and the platform resolves the Computer from the scoped dev token. Production GCE Computers should use the VM identity attestation path instead, not the local-dev token path. |
-| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves the target ref in production, uses a platform-supplied ref directly in local dev, writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, does not stage or activate code. The result also includes `plugin_update_check`, which compares the installed Tinyhat plugin against its configured channel. LTS/latest runtime decisions require a concrete final tag such as `v0.0.7`; a raw channel selector like `channels/lts` is not enough evidence to report a runtime update as available. |
+| `check_update` | `hermes_runtime/commands/check_update.py` | Checks the configured runtime update target on demand without waiting for the daily schedule. | Resolves a production `channels/lts` or `channels/latest` selector through that channel's root `VERSION`, verifies the resulting final tag commit, and retains the requested selector in `requested_target_ref`. Local development uses a platform-supplied exact ref/SHA without network resolution. Writes `updates/last_check.json`, best-effort reports the result to the platform update-check API, and does not stage or activate code. The result also includes `plugin_update_check`, which compares the installed Tinyhat plugin against its configured channel. |
+| `check_and_stage_updates` | `hermes_runtime/commands/check_and_stage_updates.py` | Runs the same exact-target update operation that scheduled maintenance and Hat admin can request. | Requires immutable runtime and plugin commit SHAs supplied and validated by the platform, rechecks both targets, stages changed runtime code and marks it for activation, updates a changed Tinyhat plugin checkout, and no-ops each component independently when current. If either changes, it sends a bounded Telegram notice and restarts only the small Tinyhat runtime process after command settlement. Failed runtime-only and plugin notices retry from durable state up to three times without restaging or reinstalling; an accepted success or final failure settles the matching state. Notice-only replay does not restart the runtime. It never restarts Hermes; the owner uses Hermes `/restart` to load new plugin capabilities. |
 | `update_status` | `hermes_runtime/commands/update_status.py` | Shows the installed runtime version, any staged local update, startup activation errors, the last runtime update-check result, and the latest cached plugin update-check result. | Reads state files and the installed plugin manifest only. It does not contact GitHub or change code. |
 | `running_version` | `hermes_runtime/commands/running_version.py` | Proves which runtime package version the currently running Python process imported. | Reads the already-imported `hermes_runtime` module object only. Does not read or write runtime state metadata. |
 | `recent_commands` | `hermes_runtime/commands/recent_commands.py` | Shows the local command ledger from the Computer. | Reads `commands/ledger.jsonl` only. |
@@ -325,24 +326,36 @@ Operator or schedule
         v
 check_update
   - compares current/VERSION and current/COMMIT_SHA with the selected target
-  - for LTS/latest, expects the platform to resolve the channel to a final tag
+  - resolves a production LTS/latest channel VERSION to a final tag and SHA
   - writes updates/last_check.json
   - reports the result to the platform
   - does not download, stage, activate, or restart anything
         |
+        |  platform validates the exact tag/SHA and queues the same command
+        |  used by the Hat admin manual action
         v
-stage_update
-  - prepares the exact selected ref
-  - uses target_sha as the immutable download ref when the platform supplies it
+check_and_stage_updates
+  - rechecks the supplied immutable runtime and plugin targets
+  - stages runtime code only when the runtime target changed
+  - installs the exact plugin commit only when the plugin target changed
+  - each component can update or fail independently
+  - no-ops without a notification or restart when both are current
+        |
+        v
+stage_update (runtime changed only)
+  - prepares the exact selected ref and immutable target_sha
   - writes staged/VERSION, staged/metadata.json, and staged runtime package code
   - current/VERSION is unchanged, so the running runtime keeps using old code
         |
         v
-activate_update
+activation marker (runtime changed only)
   - writes ACTIVATE_ON_RESTART
-  - reports command success to the platform
-  - asks only tinyhat-hermes-runtime.service to exit
-  - this is normally enough to make the staged update take effect
+        |
+        |  when either runtime or plugin changed:
+        |  - notify the Telegram owner (delivery retries at most 3 times)
+        |  - report the bounded result to the platform
+        |  - ask only tinyhat-hermes-runtime.service to exit
+        |  - do not restart the Hermes gateway
         |
         |  restart_runtime_service is the optional manual restart lever:
         |  it only asks the same service/process to exit, without changing
@@ -398,16 +411,19 @@ Update checks use the same version rule everywhere:
   the update check compares the target tag with the `hermes_runtime.__version__`
   value imported by the running process and reports that value as
   `current_code_version`.
-- A raw channel selector such as `channels/lts` is installable, but it is not a
-  version decision by itself. Protected channel branches can point at merge
-  commits that contain the release tag, so the platform should resolve the
-  channel to the final tag first and send that tag to `check_update`.
+- In production, a raw channel selector such as `channels/lts` is resolved by
+  reading that channel's short root `VERSION`, requiring a final `X.Y.Z`, and
+  fetching the matching immutable `vX.Y.Z` tag commit. The result retains the
+  moving selector as `requested_target_ref`; the platform still validates the
+  concrete tag and SHA before it queues mutation. Local development never does
+  this network resolution and must receive the exact target from the platform.
 
-The daily scheduled update check runs only discovery (`check_update`) for both
-the runtime and Tinyhat plugin. It reports availability but does not stage or
-activate either component by itself. The platform may use the checked plugin
-commit to queue the existing `update_tinyhat_plugin` command; the runtime does
-not choose fleet rollout policy.
+The daily scheduled task first runs read-only discovery (`check_update`) for
+both the runtime and Tinyhat plugin. The platform validates that report against
+the Computer's configured sources, then queues `check_and_stage_updates` with
+the exact tag/SHA and plugin commit through the normal single-command ledger.
+The Hat admin manual action queues that same command, so automatic and manual
+updates share one mutation path while rollout policy stays platform-owned.
 
 Without `TINYHAT_RUNTIME_UPDATE_SOURCE_DIR`, staging downloads runtime source
 archives from `codeload.github.com`. Production Computers therefore need
@@ -459,10 +475,26 @@ Reports omit local plugin paths.
 Scheduled plugin projections declare
 `tinyhat_hermes_plugin_update_check_v2`. Version 2 is the bounded platform
 contract: it omits `installed.plugin_dir` and `installed.manifest`, and it
-replaces raw target errors with one generic status. Manual admin checks keep
-the fuller `tinyhat_hermes_plugin_update_check_v1` result for local diagnosis.
-The enclosing scheduled report remains `tinyhat_hermes_update_check_v1`, so
-saved same-day retry files stay readable across this change.
+replaces raw target errors with one generic status. When a prior plugin install
+still needs repair, or its Telegram notice or platform result has not settled,
+the projection adds only `recovery: {"pending": true}`. The marker's exact
+refs, local paths, errors,
+state, and notice outcomes remain on the Computer. The platform independently
+resolves its current configured target before retrying. Manual admin checks
+keep the fuller `tinyhat_hermes_plugin_update_check_v1` result for local
+diagnosis. The enclosing scheduled report remains
+`tinyhat_hermes_update_check_v1`, so saved same-day retry files stay readable
+across this change.
+
+A scheduled report with an unsettled runtime-only Telegram notice adds only the
+top-level `runtime_recovery: {"pending": true}` hint. The runtime target, commit,
+attempt count, delivery result, local paths, and diagnostics stay in bounded
+local state. The platform independently resolves its configured runtime target
+and queues the same exact-target composite command. A matching manual admin
+command can settle that obligation too. Once runtime activation has completed,
+this notice-only replay sends no runtime restart request; a successful delivery
+or the third failed attempt is cleared only after the platform accepts the
+command result.
 
 The result is not embedded into heartbeat metrics. Use the admin `check_update`
 command when you want to run the same check immediately from Hat admin; manual

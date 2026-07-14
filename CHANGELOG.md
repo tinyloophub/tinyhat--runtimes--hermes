@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Add `check_and_stage_updates`, one idempotent runtime command used by manual
+  and scheduled update flows to check immutable runtime/plugin targets, stage
+  changed runtime code for activation, install a changed Tinyhat plugin checkout,
+  restart only the small Tinyhat runtime process, and notify the Telegram owner
+  that Hermes `/restart` is required to load the new capabilities. Plugin
+  settlement is revalidated against fresh local disk proof even when remote
+  target discovery is unavailable. Failed owner notices retry from durable
+  state up to three times without reinstalling or wedging future updates. A
+  bounded scheduled recovery hint lets the next daily cycle retry an
+  interrupted plugin repair or settle a surviving plugin or runtime-only owner
+  notice against the platform's current target, without exposing marker
+  details. Runtime-only notice success survives a lost platform response
+  without a duplicate Telegram message. Notice-only replays do not restart the
+  runtime.
+  Production update discovery now resolves a moving LTS/latest channel's root
+  `VERSION` to its concrete final tag and commit while retaining the requested
+  channel selector for platform validation.
+
 ## 0.0.44 - 2026-07-13
 
 - Make `heal_hermes` prove a new systemd gateway generation before reporting a
