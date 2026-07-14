@@ -186,6 +186,52 @@ def _current_plugin_discovery() -> dict[str, Any]:
     return discovery
 
 
+def _settlement_marker(
+    *,
+    attempts: int = 0,
+    sent: bool | None = None,
+) -> dict[str, Any]:
+    marker: dict[str, Any] = {
+        "schema": "tinyhat_hermes_plugin_repair_v1",
+        "state": "installed_unacknowledged",
+        "plugin_repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+        "plugin_ref": "channels/lts",
+        "target_commit": PLUGIN_COMMIT,
+        "installed_version": "0.21.6",
+        "notice_attempts": attempts,
+    }
+    if sent is not None:
+        marker["notice_outcome"] = {
+            "sent": sent,
+            "http_status": 200 if sent else 503,
+        }
+    return marker
+
+
+def _scheduled_discovery(state_dir: Path) -> dict[str, Any]:
+    with (
+        patch.dict(
+            "os.environ",
+            {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"},
+            clear=True,
+        ),
+        patch(
+            "hermes_runtime.update_check.tinyhat_plugin_status",
+            AsyncMock(return_value=_current_plugin_discovery()["plugin_update_check"]),
+        ),
+    ):
+        return asyncio.run(
+            run_update_check(
+                state_dir=state_dir,
+                current_version="v0.0.44",
+                current_code_version="0.0.44",
+                current_sha="d" * 40,
+                reason="scheduled",
+                scheduled_local_date="2026-07-14",
+            )
+        )
+
+
 def _composite_command() -> dict[str, Any]:
     return {
         "command_id": "cmd-update",
@@ -698,7 +744,8 @@ def test_failed_notice_retries_successfully_without_reinstall() -> None:
     }
     assert len(messages) == 2
     assert marker_path.exists() is False
-    assert ctx.restart_requested is True
+    assert retry_result["runtime_restart_requested"] is False
+    assert ctx.restart_requested is False
 
 
 def test_failed_notice_exhausts_bound_and_settles_marker() -> None:
@@ -736,14 +783,16 @@ def test_failed_notice_exhausts_bound_and_settles_marker() -> None:
             patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
         ):
             asyncio.run(_run_one_command(ctx, command))
-            assert json.loads(marker_path.read_text(encoding="utf-8"))[
-                "notice_attempts"
-            ] == 1
+            assert (
+                json.loads(marker_path.read_text(encoding="utf-8"))["notice_attempts"]
+                == 1
+            )
             ctx.restart_requested = False
             asyncio.run(_run_one_command(ctx, command))
-            assert json.loads(marker_path.read_text(encoding="utf-8"))[
-                "notice_attempts"
-            ] == 2
+            assert (
+                json.loads(marker_path.read_text(encoding="utf-8"))["notice_attempts"]
+                == 2
+            )
             ctx.restart_requested = False
             asyncio.run(_run_one_command(ctx, command))
             exhausted = platform.posts[2][1]["result"]["result"]
@@ -823,7 +872,8 @@ def test_failed_notice_survives_result_post_failure_then_retries() -> None:
     assert retry_result["notification"]["sent"] is True
     assert len(messages) == 2
     assert marker_path.exists() is False
-    assert ctx.restart_requested is True
+    assert retry_result["runtime_restart_requested"] is False
+    assert ctx.restart_requested is False
 
 
 def test_exhausted_notice_survives_lost_result_without_fourth_send() -> None:
@@ -868,10 +918,9 @@ def test_exhausted_notice_survives_lost_result_without_fourth_send() -> None:
                 "result delivery failed",
             ):
                 asyncio.run(_run_one_command(ctx, command))
-            exhausted_marker = json.loads(
-                marker_path.read_text(encoding="utf-8")
-            )
+            exhausted_marker = json.loads(marker_path.read_text(encoding="utf-8"))
             platform.fail_results = False
+            ctx.restart_requested = False
             asyncio.run(_run_one_command(ctx, command))
             replayed = platform.posts[-1][1]["result"]["result"]
 
@@ -882,10 +931,12 @@ def test_exhausted_notice_survives_lost_result_without_fourth_send() -> None:
     assert replayed["notification"]["attempted"] is True
     assert replayed["notification"]["attempt"] == 3
     assert replayed["notification"]["retry_exhausted"] is True
+    assert replayed["runtime_restart_requested"] is False
+    assert ctx.restart_requested is False
     assert marker_path.exists() is False
 
 
-def test_result_post_failure_reuses_success_without_duplicate_notice() -> None:
+def test_marker_only_redispatch_does_not_restart_runtime_or_duplicate_notice() -> None:
     first_discovery = _discovery(runtime=False, plugin=True)
     retry_discovery = _discovery(runtime=False, plugin=False)
     retry_discovery["plugin_update_check"].update(
@@ -945,7 +996,7 @@ def test_result_post_failure_reuses_success_without_duplicate_notice() -> None:
         # The successful outcome is itself durable, so losing only the result
         # POST redispatches proof without spamming a duplicate owner notice.
         assert len(messages) == 1
-        assert ctx.restart_requested is True
+        assert ctx.restart_requested is False
         assert marker_path.exists() is False
         assert len(platform.posts) == 1
         reported = platform.posts[0][1]["result"]
@@ -954,6 +1005,7 @@ def test_result_post_failure_reuses_success_without_duplicate_notice() -> None:
         assert reported["result"]["plugin"]["changed"] is True
         assert reported["result"]["plugin"]["installed_commit"] == PLUGIN_COMMIT
         assert reported["result"]["hermes_restart_required"] is True
+        assert reported["result"]["runtime_restart_requested"] is False
         assert reported["result"]["notification"]["sent"] is True
         assert reported["result"]["notification"]["attempt"] == 1
 
@@ -1191,7 +1243,8 @@ def test_target_outage_trusts_marker_when_fresh_disk_still_matches() -> None:
     assert recovered["notification"]["sent"] is True
     assert recovered["notification"]["attempt"] == 1
     assert recovered["hermes_restart_required"] is True
-    assert ctx.restart_requested is True
+    assert recovered["runtime_restart_requested"] is False
+    assert ctx.restart_requested is False
     # Result redispatch reuses the durable successful outcome.
     assert len(messages) == 1
 
@@ -1371,7 +1424,7 @@ def test_plugin_discovery_failure_is_not_reported_as_current() -> None:
     assert ctx.restart_requested is False
 
 
-def test_landed_plugin_failure_notifies_and_retry_repair_restarts() -> None:
+def test_landed_plugin_failure_repair_without_install_does_not_restart() -> None:
     target_snapshot = _plugin_result(changed=True)["after"]
     first_discovery = _discovery(runtime=False, plugin=True)
     retry_discovery = _discovery(runtime=False, plugin=False)
@@ -1420,8 +1473,13 @@ def test_landed_plugin_failure_notifies_and_retry_repair_restarts() -> None:
             "commit": PLUGIN_COMMIT,
         }
         assert first["runtime_restart_requested"] is True
-        assert first["notification"]["sent"] is True
-        assert len(messages) == 1
+        assert first["notification"]["attempted"] is False
+        assert len(messages) == 0
+
+        scheduled_recovery = _scheduled_discovery(ctx.state_dir)
+        assert scheduled_recovery["plugin_update_check"]["recovery"] == {
+            "pending": True
+        }
 
         ctx.restart_requested = False
         repaired_update = AsyncMock(
@@ -1438,10 +1496,12 @@ def test_landed_plugin_failure_notifies_and_retry_repair_restarts() -> None:
             ),
             patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
         ):
+            retry_spec = _spec()
+            retry_spec["plugin_recovery_required"] = True
             retry = asyncio.run(
                 run_command(
                     ctx,
-                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                    {"kind": "check_and_stage_updates", "spec": retry_spec},
                 )
             )
 
@@ -1453,14 +1513,151 @@ def test_landed_plugin_failure_notifies_and_retry_repair_restarts() -> None:
         assert retry["plugin"]["repair_performed"] is True
         assert retry["plugin"]["installed_commit"] == PLUGIN_COMMIT
         assert retry["notification"]["sent"] is True
-        assert ctx.restart_requested is True
-        assert len(messages) == 2
+        assert retry["runtime_restart_requested"] is False
+        assert ctx.restart_requested is False
+        assert len(messages) == 1
         assert acknowledge_check_and_stage_result(
             ctx,
-            {"kind": "check_and_stage_updates", "spec": _spec()},
+            {"kind": "check_and_stage_updates", "spec": retry_spec},
             retry,
         )
         assert repair_path.exists() is False
+
+
+def test_recovery_advances_old_repair_target_before_installer_io() -> None:
+    messages: list[str] = []
+    installer_targets: list[str] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = ctx.state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "schema": "tinyhat_hermes_plugin_repair_v1",
+                    "state": "repair_pending",
+                    "plugin_repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+                    "plugin_ref": "channels/lts",
+                    "target_commit": OLD_PLUGIN_COMMIT,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        async def install_current_target(command: dict[str, Any]) -> dict[str, Any]:
+            installer_targets.append(command["spec"]["target_commit"])
+            marker_before_io = json.loads(marker_path.read_text(encoding="utf-8"))
+            assert marker_before_io["state"] == "repair_pending"
+            assert marker_before_io["target_commit"] == PLUGIN_COMMIT
+            return _plugin_result(changed=True)
+
+        command = _composite_command()
+        command["spec"]["plugin_recovery_required"] = True
+        update_plugin = AsyncMock(side_effect=install_current_target)
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=_discovery(runtime=False, plugin=True)),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                update_plugin,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=lambda text: messages.append(text) or {"ok": True},
+            ),
+        ):
+            result = asyncio.run(run_command(ctx, command))
+
+        marker_after = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    update_plugin.assert_awaited_once()
+    assert installer_targets == [PLUGIN_COMMIT]
+    assert marker_after["state"] == "installed_unacknowledged"
+    assert marker_after["target_commit"] == PLUGIN_COMMIT
+    assert result["status"] == "updated"
+    assert result["plugin"]["repair_performed"] is True
+    assert result["plugin"]["installed_commit"] == PLUGIN_COMMIT
+    assert result["runtime_restart_requested"] is True
+    assert result["hermes_restart_required"] is True
+    assert ctx.restart_requested is True
+    assert result["notification"]["sent"] is True
+    assert messages == [
+        "Tinyhat capabilities updated to version 0.21.6.\n\n"
+        "The new capabilities will be picked up after the next Hermes "
+        "/restart.\n\n"
+        "To use them now, run /restart."
+    ]
+
+
+def test_permanent_repair_failure_retries_once_per_signal_without_restart() -> None:
+    target_snapshot = _plugin_result(changed=True)["after"]
+    failed_update = AsyncMock(side_effect=RuntimeError("enable always fails"))
+    messages: list[str] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = ctx.state_dir / "updates" / "pending_plugin_repair.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _discovery(runtime=False, plugin=True),
+                        _current_plugin_discovery(),
+                        _current_plugin_discovery(),
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                failed_update,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.plugin_snapshot",
+                return_value=target_snapshot,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=lambda text: messages.append(text) or {"ok": True},
+            ),
+        ):
+            initial = asyncio.run(run_command(ctx, _composite_command()))
+            assert failed_update.await_count == 1
+            assert initial["status"] == "partial"
+            assert initial["runtime_restart_requested"] is True
+            assert initial["notification"]["attempted"] is False
+            assert ctx.restart_requested is True
+            assert _scheduled_discovery(ctx.state_dir)["plugin_update_check"][
+                "recovery"
+            ] == {"pending": True}
+
+            recovery_command = _composite_command()
+            recovery_command["spec"]["plugin_recovery_required"] = True
+            recovery_results: list[dict[str, Any]] = []
+            for expected_attempts in (2, 3):
+                ctx.restart_requested = False
+                recovery_results.append(asyncio.run(run_command(ctx, recovery_command)))
+                assert failed_update.await_count == expected_attempts
+                assert ctx.restart_requested is False
+                assert _scheduled_discovery(ctx.state_dir)["plugin_update_check"][
+                    "recovery"
+                ] == {"pending": True}
+
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert marker["state"] == "repair_pending"
+    assert marker["target_commit"] == PLUGIN_COMMIT
+    assert messages == []
+    for recovery in recovery_results:
+        assert recovery["status"] == "failed"
+        assert recovery["changed"] is False
+        assert recovery["plugin"]["repair_performed"] is False
+        assert recovery["runtime_restart_requested"] is False
+        assert recovery["hermes_restart_required"] is False
+        assert recovery["notification"]["attempted"] is False
 
 
 def test_retry_is_idempotent_for_exact_runtime_and_plugin_targets() -> None:
@@ -1706,3 +1903,302 @@ def test_command_requires_a_bounded_reason() -> None:
                     {"kind": "check_and_stage_updates", "spec": spec},
                 )
             )
+
+
+def test_scheduled_plugin_check_advertises_all_recovery_states() -> None:
+    legacy_marker = _settlement_marker()
+    legacy_marker.pop("notice_attempts")
+    repair_marker = {
+        **_settlement_marker(),
+        "state": "repair_pending",
+    }
+    repair_marker.pop("notice_attempts")
+    marker_variants = (
+        repair_marker,
+        legacy_marker,
+        _settlement_marker(attempts=1, sent=False),
+        _settlement_marker(attempts=1, sent=True),
+        _settlement_marker(attempts=3, sent=False),
+    )
+    for marker in marker_variants:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+            result = _scheduled_discovery(state_dir)
+
+        plugin_check = result["plugin_update_check"]
+        assert plugin_check["recovery"] == {"pending": True}
+        assert set(plugin_check).isdisjoint(
+            {"notice_attempts", "notice_outcome", "target_commit_from_marker"}
+        )
+
+
+def test_scheduled_plugin_recovery_hint_is_absent_without_valid_marker() -> None:
+    invalid_markers: tuple[str | dict[str, Any] | None, ...] = (
+        None,
+        "not-json",
+        {**_settlement_marker(), "schema": "wrong-schema"},
+        {**_settlement_marker(), "state": "unknown"},
+        {**_settlement_marker(), "target_commit": "short"},
+        {**_settlement_marker(), "notice_attempts": True},
+    )
+    for marker in invalid_markers:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            if marker is not None:
+                marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+                marker_path.parent.mkdir(parents=True)
+                marker_path.write_text(
+                    marker if isinstance(marker, str) else json.dumps(marker),
+                    encoding="utf-8",
+                )
+
+            result = _scheduled_discovery(state_dir)
+
+        assert "recovery" not in result["plugin_update_check"]
+
+
+def test_scheduled_plugin_recovery_hint_rejects_pathological_json() -> None:
+    malformed_markers = (
+        '{"notice_attempts":' + ("9" * 5_000) + "}",
+        "[" * 2_000 + "]" * 2_000,
+    )
+    for marker in malformed_markers:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(marker, encoding="utf-8")
+
+            result = _scheduled_discovery(state_dir)
+
+        assert "recovery" not in result["plugin_update_check"]
+
+
+def test_command_marker_reads_reject_pathological_json() -> None:
+    malformed_markers = (
+        '{"notice_attempts":' + ("9" * 5_000) + "}",
+        "[" * 2_000 + "]" * 2_000,
+    )
+    for marker in malformed_markers:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = FakeContext(Path(tmp))
+            marker_path = ctx.state_dir / "updates" / "pending_plugin_repair.json"
+            marker_path.parent.mkdir(parents=True)
+            marker_path.write_text(marker, encoding="utf-8")
+            update_plugin = AsyncMock()
+            with (
+                patch(
+                    "hermes_runtime.update_orchestrator.run_update_check",
+                    AsyncMock(return_value=_current_plugin_discovery()),
+                ),
+                patch(
+                    "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                    update_plugin,
+                ),
+                patch(
+                    "hermes_runtime.update_orchestrator._telegram_send",
+                    side_effect=AssertionError("must not notify"),
+                ),
+            ):
+                result = asyncio.run(run_command(ctx, _composite_command()))
+
+        assert result["status"] == "current"
+        assert result["changed"] is False
+        assert result["notification"]["attempted"] is False
+        assert result["runtime_restart_requested"] is False
+        assert ctx.restart_requested is False
+        update_plugin.assert_not_awaited()
+
+
+def test_recovery_promotes_superseded_notice_to_fresh_current_disk() -> None:
+    discovery = _current_plugin_discovery()
+    old_commit = "e" * 40
+    messages: list[str] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = ctx.state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            json.dumps(
+                {
+                    **_settlement_marker(attempts=1, sent=False),
+                    "target_commit": old_commit,
+                }
+            ),
+            encoding="utf-8",
+        )
+        command = _composite_command()
+        command["spec"]["plugin_recovery_required"] = True
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(side_effect=AssertionError("must not reinstall")),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=lambda text: messages.append(text) or {"ok": True},
+            ),
+        ):
+            result = asyncio.run(run_command(ctx, command))
+
+        assert result["status"] == "updated"
+        assert result["plugin"]["changed"] is True
+        assert result["plugin"]["installed_commit"] == PLUGIN_COMMIT
+        assert result["notification"]["sent"] is True
+        assert result["runtime_restart_requested"] is True
+        assert ctx.restart_requested is True
+        assert messages == [
+            "Tinyhat capabilities updated to version 0.21.6.\n\n"
+            "The new capabilities will be picked up after the next Hermes "
+            "/restart.\n\n"
+            "To use them now, run /restart."
+        ]
+        promoted = json.loads(marker_path.read_text(encoding="utf-8"))
+        assert promoted["target_commit"] == PLUGIN_COMMIT
+        assert acknowledge_check_and_stage_result(ctx, command, result)
+        assert marker_path.exists() is False
+
+        scheduled = _scheduled_discovery(ctx.state_dir)
+
+    assert "recovery" not in scheduled["plugin_update_check"]
+
+
+def test_recovery_state_write_failure_stays_visible_and_retryable() -> None:
+    discovery = _current_plugin_discovery()
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = ctx.state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            json.dumps(
+                {
+                    **_settlement_marker(attempts=1, sent=False),
+                    "target_commit": "e" * 40,
+                }
+            ),
+            encoding="utf-8",
+        )
+        command = _composite_command()
+        command["spec"]["plugin_recovery_required"] = True
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._write_json_atomic",
+                side_effect=OSError("private path failure"),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=AssertionError("must not notify"),
+            ),
+        ):
+            result = asyncio.run(run_command(ctx, command))
+
+        assert result["status"] == "failed"
+        assert result["plugin"]["status"] == "failed"
+        assert result["plugin"]["error"] == {
+            "code": "OSError",
+            "message": "Plugin recovery state update failed",
+        }
+        assert result["runtime_restart_requested"] is False
+        assert ctx.restart_requested is False
+        assert marker_path.exists() is True
+
+
+def test_scheduled_plugin_recovery_hint_is_bounded_and_non_sensitive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker = _settlement_marker(attempts=1, sent=False)
+        marker["private_error"] = "secret-marker-detail"
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+        result = _scheduled_discovery(state_dir)
+
+        assert result["plugin_update_check"]["recovery"] == {"pending": True}
+        assert "secret-marker-detail" not in json.dumps(result)
+
+        marker["private_error"] = "secret-marker-detail" * 2_000
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        oversized_result = _scheduled_discovery(state_dir)
+
+    assert "recovery" not in oversized_result["plugin_update_check"]
+
+
+def test_scheduled_recovery_hint_survives_plugin_check_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            json.dumps(_settlement_marker(attempts=1, sent=False)),
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(
+                "os.environ",
+                {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"},
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.update_check.tinyhat_plugin_status",
+                AsyncMock(side_effect=RuntimeError("private plugin failure")),
+            ),
+        ):
+            result = asyncio.run(
+                run_update_check(
+                    state_dir=state_dir,
+                    current_version="v0.0.44",
+                    reason="scheduled",
+                    scheduled_local_date="2026-07-14",
+                )
+            )
+
+    plugin_check = result["plugin_update_check"]
+    assert plugin_check["recovery"] == {"pending": True}
+    assert plugin_check["error"] == "RuntimeError: plugin update check failed"
+    assert "private plugin failure" not in json.dumps(result)
+
+
+def test_manual_plugin_check_does_not_expose_recovery_marker() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        state_dir = Path(tmp)
+        marker_path = state_dir / "updates" / "pending_plugin_repair.json"
+        marker_path.parent.mkdir(parents=True)
+        marker_path.write_text(
+            json.dumps(_settlement_marker(attempts=1, sent=True)),
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(
+                "os.environ",
+                {"TINYHAT_LOCAL_DEV_TOKEN": "dev-token"},
+                clear=True,
+            ),
+            patch(
+                "hermes_runtime.update_check.tinyhat_plugin_status",
+                AsyncMock(
+                    return_value=_current_plugin_discovery()["plugin_update_check"]
+                ),
+            ),
+        ):
+            result = asyncio.run(
+                run_update_check(
+                    state_dir=state_dir,
+                    current_version="v0.0.44",
+                    reason="admin_check_update",
+                )
+            )
+
+    assert "recovery" not in result["plugin_update_check"]

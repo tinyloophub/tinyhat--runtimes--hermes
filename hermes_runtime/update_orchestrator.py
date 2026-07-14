@@ -18,6 +18,14 @@ from hermes_runtime.plugin_manager import (
     plugin_snapshot,
     update_tinyhat_plugin,
 )
+from hermes_runtime.plugin_settlement import (
+    MAX_PLUGIN_NOTICE_ATTEMPTS,
+    PLUGIN_INSTALLED_UNACKNOWLEDGED,
+    PLUGIN_REPAIR_FILE,
+    PLUGIN_REPAIR_PENDING,
+    PLUGIN_REPAIR_SCHEMA,
+    read_plugin_recovery,
+)
 from hermes_runtime.telegram_codex_auth import _telegram_send
 from hermes_runtime.update_check import run_update_check
 
@@ -27,11 +35,6 @@ FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 ALLOWED_CHANNELS = {"lts", "latest", "custom"}
 MAX_REASON_LENGTH = 64
 MAX_VERSION_LENGTH = 128
-PLUGIN_REPAIR_SCHEMA = "tinyhat_hermes_plugin_repair_v1"
-PLUGIN_REPAIR_FILE = "pending_plugin_repair.json"
-PLUGIN_REPAIR_PENDING = "repair_pending"
-PLUGIN_INSTALLED_UNACKNOWLEDGED = "installed_unacknowledged"
-MAX_PLUGIN_NOTICE_ATTEMPTS = 3
 
 
 def _clean_text(value: Any, *, max_length: int) -> str | None:
@@ -156,7 +159,7 @@ def _plugin_marker(
     ref: str,
     commit: str,
 ) -> dict[str, Any] | None:
-    payload = _read_json(_plugin_repair_path(ctx))
+    payload = read_plugin_recovery(ctx.state_dir)
     if not (
         payload
         and payload.get("schema") == PLUGIN_REPAIR_SCHEMA
@@ -644,11 +647,15 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             runtime_error = _generic_error(exc, component="Runtime")
 
     plugin_changed = False
+    plugin_code_changed_now = False
     plugin_result: dict[str, Any] | None = None
     plugin_before = _plugin_proof(plugin_discovery.get("installed"))
     plugin_installed_unacknowledged: dict[str, Any] | None = None
     plugin_repair_pending = False
     plugin_marker_stale = False
+    plugin_reconciled_out_of_band = False
+    plugin_recovery_error: dict[str, str] | None = None
+    plugin_recovery_required = spec.get("plugin_recovery_required") is True
     if plugin_requested:
         assert plugin_repo_url is not None
         assert plugin_ref is not None
@@ -666,6 +673,66 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             commit=target_commit,
         )
         plugin_snapshot_seen = isinstance(plugin_discovery.get("installed"), dict)
+        any_plugin_recovery = read_plugin_recovery(ctx.state_dir)
+        any_notice_settlement = (
+            any_plugin_recovery
+            if any_plugin_recovery is not None
+            and any_plugin_recovery.get("state") == PLUGIN_INSTALLED_UNACKNOWLEDGED
+            else None
+        )
+        if (
+            plugin_recovery_required
+            and not plugin_repair_pending
+            and any_plugin_recovery is not None
+            and any_plugin_recovery.get("state") == PLUGIN_REPAIR_PENDING
+        ):
+            # The configured target may have advanced since an older repair
+            # was recorded. Repair the platform-selected current target and
+            # overwrite the old marker before installer I/O; never downgrade
+            # to the marker's historical target.
+            plugin_repair_pending = True
+            plugin_marker_stale = True
+        if (
+            plugin_recovery_required
+            and plugin_installed_unacknowledged is None
+            and any_notice_settlement is not None
+            and plugin_snapshot_seen
+            and _plugin_target_matches(
+                plugin_before,
+                repo_url=plugin_repo_url,
+                ref=plugin_ref,
+                commit=target_commit,
+            )
+        ):
+            # A standalone plugin command may have advanced the disk beyond
+            # the target named by an older notice marker. The platform has
+            # independently resolved the current target and fresh local proof
+            # shows it is installed. Promote the durable obligation to that
+            # current target instead of replaying or downgrading the old one.
+            # This produces one truthful capability notice and one Tinyhat
+            # runtime reload for the out-of-band code change.
+            try:
+                _record_plugin_installed_unacknowledged(
+                    ctx,
+                    repo_url=plugin_repo_url,
+                    ref=plugin_ref,
+                    commit=target_commit,
+                    installed=plugin_before,
+                )
+                plugin_installed_unacknowledged = _plugin_installed_unacknowledged(
+                    ctx,
+                    repo_url=plugin_repo_url,
+                    ref=plugin_ref,
+                    commit=target_commit,
+                )
+                plugin_reconciled_out_of_band = (
+                    plugin_installed_unacknowledged is not None
+                )
+            except Exception as exc:  # noqa: BLE001 - retry on the next daily run.
+                plugin_recovery_error = _generic_error(
+                    exc,
+                    component="Plugin recovery state",
+                )
         if (
             plugin_installed_unacknowledged is not None
             and plugin_snapshot_seen
@@ -684,7 +751,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             plugin_marker_stale = True
             plugin_installed_unacknowledged = None
             plugin_repair_pending = True
-    plugin_error: dict[str, str] | None = (
+    plugin_error: dict[str, str] | None = plugin_recovery_error or (
         {
             "code": "plugin_target_unavailable",
             "message": "Plugin update check failed",
@@ -760,6 +827,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                 or plugin_repair_performed
                 or plugin_update_available
             )
+            plugin_code_changed_now = bool(plugin_result.get("changed"))
             installed_after = _plugin_proof(plugin_result.get("after"))
             if not _plugin_target_matches(
                 installed_after,
@@ -778,6 +846,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         except Exception as exc:  # noqa: BLE001 - runtime staging remains independent.
             plugin_error = _generic_error(exc, component="Plugin")
             plugin_changed = False
+            plugin_code_changed_now = False
             plugin_result = None
             try:
                 failed_snapshot = plugin_snapshot(
@@ -808,6 +877,10 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                     ref=plugin_ref,
                     commit=target_commit,
                 )
+                # The installer raised after the exact target landed. That is
+                # still a code change in this invocation even though repair
+                # remains pending for the next run.
+                plugin_code_changed_now = plugin_changed
 
     runtime_ready_to_activate = bool(
         runtime_error is None
@@ -861,7 +934,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         "retry_pending": False,
         "retry_exhausted": False,
     }
-    if plugin_changed:
+    if plugin_changed and plugin_error is None:
         assert plugin_repo_url is not None
         assert plugin_ref is not None
         assert target_commit is not None
@@ -879,7 +952,10 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             attempt=1,
             can_retry=False,
         )
-    if changed:
+    runtime_restart_requested = bool(
+        runtime_changed or plugin_code_changed_now or plugin_reconciled_out_of_band
+    )
+    if runtime_restart_requested:
         ctx.restart_requested = True
 
     errors = [error for error in (runtime_error, plugin_error) if error is not None]
@@ -960,7 +1036,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             "repair_performed": plugin_repair_performed and plugin_error is None,
             "error": plugin_error,
         },
-        "runtime_restart_requested": changed,
+        "runtime_restart_requested": runtime_restart_requested,
         "hermes_restart_required": plugin_changed,
         "notification": notification,
     }

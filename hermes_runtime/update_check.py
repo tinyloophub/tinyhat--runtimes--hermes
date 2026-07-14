@@ -31,6 +31,7 @@ from hermes_runtime.plugin_manager import (
     public_plugin_target_error,
     tinyhat_plugin_status,
 )
+from hermes_runtime.plugin_settlement import plugin_update_recovery_pending
 
 
 REPO = "tinyloophub/tinyhat--runtimes--hermes"
@@ -681,6 +682,9 @@ async def run_update_check(
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
     if include_plugin_check:
+        recovery_pending = bool(
+            bounded_reason == "scheduled" and plugin_update_recovery_pending(state_dir)
+        )
         try:
             plugin_status = await tinyhat_plugin_status(
                 {"spec": _plugin_check_spec(command_spec)}
@@ -715,6 +719,12 @@ async def run_update_check(
                 .isoformat()
                 .replace("+00:00", "Z"),
             }
+        if recovery_pending:
+            # This is intentionally an object containing one boolean. The
+            # marker can contain exact refs and notice outcomes that must remain
+            # local to the Computer; the platform only needs to know that its
+            # current, independently resolved target should be queued.
+            result["plugin_update_check"]["recovery"] = {"pending": True}
     if bounded_reason == "scheduled":
         _write_json(
             state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE,
