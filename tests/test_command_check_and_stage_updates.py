@@ -156,6 +156,7 @@ def _run(
     runtime: bool,
     plugin: bool,
     plugin_result: dict[str, Any] | None = None,
+    discovery_result: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], AsyncMock, AsyncMock, list[str]]:
     stage = AsyncMock(side_effect=_fake_stage)
     update_plugin = AsyncMock(
@@ -170,7 +171,13 @@ def _run(
     with (
         patch(
             "hermes_runtime.update_orchestrator.run_update_check",
-            AsyncMock(return_value=_discovery(runtime=runtime, plugin=plugin)),
+            AsyncMock(
+                return_value=(
+                    discovery_result
+                    if discovery_result is not None
+                    else _discovery(runtime=runtime, plugin=plugin)
+                )
+            ),
         ),
         patch("hermes_runtime.update_orchestrator.stage_update.run", stage),
         patch(
@@ -267,7 +274,43 @@ def test_runtime_only_update_stages_exact_sha_and_marks_activation() -> None:
     assert result["runtime"]["activation_requested"] is True
     assert result["plugin"]["changed"] is False
     assert result["runtime_restart_requested"] is True
-    assert messages[0].startswith("Tinyhat capabilities updated to version 0.21.5.")
+    assert result["hermes_restart_required"] is False
+    assert result["notification"]["attempted"] is False
+    assert messages == []
+
+
+def test_partial_activation_keeps_requesting_runtime_restart() -> None:
+    """A surviving activation marker wins over a now-current state VERSION."""
+
+    discovery = _discovery(runtime=False, plugin=False)
+    discovery.update(
+        {
+            "current_version": "v0.0.45",
+            "current_code_version": "0.0.44",
+            "current_sha": "d" * 40,
+            "decision": "current_matches_target",
+        }
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        ctx.activation_marker.write_text("v0.0.45\n", encoding="utf-8")
+        result, stage, update_plugin, messages = _run(
+            ctx,
+            runtime=False,
+            plugin=False,
+            discovery_result=discovery,
+        )
+
+    stage.assert_not_awaited()
+    update_plugin.assert_not_awaited()
+    assert result["status"] == "updated"
+    assert result["runtime"]["status"] == "staged"
+    assert result["runtime"]["update_available"] is False
+    assert result["runtime"]["activation_requested"] is True
+    assert result["runtime_restart_requested"] is True
+    assert result["hermes_restart_required"] is False
+    assert ctx.restart_requested is True
+    assert messages == []
 
 
 def test_runtime_and_plugin_updates_both_apply() -> None:
@@ -286,6 +329,28 @@ def test_runtime_and_plugin_updates_both_apply() -> None:
     assert result["plugin"]["changed"] is True
     assert result["notification"]["sent"] is True
     assert len(messages) == 1
+
+
+def test_plugin_update_without_version_keeps_exact_installed_commit() -> None:
+    plugin_result = {
+        "changed": True,
+        "after": {
+            "source": {
+                "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+                "ref": "channels/lts",
+                "commit": PLUGIN_COMMIT,
+            }
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        result, _stage, _update_plugin, _messages = _run(
+            FakeContext(Path(tmp)),
+            runtime=False,
+            plugin=True,
+            plugin_result=plugin_result,
+        )
+
+    assert result["plugin"]["installed_commit"] == PLUGIN_COMMIT
 
 
 def test_notification_failure_does_not_undo_update_or_restart() -> None:
@@ -574,10 +639,12 @@ def test_retry_is_idempotent_for_exact_runtime_and_plugin_targets() -> None:
             )
 
     assert first["changed"] is True
-    assert second["changed"] is False
-    assert second["runtime"]["status"] == "already_staged"
-    assert second["runtime_restart_requested"] is False
-    assert ctx.restart_requested is False
+    assert second["changed"] is True
+    assert second["runtime"]["status"] == "staged"
+    assert second["runtime"]["activation_requested"] is True
+    assert second["runtime_restart_requested"] is True
+    assert second["hermes_restart_required"] is False
+    assert ctx.restart_requested is True
     assert stage.await_count == 1
     assert update_plugin.await_count == 2
     assert len(messages) == 1
@@ -622,6 +689,22 @@ def test_update_discovery_honors_supplied_exact_runtime_sha() -> None:
     assert result["update_available"] is True
 
 
+def test_runtime_sha_is_never_projected_as_plugin_target() -> None:
+    plugin_spec = update_check._plugin_check_spec(
+        {
+            "target_ref": "v0.0.45",
+            "target_sha": RUNTIME_SHA,
+            "plugin_repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+            "plugin_ref": "channels/lts",
+        }
+    )
+
+    assert plugin_spec == {
+        "plugin_repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+        "plugin_ref": "channels/lts",
+    }
+
+
 def test_channel_resolution_reads_final_version_and_verifies_tag_commit() -> None:
     with (
         patch(
@@ -662,6 +745,29 @@ def test_channel_resolution_rejects_non_final_version() -> None:
         "status": "channel_version_invalid",
         "message": "Channel VERSION is not a final release",
     }
+
+
+def test_commit_resolution_contains_timeout_and_malformed_json() -> None:
+    with patch(
+        "hermes_runtime.update_check.request.urlopen",
+        side_effect=TimeoutError("timed out"),
+    ):
+        timed_out = update_check._fetch_github_commit("v0.0.45")
+    assert timed_out["status"] == "unavailable"
+
+    with patch(
+        "hermes_runtime.update_check.request.urlopen",
+        return_value=FakeResponse(b"not-json"),
+    ):
+        malformed = update_check._fetch_github_commit("v0.0.45")
+    assert malformed["status"] == "malformed"
+
+    with patch(
+        "hermes_runtime.update_check.request.urlopen",
+        return_value=FakeResponse(b'{"sha":"short"}'),
+    ):
+        malformed_sha = update_check._fetch_github_commit("v0.0.45")
+    assert malformed_sha["status"] == "malformed"
 
 
 def test_command_rejects_non_full_target_commits() -> None:

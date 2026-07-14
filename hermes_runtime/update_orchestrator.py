@@ -310,6 +310,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     runtime_already_staged = False
     runtime_activation_requested = False
     runtime_stage_result: dict[str, Any] | None = None
+    runtime_activation_pending = _activation_matches(ctx, target_ref=target_ref)
     if runtime_update_available:
         try:
             runtime_already_staged = _staged_runtime_matches(
@@ -415,17 +416,23 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                 )
 
     runtime_ready_to_activate = bool(
-        runtime_update_available
-        and runtime_error is None
-        and (runtime_staged_now or runtime_already_staged)
+        runtime_error is None
+        and (
+            runtime_activation_pending
+            or (
+                runtime_update_available
+                and (runtime_staged_now or runtime_already_staged)
+            )
+        )
     )
-    if runtime_ready_to_activate and not _activation_matches(
-        ctx,
-        target_ref=target_ref,
-    ):
+    if runtime_ready_to_activate:
         try:
-            ctx.activation_marker.parent.mkdir(parents=True, exist_ok=True)
-            ctx.activation_marker.write_text(target_ref + "\n", encoding="utf-8")
+            if not runtime_activation_pending:
+                ctx.activation_marker.parent.mkdir(parents=True, exist_ok=True)
+                ctx.activation_marker.write_text(target_ref + "\n", encoding="utf-8")
+            # The staged target is not the running target yet. Keep requesting
+            # the small runtime restart even when a previous activation marker
+            # survived a failed startup activation attempt.
             runtime_activation_requested = True
         except Exception as exc:  # noqa: BLE001 - report activation failure safely.
             runtime_error = _generic_error(exc, component="Runtime activation")
@@ -438,7 +445,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     plugin_after = _plugin_proof(
         plugin_result.get("after") if isinstance(plugin_result, dict) else None
     )
-    if not plugin_after.get("version"):
+    if plugin_result is None:
         plugin_after = dict(plugin_before)
     plugin_version = plugin_after.get("version") or _clean_text(
         plugin_discovery.get("target_version"),
@@ -451,10 +458,11 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         "http_status": None,
         "error": None,
     }
-    if changed:
+    if plugin_changed:
         notification = await _send_update_notice(
             plugin_version if isinstance(plugin_version, str) else None
         )
+    if changed:
         ctx.restart_requested = True
 
     errors = [error for error in (runtime_error, plugin_error) if error is not None]
@@ -532,6 +540,6 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             "error": plugin_error,
         },
         "runtime_restart_requested": changed,
-        "hermes_restart_required": changed,
+        "hermes_restart_required": plugin_changed,
         "notification": notification,
     }

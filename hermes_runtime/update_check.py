@@ -348,10 +348,10 @@ def _manual_plugin_error(
 def _plugin_check_spec(command_spec: dict[str, Any]) -> dict[str, Any]:
     """Project only plugin target fields out of a combined update spec.
 
-    ``target_sha`` names the runtime commit in the composite command, while
-    ``target_commit`` names the plugin commit.  The standalone plugin commands
-    keep accepting ``target_sha`` as a legacy alias when no explicit plugin
-    commit is present.
+    ``target_sha`` names the runtime commit in a combined update command, while
+    ``target_commit`` names the plugin commit. Standalone plugin commands do not
+    use this projection helper, so a runtime SHA must never be copied into the
+    plugin target.
     """
 
     plugin_keys = (
@@ -363,8 +363,6 @@ def _plugin_check_spec(command_spec: dict[str, Any]) -> dict[str, Any]:
         "target_commit",
     )
     plugin_spec = {key: command_spec[key] for key in plugin_keys if key in command_spec}
-    if command_spec.get("target_commit") in (None, "") and "target_sha" in command_spec:
-        plugin_spec["target_sha"] = command_spec["target_sha"]
     return plugin_spec
 
 
@@ -389,14 +387,23 @@ def _fetch_github_commit(ref: str) -> dict[str, Any]:
             "http_status": exc.code,
             "message": detail[:500],
         }
-    except error.URLError as exc:
+    except (error.URLError, TimeoutError) as exc:
         return {
             "ok": False,
             "status": "unavailable",
-            "message": str(exc.reason),
+            "message": str(getattr(exc, "reason", exc)),
         }
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {
+            "ok": False,
+            "status": "malformed",
+            "message": "GitHub returned a malformed commit response",
+        }
     sha = str(payload.get("sha") or "").strip() if isinstance(payload, dict) else ""
+    if FULL_GIT_SHA_RE.fullmatch(sha) is None:
+        sha = ""
     return {
         "ok": bool(sha),
         "status": "ok" if sha else "malformed",
