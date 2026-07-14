@@ -39,6 +39,7 @@ DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 SCHEDULED_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 MAX_RUN_REASON_LENGTH = 64
 PENDING_SCHEDULED_RESULT_FILE = "pending_scheduled_check.json"
 PLUGIN_UPDATE_CHECK_SCHEMA = "tinyhat_hermes_plugin_update_check_v1"
@@ -381,6 +382,52 @@ def _fetch_github_commit(ref: str) -> dict[str, Any]:
     }
 
 
+def _resolve_channel_final_target(channel_ref: str) -> dict[str, Any]:
+    """Resolve a moving channel's root VERSION to an immutable final tag."""
+
+    encoded_ref = parse.quote(channel_ref, safe="/")
+    req = request.Request(
+        f"https://raw.githubusercontent.com/{REPO}/{encoded_ref}/VERSION",
+        headers={"User-Agent": "tinyhat-hermes-runtime-update-check/0.0.1"},
+        method="GET",
+    )
+    try:
+        with request.urlopen(req, timeout=20) as response:
+            raw_version = response.read(128).decode("utf-8", errors="replace").strip()
+    except error.HTTPError as exc:
+        return {
+            "ok": False,
+            "status": "channel_version_unavailable",
+            "http_status": exc.code,
+            "message": "Channel VERSION could not be resolved",
+        }
+    except (error.URLError, TimeoutError):
+        return {
+            "ok": False,
+            "status": "channel_version_unavailable",
+            "message": "Channel VERSION could not be resolved",
+        }
+
+    version = _final_version_tuple(raw_version)
+    if version is None:
+        return {
+            "ok": False,
+            "status": "channel_version_invalid",
+            "message": "Channel VERSION is not a final release",
+        }
+    target_ref = f"v{version[0]}.{version[1]}.{version[2]}"
+    resolved = _fetch_github_commit(target_ref)
+    if not resolved.get("ok"):
+        return {
+            **resolved,
+            "ok": False,
+            "status": "channel_tag_unavailable",
+            "message": "Channel release tag could not be resolved",
+            "target_ref": target_ref,
+        }
+    return {**resolved, "target_ref": target_ref}
+
+
 def _final_version_tuple(value: str | None) -> tuple[int, int, int] | None:
     match = FINAL_RELEASE_RE.fullmatch(str(value or "").strip())
     if match is None:
@@ -505,13 +552,26 @@ async def run_update_check(
     command_spec = spec if isinstance(spec, dict) else {}
     bounded_reason = _bounded_run_reason(reason)
     channel = str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
-    target_ref = str(command_spec.get("target_ref") or config.target_ref or "").strip()
-    if not target_ref and channel in {"lts", "latest"}:
-        target_ref = f"channels/{channel}"
-    if not target_ref:
+    requested_target_ref = str(
+        command_spec.get("target_ref") or config.target_ref or ""
+    ).strip()
+    if not requested_target_ref and channel in {"lts", "latest"}:
+        requested_target_ref = f"channels/{channel}"
+    if not requested_target_ref:
         raise ValueError("check_update requires target_ref for custom update checks")
+    target_ref = requested_target_ref
 
-    if os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
+    supplied_target_sha = str(command_spec.get("target_sha") or "").strip()
+    if supplied_target_sha:
+        if FULL_GIT_SHA_RE.fullmatch(supplied_target_sha) is None:
+            raise ValueError("target_sha must be a full git commit sha")
+        resolved = {
+            "ok": True,
+            "status": "provided_target_sha",
+            "sha": supplied_target_sha.lower(),
+            "html_url": None,
+        }
+    elif os.getenv("TINYHAT_LOCAL_DEV_TOKEN"):
         resolved = {
             "ok": True,
             "status": "dev_ref_check",
@@ -523,6 +583,14 @@ async def run_update_check(
                 "runtime container."
             ),
         }
+    elif _is_channel_selector(channel=channel, target_ref=target_ref):
+        resolved = await asyncio.to_thread(
+            _resolve_channel_final_target,
+            target_ref,
+        )
+        concrete_target_ref = str(resolved.get("target_ref") or "").strip()
+        if concrete_target_ref:
+            target_ref = concrete_target_ref
     else:
         resolved = await asyncio.to_thread(_fetch_github_commit, target_ref)
     target_sha = str(resolved.get("sha") or "").strip() or None
@@ -542,6 +610,7 @@ async def run_update_check(
         "status": resolved.get("status") or "unknown",
         "repo": REPO,
         "channel": channel,
+        "requested_target_ref": requested_target_ref,
         "target_ref": target_ref,
         "target_sha": target_sha,
         "target_url": resolved.get("html_url"),

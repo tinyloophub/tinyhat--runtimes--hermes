@@ -1846,10 +1846,11 @@ class CommandTests(TestCase):
             )
 
             with patch(
-                "hermes_runtime.update_check._fetch_github_commit",
+                "hermes_runtime.update_check._resolve_channel_final_target",
                 return_value={
                     "ok": True,
                     "status": "ok",
+                    "target_ref": "v0.0.44",
                     "sha": target_sha,
                     "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
                     + target_sha,
@@ -1870,6 +1871,8 @@ class CommandTests(TestCase):
 
             self.assertFalse(checked["update_available"])
             self.assertEqual(checked["current_sha"], target_sha)
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "v0.0.44")
             self.assertEqual(
                 platform.posts[0][0],
                 "/hapi/v1/computers/local-dev/update-check-results/v1",
@@ -2032,29 +2035,27 @@ class CommandTests(TestCase):
                 checked["decision"], "channel_selector_needs_concrete_release"
             )
 
-    def test_check_update_treats_protected_channel_merge_sha_as_unresolved(
-        self,
-    ) -> None:
+    def test_check_update_resolves_channel_version_to_concrete_final_tag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             platform = FakePlatform()
             release_tag_sha = "7" * 40
-            protected_channel_merge_sha = "8" * 40
             ctx = SimpleNamespace(
                 platform=platform,
                 state_dir=state_dir,
                 current_version=lambda: "v0.0.7",
-                current_commit_sha=lambda: release_tag_sha,
+                current_commit_sha=lambda: "6" * 40,
             )
 
             with patch(
-                "hermes_runtime.update_check._fetch_github_commit",
+                "hermes_runtime.update_check._resolve_channel_final_target",
                 return_value={
                     "ok": True,
                     "status": "ok",
-                    "sha": protected_channel_merge_sha,
+                    "target_ref": "v0.0.8",
+                    "sha": release_tag_sha,
                     "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
-                    + protected_channel_merge_sha,
+                    + release_tag_sha,
                 },
             ):
                 checked = asyncio.run(
@@ -2072,14 +2073,53 @@ class CommandTests(TestCase):
 
             self.assertTrue(checked["channel_eligible"])
             self.assertEqual(checked["current_version"], "v0.0.7")
-            self.assertEqual(checked["current_sha"], release_tag_sha)
-            self.assertEqual(checked["target_sha"], protected_channel_merge_sha)
-            self.assertIsNone(checked["target_final_version_is_newer"])
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "v0.0.8")
+            self.assertEqual(checked["target_sha"], release_tag_sha)
+            self.assertTrue(checked["target_final_version_is_newer"])
             self.assertFalse(checked["current_matches_target"])
-            self.assertFalse(checked["update_available"])
-            self.assertEqual(
-                checked["decision"], "channel_selector_needs_concrete_release"
+            self.assertTrue(checked["update_available"])
+            self.assertEqual(checked["decision"], "newer_final_release")
+
+    def test_check_update_reports_explicit_channel_version_resolution_failure(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            platform = FakePlatform()
+            ctx = SimpleNamespace(
+                platform=platform,
+                state_dir=state_dir,
+                current_version=lambda: "v0.0.7",
+                current_commit_sha=lambda: "6" * 40,
             )
+
+            with patch(
+                "hermes_runtime.update_check._resolve_channel_final_target",
+                return_value={
+                    "ok": False,
+                    "status": "channel_version_invalid",
+                    "message": "Channel VERSION is not a final release",
+                },
+            ):
+                checked = asyncio.run(
+                    run_command(
+                        ctx,
+                        {
+                            "kind": "check_update",
+                            "spec": {
+                                "channel": "lts",
+                                "target_ref": "channels/lts",
+                            },
+                        },
+                    )
+                )
+
+            self.assertEqual(checked["status"], "channel_version_invalid")
+            self.assertEqual(checked["requested_target_ref"], "channels/lts")
+            self.assertEqual(checked["target_ref"], "channels/lts")
+            self.assertEqual(checked["decision"], "target_unavailable")
+            self.assertFalse(checked["update_available"])
 
     def test_check_update_matches_final_versions_with_or_without_v_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2447,10 +2487,11 @@ class CommandTests(TestCase):
             state_dir = Path(tmp)
             with (
                 patch(
-                    "hermes_runtime.update_check._fetch_github_commit",
+                    "hermes_runtime.update_check._resolve_channel_final_target",
                     return_value={
                         "ok": True,
                         "status": "ok",
+                        "target_ref": "v0.0.44",
                         "sha": "c" * 40,
                     },
                 ),
@@ -2554,10 +2595,11 @@ class CommandTests(TestCase):
 
             with (
                 patch(
-                    "hermes_runtime.update_check._fetch_github_commit",
+                    "hermes_runtime.update_check._resolve_channel_final_target",
                     return_value={
                         "ok": True,
                         "status": "ok",
+                        "target_ref": "v0.0.44",
                         "sha": "c" * 40,
                         "html_url": "https://github.com/tinyloophub/tinyhat--runtimes--hermes/commit/"
                         + "c" * 40,

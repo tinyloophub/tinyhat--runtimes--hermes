@@ -9,6 +9,7 @@ COMMAND_MODULES = {
     "ping": "hermes_runtime.commands.ping",
     "whoami": "hermes_runtime.commands.whoami",
     "check_update": "hermes_runtime.commands.check_update",
+    "check_and_stage_updates": "hermes_runtime.commands.check_and_stage_updates",
     "update_status": "hermes_runtime.commands.update_status",
     "running_version": "hermes_runtime.commands.running_version",
     "recent_commands": "hermes_runtime.commands.recent_commands",
