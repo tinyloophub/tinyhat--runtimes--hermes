@@ -665,9 +665,10 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             ref=plugin_ref,
             commit=target_commit,
         )
+        plugin_snapshot_seen = isinstance(plugin_discovery.get("installed"), dict)
         if (
             plugin_installed_unacknowledged is not None
-            and not plugin_discovery_failed
+            and plugin_snapshot_seen
             and not _plugin_target_matches(
                 plugin_before,
                 repo_url=plugin_repo_url,
@@ -676,10 +677,10 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             )
         ):
             # A settlement marker is only evidence of the earlier install. If a
-            # fresh discovery can now prove that target is gone, convert the
-            # marker back into a repair request and reinstall before reporting
-            # success. When discovery itself failed, retain the marker so a
-            # transient outage cannot erase already-completed update work.
+            # fresh local snapshot can now prove that target is gone, convert
+            # the marker back into a repair request before reporting success.
+            # Target resolution may fail independently (for example GitHub is
+            # down), but that must never override a truthful local disk read.
             plugin_marker_stale = True
             plugin_installed_unacknowledged = None
             plugin_repair_pending = True
@@ -696,9 +697,17 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         assert plugin_repo_url is not None
         assert plugin_ref is not None
         assert target_commit is not None
-        plugin_result = {
-            "changed": False,
-            "after": {
+        installed_snapshot = plugin_discovery.get("installed")
+        installed_snapshot = (
+            installed_snapshot
+            if isinstance(installed_snapshot, dict)
+            and _plugin_target_matches(
+                plugin_before,
+                repo_url=plugin_repo_url,
+                ref=plugin_ref,
+                commit=target_commit,
+            )
+            else {
                 "installed": True,
                 "version": _clean_text(
                     plugin_installed_unacknowledged.get("installed_version"),
@@ -709,7 +718,11 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                     "ref": plugin_ref,
                     "commit": target_commit,
                 },
-            },
+            }
+        )
+        plugin_result = {
+            "changed": False,
+            "after": installed_snapshot,
         }
         plugin_changed = True
     elif (

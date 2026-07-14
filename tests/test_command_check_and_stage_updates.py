@@ -1042,11 +1042,22 @@ def test_unacknowledged_marker_outliving_plugin_forces_reinstall() -> None:
     assert recovered["hermes_restart_required"] is True
 
 
-def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
+def test_target_outage_does_not_override_fresh_disk_marker_mismatch() -> None:
     failed_discovery = _discovery(runtime=False, plugin=False)
     failed_discovery["plugin_update_check"].update(
         {
-            "installed": None,
+            # plugin_snapshot() always returns a dict even when the remote
+            # target lookup fails. This reachable local shape disproves the
+            # settlement marker while GitHub is unavailable.
+            "installed": {
+                "installed": False,
+                "version": None,
+                "source": {
+                    "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+                    "ref": "channels/lts",
+                    "commit": None,
+                },
+            },
             "installed_version": None,
             "installed_commit": None,
             "update_available": None,
@@ -1055,6 +1066,86 @@ def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
         }
     )
     update_plugin = AsyncMock(return_value=_plugin_result(changed=True))
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": True, "http_status": 200}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = Path(tmp) / "updates" / "pending_plugin_repair.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _discovery(runtime=False, plugin=True),
+                        failed_discovery,
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                update_plugin,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                side_effect=fake_send,
+            ),
+        ):
+            asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+            ctx.restart_requested = False
+            recovered = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    update_plugin.assert_awaited_once()
+    assert recovered["status"] == "failed"
+    assert recovered["changed"] is False
+    assert recovered["plugin"]["status"] == "failed"
+    assert recovered["plugin"]["current_commit"] is None
+    assert recovered["plugin"]["installed"]["installed"] is False
+    assert recovered["plugin"]["error"] == {
+        "code": "plugin_target_unavailable",
+        "message": "Plugin update check failed",
+    }
+    assert recovered["notification"]["attempted"] is False
+    assert recovered["runtime_restart_requested"] is False
+    assert recovered["hermes_restart_required"] is False
+    assert ctx.restart_requested is False
+    assert marker["state"] == "installed_unacknowledged"
+    assert marker["notice_attempts"] == 1
+    assert len(messages) == 1
+
+
+def test_target_outage_trusts_marker_when_fresh_disk_still_matches() -> None:
+    failed_discovery = _discovery(runtime=False, plugin=False)
+    failed_discovery["plugin_update_check"].update(
+        {
+            "installed": _plugin_result(changed=True)["after"],
+            "installed_version": "0.21.6",
+            "installed_commit": PLUGIN_COMMIT,
+            "update_available": None,
+            "decision": "target_unavailable",
+            "target_error": "temporary discovery failure",
+        }
+    )
+    update_plugin = AsyncMock(return_value=_plugin_result(changed=True))
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": True, "http_status": 200}
 
     with tempfile.TemporaryDirectory() as tmp:
         ctx = FakeContext(Path(tmp))
@@ -1074,7 +1165,7 @@ def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
             ),
             patch(
                 "hermes_runtime.update_orchestrator._telegram_send",
-                return_value={"ok": True, "http_status": 200},
+                side_effect=fake_send,
             ),
         ):
             asyncio.run(
@@ -1083,6 +1174,7 @@ def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
                     {"kind": "check_and_stage_updates", "spec": _spec()},
                 )
             )
+            ctx.restart_requested = False
             recovered = asyncio.run(
                 run_command(
                     ctx,
@@ -1094,8 +1186,14 @@ def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
     assert recovered["status"] == "updated"
     assert recovered["plugin"]["status"] == "updated"
     assert recovered["plugin"]["error"] is None
+    assert recovered["plugin"]["current_commit"] == PLUGIN_COMMIT
     assert recovered["plugin"]["installed_commit"] == PLUGIN_COMMIT
+    assert recovered["notification"]["sent"] is True
+    assert recovered["notification"]["attempt"] == 1
     assert recovered["hermes_restart_required"] is True
+    assert ctx.restart_requested is True
+    # Result redispatch reuses the durable successful outcome.
+    assert len(messages) == 1
 
 
 def test_ignored_result_keeps_plugin_recovery_marker_for_redispatch() -> None:

@@ -6,9 +6,10 @@
   and scheduled update flows to check immutable runtime/plugin targets, stage
   changed runtime code for activation, install a changed Tinyhat plugin checkout,
   restart only the small Tinyhat runtime process, and notify the Telegram owner
-  that Hermes `/restart` is required to load the new capabilities. Failed owner
-  notices retry from durable state up to three times without reinstalling or
-  wedging future updates.
+  that Hermes `/restart` is required to load the new capabilities. Plugin
+  settlement is revalidated against fresh local disk proof even when remote
+  target discovery is unavailable. Failed owner notices retry from durable
+  state up to three times without reinstalling or wedging future updates.
   Production update discovery now resolves a moving LTS/latest channel's root
   `VERSION` to its concrete final tag and commit while retaining the requested
   channel selector for platform validation.
