@@ -480,6 +480,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     runtime_staged_now = False
     runtime_already_staged = False
     runtime_activation_requested = False
+    runtime_activation_marker_created = False
     runtime_stage_result: dict[str, Any] | None = None
     runtime_activation_pending = _activation_matches(ctx, target_ref=target_ref)
     if runtime_update_available:
@@ -674,6 +675,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             if not runtime_activation_pending:
                 ctx.activation_marker.parent.mkdir(parents=True, exist_ok=True)
                 ctx.activation_marker.write_text(target_ref + "\n", encoding="utf-8")
+                runtime_activation_marker_created = True
             # The staged target is not the running target yet. Keep requesting
             # the small runtime restart even when a previous activation marker
             # survived a failed startup activation attempt.
@@ -683,6 +685,11 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
 
     runtime_changed = bool(
         runtime_error is None and (runtime_staged_now or runtime_activation_requested)
+    )
+    runtime_notice_required = bool(
+        runtime_error is None
+        and runtime_activation_requested
+        and (runtime_staged_now or runtime_activation_marker_created)
     )
     changed = runtime_changed or plugin_changed
 
@@ -706,7 +713,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         notification = await _send_update_notice(
             plugin_version if isinstance(plugin_version, str) else None
         )
-    elif runtime_changed:
+    elif runtime_notice_required:
         notification = await _send_runtime_update_notice(target_ref)
     if changed:
         ctx.restart_requested = True

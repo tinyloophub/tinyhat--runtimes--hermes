@@ -416,7 +416,7 @@ def test_runtime_notice_waits_for_activation_marker_and_retries() -> None:
     ]
 
 
-def test_partial_activation_keeps_requesting_runtime_restart() -> None:
+def test_partial_activation_keeps_requesting_restart_without_renotice() -> None:
     """A surviving activation marker wins over a now-current state VERSION."""
 
     discovery = _discovery(runtime=False, plugin=False)
@@ -446,6 +446,52 @@ def test_partial_activation_keeps_requesting_runtime_restart() -> None:
     assert result["runtime"]["activation_requested"] is True
     assert result["runtime_restart_requested"] is True
     assert result["hermes_restart_required"] is False
+    assert ctx.restart_requested is True
+    assert result["notification"]["attempted"] is False
+    assert messages == []
+
+
+def test_pending_runtime_activation_restarts_without_duplicate_notice() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        stage = AsyncMock(side_effect=_fake_stage)
+        messages: list[str] = []
+
+        def fake_send(text: str) -> dict[str, Any]:
+            messages.append(text)
+            return {"ok": True, "http_status": 200}
+
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=_discovery(runtime=True, plugin=False)),
+            ),
+            patch("hermes_runtime.update_orchestrator.stage_update.run", stage),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                AsyncMock(),
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            first = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+            ctx.restart_requested = False
+            second = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+    assert stage.await_count == 1
+    assert first["runtime"]["activation_requested"] is True
+    assert second["runtime"]["activation_requested"] is True
+    assert second["runtime_restart_requested"] is True
+    assert second["notification"]["attempted"] is False
     assert ctx.restart_requested is True
     assert messages == [
         "Tinyhat runtime update staged to version v0.0.45.\n\n"
@@ -1106,9 +1152,9 @@ def test_retry_is_idempotent_for_exact_runtime_and_plugin_targets() -> None:
     assert ctx.restart_requested is True
     assert stage.await_count == 1
     assert update_plugin.await_count == 1
-    # The command was driven a second time without a platform settlement in
-    # between, so the still-pending runtime activation notice is retried.
-    assert len(messages) == 2
+    # A pending activation keeps requesting a small runtime restart, but the
+    # staged-runtime notice is not repeated on every retry.
+    assert len(messages) == 1
 
 
 def test_update_discovery_honors_supplied_exact_runtime_sha() -> None:
