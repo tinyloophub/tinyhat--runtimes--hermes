@@ -345,6 +345,29 @@ def _manual_plugin_error(
     return f"{type(exc).__name__}: {detail}"[:500]
 
 
+def _plugin_check_spec(command_spec: dict[str, Any]) -> dict[str, Any]:
+    """Project only plugin target fields out of a combined update spec.
+
+    ``target_sha`` names the runtime commit in the composite command, while
+    ``target_commit`` names the plugin commit.  The standalone plugin commands
+    keep accepting ``target_sha`` as a legacy alias when no explicit plugin
+    commit is present.
+    """
+
+    plugin_keys = (
+        "plugin_name",
+        "plugin_repo_url",
+        "repo_url",
+        "plugin_ref",
+        "ref",
+        "target_commit",
+    )
+    plugin_spec = {key: command_spec[key] for key in plugin_keys if key in command_spec}
+    if command_spec.get("target_commit") in (None, "") and "target_sha" in command_spec:
+        plugin_spec["target_sha"] = command_spec["target_sha"]
+    return plugin_spec
+
+
 def _fetch_github_commit(ref: str) -> dict[str, Any]:
     encoded = parse.quote(ref, safe="")
     req = request.Request(
@@ -643,7 +666,9 @@ async def run_update_check(
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
     try:
-        plugin_status = await tinyhat_plugin_status({"spec": command_spec})
+        plugin_status = await tinyhat_plugin_status(
+            {"spec": _plugin_check_spec(command_spec)}
+        )
         if bounded_reason == "scheduled":
             plugin_status = _scheduled_plugin_report(plugin_status)
         result["plugin_update_check"] = {

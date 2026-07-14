@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib import parse
 
 from hermes_runtime import __version__
 from hermes_runtime.commands import stage_update
-from hermes_runtime.plugin_manager import update_tinyhat_plugin
+from hermes_runtime.plugin_manager import (
+    plugin_name,
+    plugin_snapshot,
+    update_tinyhat_plugin,
+)
 from hermes_runtime.telegram_codex_auth import _telegram_send
 from hermes_runtime.update_check import run_update_check
 
@@ -21,6 +27,8 @@ FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 ALLOWED_CHANNELS = {"lts", "latest", "custom"}
 MAX_REASON_LENGTH = 64
 MAX_VERSION_LENGTH = 128
+PLUGIN_REPAIR_SCHEMA = "tinyhat_hermes_plugin_repair_v1"
+PLUGIN_REPAIR_FILE = "pending_plugin_repair.json"
 
 
 def _clean_text(value: Any, *, max_length: int) -> str | None:
@@ -81,6 +89,94 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _plugin_repair_path(ctx: Any) -> Path:
+    return ctx.state_dir / "updates" / PLUGIN_REPAIR_FILE
+
+
+def _plugin_target_matches(
+    proof: dict[str, Any],
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> bool:
+    return (
+        proof.get("repo_url") == repo_url
+        and proof.get("ref") == ref
+        and proof.get("commit") == commit
+    )
+
+
+def _plugin_repair_pending(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> bool:
+    payload = _read_json(_plugin_repair_path(ctx))
+    return bool(
+        payload
+        and payload.get("schema") == PLUGIN_REPAIR_SCHEMA
+        and payload.get("plugin_repo_url") == repo_url
+        and payload.get("plugin_ref") == ref
+        and payload.get("target_commit") == commit
+    )
+
+
+def _record_plugin_repair(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> None:
+    _write_json_atomic(
+        _plugin_repair_path(ctx),
+        {
+            "schema": PLUGIN_REPAIR_SCHEMA,
+            "plugin_repo_url": repo_url,
+            "plugin_ref": ref,
+            "target_commit": commit,
+        },
+    )
+
+
+def _clear_plugin_repair(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> None:
+    if not _plugin_repair_pending(
+        ctx,
+        repo_url=repo_url,
+        ref=ref,
+        commit=commit,
+    ):
+        return
+    _plugin_repair_path(ctx).unlink(missing_ok=True)
 
 
 def _staged_runtime_matches(ctx: Any, *, target_ref: str, target_sha: str) -> bool:
@@ -200,7 +296,14 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     plugin_discovery = discovery.get("plugin_update_check")
     plugin_discovery = plugin_discovery if isinstance(plugin_discovery, dict) else {}
     runtime_update_available = discovery.get("update_available") is True
-    plugin_update_available = plugin_discovery.get("update_available") is True
+    plugin_update_value = plugin_discovery.get("update_available")
+    plugin_update_available = plugin_update_value is True
+    plugin_discovery_failed = bool(
+        not isinstance(plugin_update_value, bool)
+        or plugin_discovery.get("target_error")
+        or plugin_discovery.get("error")
+        or plugin_discovery.get("decision") == "target_unavailable"
+    )
 
     runtime_error: dict[str, str] | None = None
     runtime_staged_now = False
@@ -231,11 +334,35 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         except Exception as exc:  # noqa: BLE001 - plugin update remains independent.
             runtime_error = _generic_error(exc, component="Runtime")
 
-    plugin_error: dict[str, str] | None = None
+    plugin_error: dict[str, str] | None = (
+        {
+            "code": "plugin_target_unavailable",
+            "message": "Plugin update check failed",
+        }
+        if plugin_discovery_failed
+        else None
+    )
     plugin_changed = False
     plugin_result: dict[str, Any] | None = None
-    if plugin_update_available:
+    plugin_before = _plugin_proof(plugin_discovery.get("installed"))
+    plugin_repair_pending = _plugin_repair_pending(
+        ctx,
+        repo_url=plugin_repo_url,
+        ref=plugin_ref,
+        commit=target_commit,
+    )
+    plugin_repair_performed = False
+    if plugin_error is None and (plugin_update_available or plugin_repair_pending):
         try:
+            plugin_repair_performed = plugin_repair_pending
+            if not plugin_repair_pending:
+                _record_plugin_repair(
+                    ctx,
+                    repo_url=plugin_repo_url,
+                    ref=plugin_ref,
+                    commit=target_commit,
+                )
+                plugin_repair_pending = True
             plugin_result = await update_tinyhat_plugin(
                 {
                     "kind": "update_tinyhat_plugin",
@@ -248,9 +375,44 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                     },
                 }
             )
-            plugin_changed = bool(plugin_result.get("changed"))
+            plugin_changed = bool(plugin_result.get("changed")) or plugin_repair_performed
+            _clear_plugin_repair(
+                ctx,
+                repo_url=plugin_repo_url,
+                ref=plugin_ref,
+                commit=target_commit,
+            )
         except Exception as exc:  # noqa: BLE001 - runtime staging remains independent.
             plugin_error = _generic_error(exc, component="Plugin")
+            try:
+                failed_snapshot = plugin_snapshot(
+                    plugin_name(
+                        {
+                            "spec": {
+                                "plugin_repo_url": plugin_repo_url,
+                                "plugin_ref": plugin_ref,
+                                "target_commit": target_commit,
+                            }
+                        }
+                    )
+                )
+                failed_after = _plugin_proof(failed_snapshot)
+            except Exception:  # noqa: BLE001 - retain repair marker and fail closed.
+                failed_snapshot = None
+                failed_after = {}
+            if _plugin_target_matches(
+                failed_after,
+                repo_url=plugin_repo_url,
+                ref=plugin_ref,
+                commit=target_commit,
+            ):
+                plugin_result = {"after": failed_snapshot}
+                plugin_changed = not _plugin_target_matches(
+                    plugin_before,
+                    repo_url=plugin_repo_url,
+                    ref=plugin_ref,
+                    commit=target_commit,
+                )
 
     runtime_ready_to_activate = bool(
         runtime_update_available
@@ -273,7 +435,6 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
     )
     changed = runtime_changed or plugin_changed
 
-    plugin_before = _plugin_proof(plugin_discovery.get("installed"))
     plugin_after = _plugin_proof(
         plugin_result.get("after") if isinstance(plugin_result, dict) else None
     )
@@ -367,6 +528,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             },
             "update_available": plugin_update_available,
             "changed": plugin_changed,
+            "repair_performed": plugin_repair_performed and plugin_error is None,
             "error": plugin_error,
         },
         "runtime_restart_requested": changed,

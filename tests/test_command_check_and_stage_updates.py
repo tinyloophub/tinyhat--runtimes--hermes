@@ -404,6 +404,133 @@ def test_runtime_update_continues_when_plugin_update_fails() -> None:
     assert ctx.restart_requested is True
 
 
+def test_plugin_discovery_failure_is_not_reported_as_current() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        discovery = _discovery(runtime=False, plugin=False)
+        discovery["plugin_update_check"].update(
+            {
+                "update_available": None,
+                "decision": "target_unavailable",
+                "target_error": "private target failure",
+            }
+        )
+        update_plugin = AsyncMock()
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                update_plugin,
+            ),
+        ):
+            result = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+    update_plugin.assert_not_awaited()
+    assert result["status"] == "failed"
+    assert result["changed"] is False
+    assert result["plugin"]["status"] == "failed"
+    assert result["plugin"]["error"] == {
+        "code": "plugin_target_unavailable",
+        "message": "Plugin update check failed",
+    }
+    assert "private target failure" not in json.dumps(result)
+    assert result["notification"]["attempted"] is False
+    assert ctx.restart_requested is False
+
+
+def test_landed_plugin_failure_notifies_and_retry_repair_restarts() -> None:
+    target_snapshot = _plugin_result(changed=True)["after"]
+    first_discovery = _discovery(runtime=False, plugin=True)
+    retry_discovery = _discovery(runtime=False, plugin=False)
+    retry_discovery["plugin_update_check"]["installed"] = target_snapshot
+    retry_discovery["plugin_update_check"]["installed_version"] = "0.21.6"
+    retry_discovery["plugin_update_check"]["installed_commit"] = PLUGIN_COMMIT
+    messages: list[str] = []
+
+    def fake_send(text: str) -> dict[str, Any]:
+        messages.append(text)
+        return {"ok": True}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        failed_update = AsyncMock(side_effect=RuntimeError("enable failed"))
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=first_discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                failed_update,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.plugin_snapshot",
+                return_value=target_snapshot,
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            first = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+        repair_path = Path(tmp) / "updates" / "pending_plugin_repair.json"
+        assert repair_path.is_file()
+        assert first["status"] == "partial"
+        assert first["plugin"]["changed"] is True
+        assert first["plugin"]["installed_commit"] == PLUGIN_COMMIT
+        assert first["plugin"]["installed"]["source"] == {
+            "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+            "ref": "channels/lts",
+            "commit": PLUGIN_COMMIT,
+        }
+        assert first["runtime_restart_requested"] is True
+        assert first["notification"]["sent"] is True
+        assert len(messages) == 1
+
+        ctx.restart_requested = False
+        repaired_update = AsyncMock(
+            return_value={"changed": False, "after": target_snapshot}
+        )
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(return_value=retry_discovery),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                repaired_update,
+            ),
+            patch("hermes_runtime.update_orchestrator._telegram_send", fake_send),
+        ):
+            retry = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+        repaired_update.assert_awaited_once()
+        assert repair_path.exists() is False
+        assert retry["status"] == "updated"
+        assert retry["changed"] is True
+        assert retry["plugin"]["repair_performed"] is True
+        assert retry["plugin"]["installed_commit"] == PLUGIN_COMMIT
+        assert retry["notification"]["sent"] is True
+        assert ctx.restart_requested is True
+        assert len(messages) == 2
+
+
 def test_retry_is_idempotent_for_exact_runtime_and_plugin_targets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         ctx = FakeContext(Path(tmp))
@@ -457,7 +584,9 @@ def test_retry_is_idempotent_for_exact_runtime_and_plugin_targets() -> None:
 
 
 def test_update_discovery_honors_supplied_exact_runtime_sha() -> None:
-    async def current_plugin(_command: dict[str, Any]) -> dict[str, Any]:
+    async def current_plugin(command: dict[str, Any]) -> dict[str, Any]:
+        assert command["spec"]["target_commit"] == PLUGIN_COMMIT
+        assert "target_sha" not in command["spec"]
         return {"update_available": False, "decision": "installed_matches_target"}
 
     with tempfile.TemporaryDirectory() as tmp:
