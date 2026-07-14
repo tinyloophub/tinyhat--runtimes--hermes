@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.45 - 2026-07-14
+
 - Add `check_and_stage_updates`, one idempotent runtime command used by manual
   and scheduled update flows to check immutable runtime/plugin targets, stage
   changed runtime code for activation, install a changed Tinyhat plugin checkout,
@@ -15,7 +17,8 @@
   notice against the platform's current target, without exposing marker
   details. Runtime-only notice success survives a lost platform response
   without a duplicate Telegram message. Notice-only replays do not restart the
-  runtime.
+  runtime. Companion platform scheduling and admin-history support shipped in
+  [tinyloophub/tinyloop#977](https://github.com/tinyloophub/tinyloop/pull/977).
   Production update discovery now resolves a moving LTS/latest channel's root
   `VERSION` to its concrete final tag and commit while retaining the requested
   channel selector for platform validation.
