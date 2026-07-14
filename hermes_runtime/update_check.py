@@ -15,6 +15,7 @@ reported as an available LTS update.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -38,7 +39,9 @@ DEFAULT_CHECK_TIME = "02:35"
 DEFAULT_CHECK_TIMEZONE = "America/Los_Angeles"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 SCHEDULED_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-FINAL_RELEASE_RE = re.compile(r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+FINAL_RELEASE_RE = re.compile(
+    r"^v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
 FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 MAX_RUN_REASON_LENGTH = 64
 PENDING_SCHEDULED_RESULT_FILE = "pending_scheduled_check.json"
@@ -105,9 +108,7 @@ def read_scheduled_result_for_retry(
 ) -> dict[str, Any] | None:
     """Return only the saved result for this exact scheduled local day."""
 
-    payload = _read_json(
-        state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE
-    )
+    payload = _read_json(state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE)
     expected_run_id = f"scheduled:{date_key}"
     if not isinstance(payload, dict):
         return None
@@ -125,9 +126,7 @@ def read_scheduled_result_for_retry(
 def clear_scheduled_result_for_retry(*, state_dir: Path, date_key: str) -> None:
     if read_scheduled_result_for_retry(state_dir=state_dir, date_key=date_key) is None:
         return
-    (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).unlink(
-        missing_ok=True
-    )
+    (state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE).unlink(missing_ok=True)
 
 
 def read_config(state_dir: Path) -> UpdateCheckConfig:
@@ -136,7 +135,9 @@ def read_config(state_dir: Path) -> UpdateCheckConfig:
     if TIME_RE.fullmatch(local_time) is None:
         local_time = DEFAULT_CHECK_TIME
 
-    timezone = _read_file(config_dir / "update_check_timezone") or DEFAULT_CHECK_TIMEZONE
+    timezone = (
+        _read_file(config_dir / "update_check_timezone") or DEFAULT_CHECK_TIMEZONE
+    )
     try:
         ZoneInfo(timezone)
     except ZoneInfoNotFoundError:
@@ -190,9 +191,12 @@ def _scheduled_run_metadata(
 ) -> dict[str, str]:
     date_key = str(scheduled_local_date or "").strip()
     if not date_key:
-        date_key = datetime.now(timezone.utc).astimezone(
-            ZoneInfo(config.timezone)
-        ).date().isoformat()
+        date_key = (
+            datetime.now(timezone.utc)
+            .astimezone(ZoneInfo(config.timezone))
+            .date()
+            .isoformat()
+        )
     if SCHEDULED_DATE_RE.fullmatch(date_key) is None:
         raise ValueError("scheduled_local_date must use YYYY-MM-DD")
     try:
@@ -301,9 +305,7 @@ def _scheduled_plugin_report(value: Any) -> dict[str, Any]:
                 "checked_at": 64,
             },
         ),
-        "plugin_repo_url": _scheduled_plugin_repo_url(
-            status.get("plugin_repo_url")
-        ),
+        "plugin_repo_url": _scheduled_plugin_repo_url(status.get("plugin_repo_url")),
         "target_selection": {
             **_scheduled_text_fields(
                 selection,
@@ -387,7 +389,7 @@ def _fetch_github_commit(ref: str) -> dict[str, Any]:
             "http_status": exc.code,
             "message": detail[:500],
         }
-    except (error.URLError, TimeoutError) as exc:
+    except (error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         return {
             "ok": False,
             "status": "unavailable",
@@ -431,7 +433,7 @@ def _resolve_channel_final_target(channel_ref: str) -> dict[str, Any]:
             "http_status": exc.code,
             "message": "Channel VERSION could not be resolved",
         }
-    except (error.URLError, TimeoutError):
+    except (error.URLError, TimeoutError, OSError, http.client.HTTPException):
         return {
             "ok": False,
             "status": "channel_version_unavailable",
@@ -577,11 +579,14 @@ async def run_update_check(
     spec: dict[str, Any] | None = None,
     reason: str = "scheduled",
     scheduled_local_date: str | None = None,
+    include_plugin_check: bool = True,
 ) -> dict[str, Any]:
     config = read_config(state_dir)
     command_spec = spec if isinstance(spec, dict) else {}
     bounded_reason = _bounded_run_reason(reason)
-    channel = str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
+    channel = (
+        str(command_spec.get("channel") or config.channel or "lts").strip() or "lts"
+    )
     requested_target_ref = str(
         command_spec.get("target_ref") or config.target_ref or ""
     ).strip()
@@ -648,7 +653,10 @@ async def run_update_check(
         "current_code_version": current_code_version,
         "current_sha": current_sha,
         **decision,
-        "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "checked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
         "schedule": {
             "time": config.local_time,
             "timezone": config.timezone,
@@ -672,40 +680,41 @@ async def run_update_check(
         result["message"] = resolved.get("message")
     if not resolved.get("ok"):
         result["http_status"] = resolved.get("http_status")
-    try:
-        plugin_status = await tinyhat_plugin_status(
-            {"spec": _plugin_check_spec(command_spec)}
-        )
-        if bounded_reason == "scheduled":
-            plugin_status = _scheduled_plugin_report(plugin_status)
-        result["plugin_update_check"] = {
-            "schema": (
-                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+    if include_plugin_check:
+        try:
+            plugin_status = await tinyhat_plugin_status(
+                {"spec": _plugin_check_spec(command_spec)}
+            )
+            if bounded_reason == "scheduled":
+                plugin_status = _scheduled_plugin_report(plugin_status)
+            result["plugin_update_check"] = {
+                "schema": (
+                    SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                    if bounded_reason == "scheduled"
+                    else PLUGIN_UPDATE_CHECK_SCHEMA
+                ),
+                **plugin_status,
+            }
+        except Exception as exc:
+            plugin_error = (
+                f"{type(exc).__name__}: plugin update check failed"
                 if bounded_reason == "scheduled"
-                else PLUGIN_UPDATE_CHECK_SCHEMA
-            ),
-            **plugin_status,
-        }
-    except Exception as exc:
-        plugin_error = (
-            f"{type(exc).__name__}: plugin update check failed"
-            if bounded_reason == "scheduled"
-            else _manual_plugin_error(exc, command_spec=command_spec)
-        )
-        result["plugin_update_check"] = {
-            "schema": (
-                SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
-                if bounded_reason == "scheduled"
-                else PLUGIN_UPDATE_CHECK_SCHEMA
-            ),
-            "update_available": None,
-            "decision": "target_unavailable",
-            "error": plugin_error,
-            "checked_at": datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z"),
-        }
+                else _manual_plugin_error(exc, command_spec=command_spec)
+            )
+            result["plugin_update_check"] = {
+                "schema": (
+                    SCHEDULED_PLUGIN_UPDATE_CHECK_SCHEMA
+                    if bounded_reason == "scheduled"
+                    else PLUGIN_UPDATE_CHECK_SCHEMA
+                ),
+                "update_available": None,
+                "decision": "target_unavailable",
+                "error": plugin_error,
+                "checked_at": datetime.now(timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
     if bounded_reason == "scheduled":
         _write_json(
             state_dir / "updates" / PENDING_SCHEDULED_RESULT_FILE,

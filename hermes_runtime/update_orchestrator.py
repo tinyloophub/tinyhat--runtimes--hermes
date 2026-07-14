@@ -29,6 +29,8 @@ MAX_REASON_LENGTH = 64
 MAX_VERSION_LENGTH = 128
 PLUGIN_REPAIR_SCHEMA = "tinyhat_hermes_plugin_repair_v1"
 PLUGIN_REPAIR_FILE = "pending_plugin_repair.json"
+PLUGIN_REPAIR_PENDING = "repair_pending"
+PLUGIN_INSTALLED_UNACKNOWLEDGED = "installed_unacknowledged"
 
 
 def _clean_text(value: Any, *, max_length: int) -> str | None:
@@ -121,7 +123,8 @@ def _plugin_target_matches(
     commit: str,
 ) -> bool:
     return (
-        proof.get("repo_url") == repo_url
+        proof.get("installed") is True
+        and proof.get("repo_url") == repo_url
         and proof.get("ref") == ref
         and proof.get("commit") == commit
     )
@@ -134,14 +137,52 @@ def _plugin_repair_pending(
     ref: str,
     commit: str,
 ) -> bool:
-    payload = _read_json(_plugin_repair_path(ctx))
+    payload = _plugin_marker(
+        ctx,
+        repo_url=repo_url,
+        ref=ref,
+        commit=commit,
+    )
     return bool(
+        payload and payload.get("state", PLUGIN_REPAIR_PENDING) == PLUGIN_REPAIR_PENDING
+    )
+
+
+def _plugin_marker(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> dict[str, Any] | None:
+    payload = _read_json(_plugin_repair_path(ctx))
+    if not (
         payload
         and payload.get("schema") == PLUGIN_REPAIR_SCHEMA
         and payload.get("plugin_repo_url") == repo_url
         and payload.get("plugin_ref") == ref
         and payload.get("target_commit") == commit
+    ):
+        return None
+    return payload
+
+
+def _plugin_installed_unacknowledged(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+) -> dict[str, Any] | None:
+    payload = _plugin_marker(
+        ctx,
+        repo_url=repo_url,
+        ref=ref,
+        commit=commit,
     )
+    if payload is None or payload.get("state") != PLUGIN_INSTALLED_UNACKNOWLEDGED:
+        return None
+    return payload
 
 
 def _record_plugin_repair(
@@ -155,6 +196,7 @@ def _record_plugin_repair(
         _plugin_repair_path(ctx),
         {
             "schema": PLUGIN_REPAIR_SCHEMA,
+            "state": PLUGIN_REPAIR_PENDING,
             "plugin_repo_url": repo_url,
             "plugin_ref": ref,
             "target_commit": commit,
@@ -162,18 +204,45 @@ def _record_plugin_repair(
     )
 
 
-def _clear_plugin_repair(
+def _record_plugin_installed_unacknowledged(
+    ctx: Any,
+    *,
+    repo_url: str,
+    ref: str,
+    commit: str,
+    installed: dict[str, Any],
+) -> None:
+    _write_json_atomic(
+        _plugin_repair_path(ctx),
+        {
+            "schema": PLUGIN_REPAIR_SCHEMA,
+            "state": PLUGIN_INSTALLED_UNACKNOWLEDGED,
+            "plugin_repo_url": repo_url,
+            "plugin_ref": ref,
+            "target_commit": commit,
+            "installed_version": _clean_text(
+                installed.get("version"),
+                max_length=MAX_VERSION_LENGTH,
+            ),
+        },
+    )
+
+
+def _clear_plugin_marker(
     ctx: Any,
     *,
     repo_url: str,
     ref: str,
     commit: str,
 ) -> None:
-    if not _plugin_repair_pending(
-        ctx,
-        repo_url=repo_url,
-        ref=ref,
-        commit=commit,
+    if (
+        _plugin_marker(
+            ctx,
+            repo_url=repo_url,
+            ref=ref,
+            commit=commit,
+        )
+        is None
     ):
         return
     _plugin_repair_path(ctx).unlink(missing_ok=True)
@@ -204,6 +273,7 @@ def _plugin_proof(value: Any) -> dict[str, Any]:
     source = value.get("source") if isinstance(value, dict) else None
     source = source if isinstance(source, dict) else {}
     return {
+        "installed": bool(isinstance(value, dict) and value.get("installed") is True),
         "version": _clean_text(
             value.get("version") if isinstance(value, dict) else None,
             max_length=MAX_VERSION_LENGTH,
@@ -274,6 +344,69 @@ async def _send_runtime_update_notice(version: str) -> dict[str, Any]:
     return await _send_notice(_runtime_update_message(version))
 
 
+def acknowledge_check_and_stage_result(
+    ctx: Any,
+    command: dict[str, Any],
+    result: dict[str, Any],
+) -> bool:
+    """Clear a delivered plugin marker after the platform accepted its result.
+
+    The caller must invoke this only after the command-result POST succeeds.
+    Keeping that ordering makes plugin installation, the Telegram restart notice,
+    and platform settlement recoverable when the process crashes or result
+    delivery fails.
+    """
+
+    if command.get("kind") != "check_and_stage_updates":
+        return False
+    if result.get("schema") != SCHEMA:
+        return False
+    plugin = result.get("plugin")
+    if not isinstance(plugin, dict):
+        return False
+    if (
+        plugin.get("status") != "updated"
+        or plugin.get("changed") is not True
+        or plugin.get("error") is not None
+    ):
+        return False
+
+    spec = command.get("spec")
+    if not isinstance(spec, dict):
+        return False
+    try:
+        repo_url = _required_plugin_repo_url(spec)
+        ref = _required_text(spec, "plugin_ref")
+        commit = _required_sha(spec, "target_commit")
+    except ValueError:
+        return False
+    installed = _plugin_proof(plugin.get("installed"))
+    if not _plugin_target_matches(
+        installed,
+        repo_url=repo_url,
+        ref=ref,
+        commit=commit,
+    ):
+        return False
+    if (
+        _plugin_installed_unacknowledged(
+            ctx,
+            repo_url=repo_url,
+            ref=ref,
+            commit=commit,
+        )
+        is None
+    ):
+        return False
+    _clear_plugin_marker(
+        ctx,
+        repo_url=repo_url,
+        ref=ref,
+        commit=commit,
+    )
+    return True
+
+
 async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, Any]:
     """Check exact targets, prepare changed components, and request reload."""
 
@@ -287,18 +420,37 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         raise ValueError("channel must be lts, latest, or custom")
     target_ref = _required_text(spec, "target_ref")
     target_sha = _required_sha(spec, "target_sha")
-    plugin_repo_url = _required_plugin_repo_url(spec)
-    plugin_ref = _required_text(spec, "plugin_ref")
-    target_commit = _required_sha(spec, "target_commit")
+    plugin_values = (
+        _clean_text(spec.get("plugin_repo_url"), max_length=2048),
+        _clean_text(spec.get("plugin_ref"), max_length=512),
+        _clean_text(spec.get("target_commit"), max_length=40),
+    )
+    plugin_requested = all(plugin_values)
+    if any(plugin_values) and not plugin_requested:
+        raise ValueError(
+            "plugin_repo_url, plugin_ref, and target_commit must be provided together"
+        )
+    plugin_repo_url: str | None = None
+    plugin_ref: str | None = None
+    target_commit: str | None = None
+    if plugin_requested:
+        plugin_repo_url = _required_plugin_repo_url(spec)
+        plugin_ref = _required_text(spec, "plugin_ref")
+        target_commit = _required_sha(spec, "target_commit")
 
     exact_spec = {
         "channel": channel,
         "target_ref": target_ref,
         "target_sha": target_sha,
-        "plugin_repo_url": plugin_repo_url,
-        "plugin_ref": plugin_ref,
-        "target_commit": target_commit,
     }
+    if plugin_requested:
+        exact_spec.update(
+            {
+                "plugin_repo_url": plugin_repo_url,
+                "plugin_ref": plugin_ref,
+                "target_commit": target_commit,
+            }
+        )
     discovery = await run_update_check(
         state_dir=ctx.state_dir,
         current_version=ctx.current_version(),
@@ -306,18 +458,22 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         current_sha=ctx.current_commit_sha(),
         spec=exact_spec,
         reason="check_and_stage_updates",
+        include_plugin_check=plugin_requested,
     )
 
     plugin_discovery = discovery.get("plugin_update_check")
     plugin_discovery = plugin_discovery if isinstance(plugin_discovery, dict) else {}
     runtime_update_available = discovery.get("update_available") is True
     plugin_update_value = plugin_discovery.get("update_available")
-    plugin_update_available = plugin_update_value is True
+    plugin_update_available = plugin_requested and plugin_update_value is True
     plugin_discovery_failed = bool(
-        not isinstance(plugin_update_value, bool)
-        or plugin_discovery.get("target_error")
-        or plugin_discovery.get("error")
-        or plugin_discovery.get("decision") == "target_unavailable"
+        plugin_requested
+        and (
+            not isinstance(plugin_update_value, bool)
+            or plugin_discovery.get("target_error")
+            or plugin_discovery.get("error")
+            or plugin_discovery.get("decision") == "target_unavailable"
+        )
     )
 
     runtime_error: dict[str, str] | None = None
@@ -350,25 +506,64 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         except Exception as exc:  # noqa: BLE001 - plugin update remains independent.
             runtime_error = _generic_error(exc, component="Runtime")
 
+    plugin_changed = False
+    plugin_result: dict[str, Any] | None = None
+    plugin_before = _plugin_proof(plugin_discovery.get("installed"))
+    plugin_installed_unacknowledged: dict[str, Any] | None = None
+    plugin_repair_pending = False
+    if plugin_requested:
+        assert plugin_repo_url is not None
+        assert plugin_ref is not None
+        assert target_commit is not None
+        plugin_installed_unacknowledged = _plugin_installed_unacknowledged(
+            ctx,
+            repo_url=plugin_repo_url,
+            ref=plugin_ref,
+            commit=target_commit,
+        )
+        plugin_repair_pending = _plugin_repair_pending(
+            ctx,
+            repo_url=plugin_repo_url,
+            ref=plugin_ref,
+            commit=target_commit,
+        )
     plugin_error: dict[str, str] | None = (
         {
             "code": "plugin_target_unavailable",
             "message": "Plugin update check failed",
         }
-        if plugin_discovery_failed
+        if plugin_discovery_failed and plugin_installed_unacknowledged is None
         else None
     )
-    plugin_changed = False
-    plugin_result: dict[str, Any] | None = None
-    plugin_before = _plugin_proof(plugin_discovery.get("installed"))
-    plugin_repair_pending = _plugin_repair_pending(
-        ctx,
-        repo_url=plugin_repo_url,
-        ref=plugin_ref,
-        commit=target_commit,
-    )
     plugin_repair_performed = False
-    if plugin_error is None and (plugin_update_available or plugin_repair_pending):
+    if plugin_installed_unacknowledged is not None:
+        assert plugin_repo_url is not None
+        assert plugin_ref is not None
+        assert target_commit is not None
+        plugin_result = {
+            "changed": False,
+            "after": {
+                "installed": True,
+                "version": _clean_text(
+                    plugin_installed_unacknowledged.get("installed_version"),
+                    max_length=MAX_VERSION_LENGTH,
+                ),
+                "source": {
+                    "repo_url": plugin_repo_url,
+                    "ref": plugin_ref,
+                    "commit": target_commit,
+                },
+            },
+        }
+        plugin_changed = True
+    elif (
+        plugin_requested
+        and plugin_error is None
+        and (plugin_update_available or plugin_repair_pending)
+    ):
+        assert plugin_repo_url is not None
+        assert plugin_ref is not None
+        assert target_commit is not None
         try:
             plugin_repair_performed = plugin_repair_pending
             if not plugin_repair_pending:
@@ -391,15 +586,30 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
                     },
                 }
             )
-            plugin_changed = bool(plugin_result.get("changed")) or plugin_repair_performed
-            _clear_plugin_repair(
+            plugin_changed = bool(
+                plugin_result.get("changed")
+                or plugin_repair_performed
+                or plugin_update_available
+            )
+            installed_after = _plugin_proof(plugin_result.get("after"))
+            if not _plugin_target_matches(
+                installed_after,
+                repo_url=plugin_repo_url,
+                ref=plugin_ref,
+                commit=target_commit,
+            ):
+                raise RuntimeError("Plugin update did not prove the exact target")
+            _record_plugin_installed_unacknowledged(
                 ctx,
                 repo_url=plugin_repo_url,
                 ref=plugin_ref,
                 commit=target_commit,
+                installed=installed_after,
             )
         except Exception as exc:  # noqa: BLE001 - runtime staging remains independent.
             plugin_error = _generic_error(exc, component="Plugin")
+            plugin_changed = False
+            plugin_result = None
             try:
                 failed_snapshot = plugin_snapshot(
                     plugin_name(
@@ -477,7 +687,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         notification = await _send_update_notice(
             plugin_version if isinstance(plugin_version, str) else None
         )
-    elif runtime_staged_now:
+    elif runtime_changed:
         notification = await _send_runtime_update_notice(target_ref)
     if changed:
         ctx.restart_requested = True
@@ -527,7 +737,13 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         },
         "plugin": {
             "status": (
-                "failed" if plugin_error else "updated" if plugin_changed else "current"
+                "not_requested"
+                if not plugin_requested
+                else "failed"
+                if plugin_error
+                else "updated"
+                if plugin_changed
+                else "current"
             ),
             "repo_url": plugin_repo_url,
             "ref": plugin_ref,
@@ -541,9 +757,7 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
             "installed_version": plugin_after.get("version"),
             "installed_commit": plugin_after.get("commit"),
             "installed": {
-                "installed": bool(
-                    plugin_after.get("version") or plugin_after.get("commit")
-                ),
+                "installed": bool(plugin_after.get("installed") is True),
                 "version": plugin_after.get("version"),
                 "source": {
                     "repo_url": plugin_after.get("repo_url") or plugin_repo_url,

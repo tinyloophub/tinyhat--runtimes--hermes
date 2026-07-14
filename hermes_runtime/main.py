@@ -228,6 +228,9 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "mode": getattr(ctx, "platform_auth", "local_dev"),
         "status": status,
         "runtime_version": __version__,
+        "capabilities": {
+            "check_and_stage_updates": True,
+        },
         "current_version": ctx.current_version(),
         "current_commit_sha": current_commit_sha,
         "staged_version": staged,
@@ -258,9 +261,7 @@ def _telegram_env_configured() -> bool:
     values = read_env_values(env_file_candidates(), names=["TELEGRAM_BOT_TOKEN"])
     return bool(
         (
-            os.getenv("TELEGRAM_BOT_TOKEN")
-            or values.get("TELEGRAM_BOT_TOKEN")
-            or ""
+            os.getenv("TELEGRAM_BOT_TOKEN") or values.get("TELEGRAM_BOT_TOKEN") or ""
         ).strip()
     )
 
@@ -285,7 +286,9 @@ def _gateway_state_payload(
 
 def _gateway_state_from_heal_result(result: dict[str, Any]) -> dict[str, Any]:
     ready = bool(result.get("healthy"))
-    reason = str(result.get("reason") or ("gateway_ready" if ready else "gateway_unhealthy"))
+    reason = str(
+        result.get("reason") or ("gateway_ready" if ready else "gateway_unhealthy")
+    )
     details: dict[str, Any] = {
         "source": "heal_hermes",
         "healed": bool(result.get("healed")),
@@ -329,8 +332,7 @@ def _service_generation_started_unix(generation: dict[str, Any]) -> float:
     now_monotonic = time.monotonic()
     try:
         started_monotonic = (
-            int(generation.get("exec_main_start_timestamp_monotonic") or 0)
-            / 1_000_000
+            int(generation.get("exec_main_start_timestamp_monotonic") or 0) / 1_000_000
         )
     except (TypeError, ValueError):
         return now_unix
@@ -397,9 +399,7 @@ async def _inspect_gateway_state(
     elif _gateway_status_is_healthy(status):
         discovery = await discover_gateway_service()
         discovery_reason = str(discovery.get("reason") or "service_unknown")
-        generation = (
-            discovery.get("generation") if discovery.get("ok") else None
-        )
+        generation = discovery.get("generation") if discovery.get("ok") else None
         owner = discovery.get("owner") if discovery.get("ok") else None
         invocation_id = (
             str(generation.get("invocation_id") or "").strip()
@@ -420,12 +420,10 @@ async def _inspect_gateway_state(
         if not (
             isinstance(runtime_generation, dict)
             and isinstance(foreground_generation, dict)
-            and foreground_generation.get("pid")
-            == runtime_generation.get("pid")
+            and foreground_generation.get("pid") == runtime_generation.get("pid")
             and foreground_generation.get("process_start_time")
             == runtime_generation.get("start_time")
-            and foreground_generation.get("argv")
-            == runtime_generation.get("argv")
+            and foreground_generation.get("argv") == runtime_generation.get("argv")
         ):
             foreground_generation = None
         previous_details = (
@@ -453,23 +451,16 @@ async def _inspect_gateway_state(
         ):
             runtime_generation = {
                 **runtime_generation,
-                "started_at_unix": previous_runtime_generation[
-                    "started_at_unix"
-                ],
+                "started_at_unix": previous_runtime_generation["started_at_unix"],
             }
-        previous_verified_at = previous_details.get(
-            "functional_verified_at_unix"
-        )
+        previous_verified_at = previous_details.get("functional_verified_at_unix")
         proof_fresh = bool(
             isinstance(previous_verified_at, int | float)
             and time.time() - float(previous_verified_at)
             <= GATEWAY_FUNCTIONAL_RECHECK_SECONDS
         )
         generation_matches = bool(
-            (
-                invocation_id
-                and invocation_id == previous_invocation_id
-            )
+            (invocation_id and invocation_id == previous_invocation_id)
             or (
                 isinstance(runtime_generation, dict)
                 and public_gateway_runtime_generation_same(
@@ -529,9 +520,7 @@ async def _inspect_gateway_state(
                     else 0
                 ),
                 service_main_pid=int(runtime_generation["pid"]),
-                expected_process_start_time=int(
-                    runtime_generation["start_time"]
-                ),
+                expected_process_start_time=int(runtime_generation["start_time"]),
                 expected_gateway_argv=list(runtime_generation["argv"]),
             )
             functional_ready = readiness.get("functionally_ready") is True
@@ -713,7 +702,7 @@ async def _report_command_result(
     phase: str,
     result: dict[str, Any],
     failure_code: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     payload = {
         "schema": RESULT_SCHEMA,
         "command_id": command.get("command_id"),
@@ -724,7 +713,7 @@ async def _report_command_result(
         "failure_code": failure_code,
         "result": result,
     }
-    await ctx.platform.post_json(
+    return await ctx.platform.post_json(
         context_computer_api_path(ctx, "runtime-command/result"),
         {"result": payload},
     )
@@ -800,13 +789,24 @@ async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None
         started_at=started_at,
         completed_at=completed_at,
     )
-    await _report_command_result(
+    platform_ack = await _report_command_result(
         ctx,
         command=command,
         status="applied",
         phase=str(kind or "execute"),
         result=result,
     )
+    if kind == "check_and_stage_updates" and platform_ack.get("ignored") is False:
+        # A plugin install remains recoverable until the platform durably
+        # accepts this exact command result. A successful HTTP response with
+        # ``ignored=true`` means the command was stale or no longer active and
+        # must not consume the recovery marker. Import lazily to avoid coupling
+        # the heartbeat module to command implementations during startup.
+        from hermes_runtime.update_orchestrator import (
+            acknowledge_check_and_stage_result,
+        )
+
+        acknowledge_check_and_stage_result(ctx, command, result)
 
 
 def _consume_command_task(ctx: RuntimeContext) -> None:
@@ -922,7 +922,9 @@ async def run() -> int:
         )
         platform_auth = "gcloud"
     state_dir = Path(os.getenv("TINYHAT_RUNTIME_STATE_DIR") or DEFAULT_STATE_DIR)
-    computer_id = (os.getenv("TINYHAT_COMPUTER_ID") or "local-dev").strip() or "local-dev"
+    computer_id = (
+        os.getenv("TINYHAT_COMPUTER_ID") or "local-dev"
+    ).strip() or "local-dev"
     ctx = RuntimeContext(
         platform=platform,
         state_dir=state_dir,
