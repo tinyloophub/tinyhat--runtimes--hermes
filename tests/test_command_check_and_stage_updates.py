@@ -635,6 +635,146 @@ def test_result_delivery_failure_redispatches_notice_and_staged_plugin_result() 
         assert reported["result"]["notification"]["sent"] is True
 
 
+def test_unacknowledged_marker_outliving_plugin_forces_reinstall() -> None:
+    stale_discovery = _discovery(runtime=False, plugin=True)
+    stale_discovery["plugin_update_check"].update(
+        {
+            "installed": {
+                "installed": False,
+                "version": None,
+                "source": {
+                    "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+                    "ref": "channels/lts",
+                    "commit": None,
+                },
+            },
+            "installed_version": None,
+            "installed_commit": None,
+        }
+    )
+    update_plugin = AsyncMock(
+        side_effect=[
+            _plugin_result(changed=True),
+            _plugin_result(changed=True),
+        ]
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        marker_path = Path(tmp) / "updates" / "pending_plugin_repair.json"
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _discovery(runtime=False, plugin=True),
+                        stale_discovery,
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                update_plugin,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                return_value={"ok": True, "http_status": 200},
+            ),
+        ):
+            asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+            assert json.loads(marker_path.read_text(encoding="utf-8"))["state"] == (
+                "installed_unacknowledged"
+            )
+
+            ctx.restart_requested = False
+            recovered = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert update_plugin.await_count == 2
+    assert marker["state"] == "installed_unacknowledged"
+    assert recovered["status"] == "updated"
+    assert recovered["plugin"]["current_version"] is None
+    assert recovered["plugin"]["repair_performed"] is True
+    assert recovered["plugin"]["installed"] == {
+        "installed": True,
+        "version": "0.21.6",
+        "source": {
+            "repo_url": "https://github.com/tinyhat-ai/tinyhat.git",
+            "ref": "channels/lts",
+            "commit": PLUGIN_COMMIT,
+        },
+    }
+    assert recovered["runtime_restart_requested"] is True
+    assert recovered["hermes_restart_required"] is True
+
+
+def test_unacknowledged_marker_is_trusted_when_discovery_fails() -> None:
+    failed_discovery = _discovery(runtime=False, plugin=False)
+    failed_discovery["plugin_update_check"].update(
+        {
+            "installed": None,
+            "installed_version": None,
+            "installed_commit": None,
+            "update_available": None,
+            "decision": "target_unavailable",
+            "target_error": "temporary discovery failure",
+        }
+    )
+    update_plugin = AsyncMock(return_value=_plugin_result(changed=True))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ctx = FakeContext(Path(tmp))
+        with (
+            patch(
+                "hermes_runtime.update_orchestrator.run_update_check",
+                AsyncMock(
+                    side_effect=[
+                        _discovery(runtime=False, plugin=True),
+                        failed_discovery,
+                    ]
+                ),
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator.update_tinyhat_plugin",
+                update_plugin,
+            ),
+            patch(
+                "hermes_runtime.update_orchestrator._telegram_send",
+                return_value={"ok": True, "http_status": 200},
+            ),
+        ):
+            asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+            recovered = asyncio.run(
+                run_command(
+                    ctx,
+                    {"kind": "check_and_stage_updates", "spec": _spec()},
+                )
+            )
+
+    update_plugin.assert_awaited_once()
+    assert recovered["status"] == "updated"
+    assert recovered["plugin"]["status"] == "updated"
+    assert recovered["plugin"]["error"] is None
+    assert recovered["plugin"]["installed_commit"] == PLUGIN_COMMIT
+    assert recovered["hermes_restart_required"] is True
+
+
 def test_ignored_result_keeps_plugin_recovery_marker_for_redispatch() -> None:
     first_discovery = _discovery(runtime=False, plugin=True)
     retry_discovery = _discovery(runtime=False, plugin=False)
