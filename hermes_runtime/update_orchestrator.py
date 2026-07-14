@@ -231,9 +231,16 @@ def _capabilities_message(version: str | None) -> str:
     )
 
 
-async def _send_update_notice(version: str | None) -> dict[str, Any]:
+def _runtime_update_message(version: str) -> str:
+    return (
+        f"Tinyhat runtime update staged to version {version}.\n\n"
+        "It will be activated automatically."
+    )
+
+
+async def _send_notice(text: str) -> dict[str, Any]:
     try:
-        result = await asyncio.to_thread(_telegram_send, _capabilities_message(version))
+        result = await asyncio.to_thread(_telegram_send, text)
     except Exception as exc:  # noqa: BLE001 - updates must not depend on Telegram.
         return {
             "attempted": True,
@@ -257,6 +264,14 @@ async def _send_update_notice(version: str | None) -> dict[str, Any]:
             }
         ),
     }
+
+
+async def _send_update_notice(version: str | None) -> dict[str, Any]:
+    return await _send_notice(_capabilities_message(version))
+
+
+async def _send_runtime_update_notice(version: str) -> dict[str, Any]:
+    return await _send_notice(_runtime_update_message(version))
 
 
 async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, Any]:
@@ -462,6 +477,8 @@ async def check_and_stage_updates(ctx: Any, spec: dict[str, Any]) -> dict[str, A
         notification = await _send_update_notice(
             plugin_version if isinstance(plugin_version, str) else None
         )
+    elif runtime_staged_now:
+        notification = await _send_runtime_update_notice(target_ref)
     if changed:
         ctx.restart_requested = True
 

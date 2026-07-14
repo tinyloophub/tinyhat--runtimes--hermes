@@ -275,8 +275,11 @@ def test_runtime_only_update_stages_exact_sha_and_marks_activation() -> None:
     assert result["plugin"]["changed"] is False
     assert result["runtime_restart_requested"] is True
     assert result["hermes_restart_required"] is False
-    assert result["notification"]["attempted"] is False
-    assert messages == []
+    assert result["notification"]["sent"] is True
+    assert messages == [
+        "Tinyhat runtime update staged to version v0.0.45.\n\n"
+        "It will be activated automatically."
+    ]
 
 
 def test_partial_activation_keeps_requesting_runtime_restart() -> None:
