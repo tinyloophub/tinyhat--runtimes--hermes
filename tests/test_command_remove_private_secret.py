@@ -87,7 +87,7 @@ def test_remove_private_secret_preserves_other_credentials_and_returns_no_values
                         {
                             "kind": "remove_private_secret",
                             "spec": {
-                                "secret_name": "EXA_API_KEY",
+                                "env_name": "EXA_API_KEY",
                                 "handoff_public_id": "sh_exa",
                                 "removal_request_id": "scr_request",
                             },
@@ -107,8 +107,8 @@ def test_remove_private_secret_preserves_other_credentials_and_returns_no_values
         assert '_HERMES_FORCE_OTHER_API_KEY="other-credential"' in env_text
         assert "EXA_API_KEY" not in config_text
         assert "OTHER_API_KEY" in config_text
-        assert result["local_secret_absent"] is True
-        assert result["credential_removal_verified"] is True
+        assert result["local_env_absent"] is True
+        assert result["removal_verified"] is True
         assert result["removed_from_files"] is True
         assert result["gateway_ready"] is True
         assert "credential-under-test" not in serialized
@@ -131,7 +131,7 @@ def test_remove_private_secret_rejects_invalid_name_before_local_changes() -> No
         asyncio.run(
             remove_private_secret.run(
                 None,
-                {"spec": {"secret_name": "NOT-A-VALID-NAME"}},
+                {"spec": {"env_name": "NOT-A-VALID-NAME"}},
             )
         )
     except RuntimeError as exc:
@@ -175,7 +175,7 @@ def test_remove_private_secret_requires_gateway_proof_even_when_files_are_clean(
                         None,
                         {
                             "kind": "remove_private_secret",
-                            "spec": {"secret_name": "EXA_API_KEY"},
+                            "spec": {"env_name": "EXA_API_KEY"},
                         },
                     )
                 )
@@ -183,8 +183,8 @@ def test_remove_private_secret_requires_gateway_proof_even_when_files_are_clean(
             os.environ.clear()
             os.environ.update(old_env)
 
-        assert result["local_secret_absent"] is True
-        assert result["credential_removal_verified"] is False
+        assert result["local_env_absent"] is True
+        assert result["removal_verified"] is False
         assert result["gateway_ready"] is False
         assert result["restart_requested"] is True
         gateway.assert_awaited_once()

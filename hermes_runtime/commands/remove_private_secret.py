@@ -59,7 +59,7 @@ def _remove_name_from_env_file(path: Path, name: str) -> dict[str, Any]:
 async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     _ = ctx
     spec = command.get("spec") if isinstance(command.get("spec"), dict) else {}
-    name = str(spec.get("secret_name") or "").strip().upper()
+    name = str(spec.get("env_name") or "").strip().upper()
     if ENV_NAME_RE.fullmatch(name) is None:
         raise RuntimeError("remove_private_secret requires a valid env-style name.")
 
@@ -72,8 +72,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         [],
         remove_names=[name],
     )
-    local_secret_absent = name not in read_env_values(paths, names=[name])
-    if not local_secret_absent:
+    local_env_absent = name not in read_env_values(paths, names=[name])
+    if not local_env_absent:
         raise RuntimeError("Hermes still reports the credential name after removal.")
 
     alias_files = terminal_env_passthrough.get("terminal_secret_aliases", {}).get(
@@ -105,15 +105,15 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         },
     )
     gateway_ready = bool(gateway.get("healthy"))
-    removal_verified = local_secret_absent and gateway_ready
+    removal_verified = local_env_absent and gateway_ready
 
     return {
         "schema": SCHEMA,
-        "credential_name": name,
+        "env_name": name,
         "handoff_public_id": str(spec.get("handoff_public_id") or ""),
         "removal_request_id": str(spec.get("removal_request_id") or ""),
-        "local_secret_absent": True,
-        "credential_removal_verified": removal_verified,
+        "local_env_absent": True,
+        "removal_verified": removal_verified,
         "removed_from_files": any(item["removed"] for item in env_files),
         "process_value_cleared": process_had_value,
         "env_files": env_files,
