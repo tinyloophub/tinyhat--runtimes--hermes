@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the generation-bound `remove_private_secret` runtime command. It removes
+  one value-blind Tinyhat credential from Hermes env files and the current
+  process, unregisters terminal passthrough/force aliases without disturbing
+  other credentials, and refreshes the gateway before reporting value-free
+  local-deletion proof to the platform.
+
 ## 0.0.45 - 2026-07-14
 
 - Add `check_and_stage_updates`, one idempotent runtime command used by manual

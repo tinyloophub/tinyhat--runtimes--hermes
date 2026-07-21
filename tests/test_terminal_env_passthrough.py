@@ -12,7 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hermes_runtime import terminal_env_passthrough, terminal_secret_aliases  # noqa: E402
+from hermes_runtime import (
+    terminal_env_passthrough,
+    terminal_secret_aliases,
+)
 
 
 def load_tests(
@@ -122,9 +125,7 @@ def test_passthrough_aliases_every_platform_secret_name() -> None:
             ],
         )
         env_text = env_path.read_text(encoding="utf-8")
-        config_text = (home / ".hermes" / "config.yaml").read_text(
-            encoding="utf-8"
-        )
+        config_text = (home / ".hermes" / "config.yaml").read_text(encoding="utf-8")
 
         assert result["registered_names"] == [
             "BRAVE_SEARCH_API_KEY",

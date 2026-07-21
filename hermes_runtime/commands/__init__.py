@@ -26,6 +26,7 @@ COMMAND_MODULES = {
     "import_openclaw_state": "hermes_runtime.commands.import_openclaw_state",
     "activate_codex_auth_models": "hermes_runtime.commands.activate_codex_auth_models",
     "import_legacy_tinyhat_secrets": "hermes_runtime.commands.import_legacy_tinyhat_secrets",
+    "remove_private_secret": "hermes_runtime.commands.remove_private_secret",
     "start_hermes": "hermes_runtime.commands.start_hermes",
     "stop_hermes": "hermes_runtime.commands.stop_hermes",
     "heal_hermes": "hermes_runtime.commands.heal_hermes",
