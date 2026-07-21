@@ -11,16 +11,20 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import re
 import sys
-from typing import Any, Iterable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 from hermes_runtime.runtime_env import hermes_home
 from hermes_runtime.terminal_secret_aliases import sync_terminal_secret_aliases
 
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 PASSTHROUGH_SCHEMA = "tinyhat_hermes_terminal_env_passthrough_v1"
+
 
 def _hermes_config_file() -> Path:
     explicit = (os.getenv("HERMES_CONFIG_FILE") or "").strip()
@@ -31,7 +35,11 @@ def _hermes_config_file() -> Path:
 
 def _is_top_level(line: str) -> bool:
     stripped = line.strip()
-    return bool(stripped) and not line.startswith((" ", "\t")) and not stripped.startswith("#")
+    return (
+        bool(stripped)
+        and not line.startswith((" ", "\t"))
+        and not stripped.startswith("#")
+    )
 
 
 def _terminal_block_bounds(lines: list[str]) -> tuple[int, int] | None:
@@ -96,7 +104,7 @@ def _find_terminal_key(
         stripped = lines[index].strip()
         if not stripped.startswith(key_prefix):
             continue
-        prefix, _sep, raw_value = lines[index].partition(":")
+        _prefix, _sep, raw_value = lines[index].partition(":")
         inline = _inline_list_items(raw_value)
         if inline is not None:
             return index, index + 1, inline
@@ -159,7 +167,7 @@ def _edit_terminal_list(
         if not add:
             return text if text.endswith("\n") or not text else text + "\n", False, []
         insertion = _render_terminal_list(key, add)
-        lines[start + 1:start + 1] = insertion
+        lines[start + 1 : start + 1] = insertion
         return "\n".join(lines).rstrip() + "\n", True, add
 
     key_start, key_end, existing = found
@@ -169,7 +177,11 @@ def _edit_terminal_list(
             next_items.append(item)
     changed = next_items != existing
     if not changed:
-        return text if text.endswith("\n") or not text else text + "\n", False, next_items
+        return (
+            text if text.endswith("\n") or not text else text + "\n",
+            False,
+            next_items,
+        )
     lines[key_start:key_end] = _render_terminal_list(key, next_items)
     return "\n".join(lines).rstrip() + "\n", True, next_items
 
@@ -211,8 +223,9 @@ def sync_terminal_env_passthrough(
         add_items=requested,
         remove_items=removals,
     )
+    configured_names = _clean_names(config.get("names", []))
     aliases = sync_terminal_secret_aliases(
-        requested,
+        configured_names,
         remove_names=removals,
     )
     return {
@@ -235,7 +248,9 @@ def main(argv: list[str] | None = None) -> int:
     command = args[0] if args else "register"
     if command == "register":
         if len(args) != 2:
-            print("usage: terminal_env_passthrough register <ENV_NAME>", file=sys.stderr)
+            print(
+                "usage: terminal_env_passthrough register <ENV_NAME>", file=sys.stderr
+            )
             return 2
         try:
             result = register_name(args[1])

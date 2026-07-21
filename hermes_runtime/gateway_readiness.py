@@ -318,8 +318,8 @@ def _gateway_argv_belongs_to_home(argv: list[str], expected_home: Path) -> bool:
     return profiles_match and bool(profiles or homes)
 
 
-def _read_proc_start_time(pid: int) -> int | None:
-    """Return Linux ``/proc`` field-22 process-start ticks."""
+def _read_proc_state_and_start_time(pid: int) -> tuple[str, int] | None:
+    """Return Linux ``/proc`` state and field-22 process-start ticks."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(
             encoding="utf-8", errors="replace"
@@ -331,10 +331,19 @@ def _read_proc_start_time(pid: int) -> int | None:
         return None
     fields_after_comm = raw[end + 1 :].split()
     try:
+        state = str(fields_after_comm[0])
         start_time = int(fields_after_comm[19])
     except (IndexError, TypeError, ValueError):
         return None
-    return start_time if start_time > 0 else None
+    if not state or start_time <= 0:
+        return None
+    return state, start_time
+
+
+def _read_proc_start_time(pid: int) -> int | None:
+    """Return Linux ``/proc`` field-22 process-start ticks."""
+    state_and_start = _read_proc_state_and_start_time(pid)
+    return state_and_start[1] if state_and_start is not None else None
 
 
 def _identity_probe_env() -> dict[str, str]:
@@ -537,6 +546,20 @@ def gateway_runtime_generation_active(
         return False
     except OSError:
         return None
+
+    # A stopped foreground gateway can briefly remain as a zombie until its
+    # parent reaps it. Linux zombies cannot execute or retain a usable runtime
+    # environment. Match the recorded start fingerprint before treating that
+    # exact process generation as exited; PID reuse still returns False and an
+    # unreadable state still falls through to the fail-closed identity probe.
+    if sys.platform.startswith("linux"):
+        proc_state = _read_proc_state_and_start_time(pid)
+        if proc_state is not None:
+            live_state, live_start = proc_state
+            if live_start != expected_start:
+                return False
+            if live_state in {"Z", "X", "x"}:
+                return False
 
     live = _live_process_identity(pid)
     if live is None:
