@@ -738,6 +738,60 @@ def test_runtime_generation_active_distinguishes_match_reuse_and_ambiguity() -> 
     assert unreadable is None
 
 
+def test_runtime_generation_active_treats_exact_linux_zombie_as_exited() -> None:
+    generation = {
+        "pid": 123,
+        "start_time": 456,
+        "argv": ["gateway", "run"],
+        "started_at_unix": 1000.1,
+    }
+    with (
+        patch("hermes_runtime.gateway_readiness.os.kill"),
+        patch.object(gateway_readiness.sys, "platform", "linux"),
+        patch(
+            "hermes_runtime.gateway_readiness._read_proc_state_and_start_time",
+            return_value=("Z", 456),
+        ),
+        patch(
+            "hermes_runtime.gateway_readiness._live_process_identity",
+            side_effect=AssertionError("a proven zombie is already exited"),
+        ),
+    ):
+        active = gateway_readiness.gateway_runtime_generation_active(
+            generation,
+            expected_home=Path("/tmp/hermes-home"),
+        )
+
+    assert active is False
+
+
+def test_runtime_generation_active_rejects_reused_zombie_pid() -> None:
+    generation = {
+        "pid": 123,
+        "start_time": 456,
+        "argv": ["gateway", "run"],
+        "started_at_unix": 1000.1,
+    }
+    with (
+        patch("hermes_runtime.gateway_readiness.os.kill"),
+        patch.object(gateway_readiness.sys, "platform", "linux"),
+        patch(
+            "hermes_runtime.gateway_readiness._read_proc_state_and_start_time",
+            return_value=("Z", 999),
+        ),
+        patch(
+            "hermes_runtime.gateway_readiness._live_process_identity",
+            side_effect=AssertionError("PID reuse is decided from /proc"),
+        ),
+    ):
+        active = gateway_readiness.gateway_runtime_generation_active(
+            generation,
+            expected_home=Path("/tmp/hermes-home"),
+        )
+
+    assert active is False
+
+
 def test_runtime_state_evidence_accepts_new_connected_gateway_pid() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         state = Path(tmp) / "gateway_state.json"
