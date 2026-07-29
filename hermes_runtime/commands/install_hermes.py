@@ -58,6 +58,8 @@ Side effects:
     ``messaging``/``voice`` extras into the Hermes venv and download the selected
     local STT model weights. Prefetch failures are reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
+    On Linux ARM only, may install distro Chromium after the official
+    Playwright browser probe fails.
     Does not configure Tinyhat platform state.
 """
 
@@ -65,6 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -301,6 +304,60 @@ async def _probe_browser_automation() -> dict[str, Any]:
         "snapshot": snapshot_result,
         "close": close_result,
     }
+
+
+def _needs_arm_system_browser_fallback() -> bool:
+    return platform.machine().strip().lower() in {"aarch64", "arm64"}
+
+
+async def _install_arm_system_browser_fallback() -> dict[str, Any]:
+    """Install distro Chromium only when Playwright has no ARM browser.
+
+    The official Hermes installer owns the normal browser install. Installing
+    Ubuntu's ``chromium`` package before it runs makes Hermes select the
+    snap-confined wrapper, which cannot launch reliably from a root system
+    service. Linux ARM containers are the narrow exception: Playwright does
+    not provide the same managed Chromium build there, while Debian's native
+    Chromium package is known to work.
+    """
+    result: dict[str, Any] = {
+        "attempted": False,
+        "architecture": platform.machine(),
+        "reason": "playwright_browser_preferred",
+        "result": None,
+    }
+    if not _needs_arm_system_browser_fallback():
+        return result
+    result["reason"] = "arm_playwright_browser_unavailable"
+    if os.name != "posix" or getattr(os, "geteuid", lambda: -1)() != 0:
+        return result
+    if shutil.which("apt-get") is None:
+        return result
+
+    install = await run_shell(
+        "export DEBIAN_FRONTEND=noninteractive\n"
+        "apt-get update\n"
+        "apt-get install -y --no-install-recommends chromium",
+        timeout_seconds=600,
+    )
+    result["attempted"] = True
+    result["result"] = install
+    return result
+
+
+def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
+    for step in ("open", "snapshot"):
+        step_result = browser_smoke.get(step)
+        if not isinstance(step_result, dict) or step_result.get("ok"):
+            continue
+        detail = str(step_result.get("stderr") or step_result.get("stdout") or "")
+        detail = detail.strip().splitlines()[0][:240] if detail.strip() else ""
+        if detail:
+            return f"{step}: {detail}"
+        if step_result.get("timed_out"):
+            return f"{step}: timed out"
+        return f"{step}: returncode={step_result.get('returncode')}"
+    return str(browser_smoke.get("message") or "unknown browser smoke failure")
 
 
 def _day_one_capability_report(
@@ -593,8 +650,16 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     if not day_one_defaults.get("ok"):
         raise RuntimeError("Hermes day-one configuration could not be applied.")
     browser_smoke = await _probe_browser_automation()
+    browser_fallback: dict[str, Any] | None = None
     if not browser_smoke.get("ok"):
-        raise RuntimeError("Hermes browser automation smoke check failed.")
+        browser_fallback = await _install_arm_system_browser_fallback()
+        if browser_fallback.get("attempted"):
+            browser_smoke = await _probe_browser_automation()
+    if not browser_smoke.get("ok"):
+        raise RuntimeError(
+            "Hermes browser automation smoke check failed: "
+            f"{_browser_failure_summary(browser_smoke)}"
+        )
     local_stt_model_prefetch = await _prefetch_local_stt_model()
     local_stt_model_prefetch_warning = None
     if not local_stt_model_prefetch.get("ok"):
@@ -632,6 +697,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "multimodal_defaults": day_one_defaults.get("multimedia"),
         "day_one_defaults": day_one_defaults,
         "browser_smoke": browser_smoke,
+        "browser_fallback": browser_fallback,
         "day_one_capabilities": day_one_capabilities,
         "local_stt_model_prefetch": local_stt_model_prefetch,
         "local_stt_model_prefetch_warning": local_stt_model_prefetch_warning,

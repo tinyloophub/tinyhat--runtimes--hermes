@@ -361,9 +361,10 @@ def test_debian_prerequisites_include_media_vision_and_build_tools() -> None:
         result = asyncio.run(hermes_cli.maybe_install_debian_prerequisites())
 
     assert result["attempted"] is True
-    assert {"ffmpeg", "rg", "g++", "xclip", "wl-paste", "chromium"}.issubset(
+    assert {"ffmpeg", "rg", "g++", "xclip", "wl-paste"}.issubset(
         set(result["missing_before"])
     )
+    assert "chromium" not in result["missing_before"]
     assert len(calls) == 1
     install_script = calls[0]
     assert "build-essential" in install_script
@@ -371,4 +372,4 @@ def test_debian_prerequisites_include_media_vision_and_build_tools() -> None:
     assert "ripgrep" in install_script
     assert "xclip" in install_script
     assert "wl-clipboard" in install_script
-    assert "chromium" in install_script
+    assert "chromium" not in install_script

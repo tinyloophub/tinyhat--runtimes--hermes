@@ -28,7 +28,6 @@ DEBIAN_PREREQUISITE_COMMANDS: dict[str, str] = {
     "rg": "ripgrep",
     "xclip": "xclip",
     "wl-paste": "wl-clipboard",
-    "chromium": "chromium",
 }
 
 

@@ -249,6 +249,94 @@ def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
     assert result["smoke_status"] == "passed"
 
 
+def test_arm_browser_fallback_installs_distro_chromium_after_probe_failure() -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def fake_run_shell(
+        script: str,
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del env
+        calls.append((script, timeout_seconds))
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.machine",
+            return_value="aarch64",
+        ),
+        patch.object(install_hermes.os, "name", "posix"),
+        patch(
+            "hermes_runtime.commands.install_hermes.os.geteuid",
+            return_value=0,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.shutil.which",
+            return_value="/usr/bin/apt-get",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_shell",
+            fake_run_shell,
+        ),
+    ):
+        result = asyncio.run(
+            install_hermes._install_arm_system_browser_fallback()
+        )
+
+    assert result["attempted"] is True
+    assert result["reason"] == "arm_playwright_browser_unavailable"
+    assert calls == [
+        (
+            "export DEBIAN_FRONTEND=noninteractive\n"
+            "apt-get update\n"
+            "apt-get install -y --no-install-recommends chromium",
+            600,
+        )
+    ]
+
+
+def test_x86_browser_failure_does_not_install_ubuntu_snap_chromium() -> None:
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.machine",
+            return_value="x86_64",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_shell",
+            side_effect=AssertionError("system browser install should not run"),
+        ),
+    ):
+        result = asyncio.run(
+            install_hermes._install_arm_system_browser_fallback()
+        )
+
+    assert result == {
+        "attempted": False,
+        "architecture": "x86_64",
+        "reason": "playwright_browser_preferred",
+        "result": None,
+    }
+
+
+def test_browser_failure_summary_reports_the_failing_step() -> None:
+    result = install_hermes._browser_failure_summary(
+        {
+            "open": {
+                "ok": False,
+                "returncode": None,
+                "timed_out": True,
+                "stdout": "",
+                "stderr": "command timed out after 120s\nmore detail",
+            },
+            "snapshot": None,
+        }
+    )
+
+    assert result == "open: command timed out after 120s"
+
+
 def test_agent_browser_binary_uses_upstream_project_install() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project_dir = Path(tmp) / "hermes-agent"
@@ -351,6 +439,94 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
     assert result["status"]["ok"] is True
+
+
+def test_install_hermes_retries_browser_smoke_after_arm_fallback() -> None:
+    browser_probes = [
+        {
+            "ok": False,
+            "smoke_status": "failed",
+            "open": {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "browser missing",
+            },
+        },
+        {
+            "ok": True,
+            "smoke_status": "passed",
+            "browser_bin": "/usr/bin/agent-browser",
+        },
+    ]
+    fallback_calls = 0
+
+    async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
+        del timeout_seconds
+        return _status()
+
+    async def fake_messaging() -> dict[str, object]:
+        return {"ok": True, "changed": False}
+
+    async def fake_browser_probe() -> dict[str, object]:
+        return browser_probes.pop(0)
+
+    async def fake_browser_fallback() -> dict[str, object]:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return {
+            "attempted": True,
+            "architecture": "aarch64",
+            "reason": "arm_playwright_browser_unavailable",
+            "result": {"ok": True},
+        }
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/usr/local/bin/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.probe_hermes_status",
+            fake_status,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
+            fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
+            _fake_local_stt_model_prefetch,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            fake_browser_probe,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_arm_system_browser_fallback",
+            fake_browser_fallback,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._install_codex_auth_plugin_commands",
+            return_value={"installed": True, "commands": ["codex_auth"]},
+        ),
+    ):
+        result = asyncio.run(
+            run_command(SimpleNamespace(), {"kind": "install_hermes"})
+        )
+
+    assert fallback_calls == 1
+    assert browser_probes == []
+    assert result["browser_smoke"]["smoke_status"] == "passed"
+    assert result["browser_fallback"]["attempted"] is True
 
 
 def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
