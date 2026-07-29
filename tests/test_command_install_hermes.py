@@ -57,21 +57,31 @@ async def _fake_local_stt_model_prefetch() -> dict[str, object]:
     }
 
 
-async def _fake_day_one_multimedia(_hermes_bin: Path) -> dict[str, object]:
+async def _fake_day_one_capabilities(_hermes_bin: Path) -> dict[str, object]:
     return {
         "ok": True,
+        "baseline": {"ok": True},
+        "multimedia": {"ok": True},
         "commands": [
             {
-                "key": "stt.provider",
-                "value": "openrouter",
+                "key": "web.search_backend",
+                "value": "ddgs",
                 "ok": True,
             },
             {
-                "key": "auxiliary.vision.provider",
-                "value": "openrouter",
+                "key": "browser.cloud_provider",
+                "value": "local",
                 "ok": True,
             },
         ],
+    }
+
+
+async def _fake_browser_smoke() -> dict[str, object]:
+    return {
+        "ok": True,
+        "smoke_status": "passed",
+        "browser_bin": "/root/.hermes/node/bin/agent-browser",
     }
 
 
@@ -169,8 +179,104 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     assert f"cd {project_dir}" in script
     package_spec = shlex.quote(f"{project_dir}[messaging,voice]")
     assert f"{python_bin} -m pip install -e {package_spec}" in script
+    assert f"{python_bin} -m pip install ddgs==9.14.4 edge-tts==7.2.7" in script
     assert "--python" not in script
     assert env == {"PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+
+
+def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
+    calls: list[tuple[list[str], int]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        calls.append((args, timeout_seconds))
+        return {
+            "args": args,
+            "returncode": 0,
+            "ok": True,
+            "timed_out": False,
+            "stdout": "ok",
+            "stderr": "",
+        }
+
+    browser_bin = Path("/opt/hermes/bin/agent-browser")
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=browser_bin,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_browser_automation())
+
+    assert calls == [
+        (
+            [
+                str(browser_bin),
+                "--session",
+                "tinyhat-provisioning-smoke",
+                "open",
+                "about:blank",
+            ],
+            120,
+        ),
+        (
+            [
+                str(browser_bin),
+                "--session",
+                "tinyhat-provisioning-smoke",
+                "snapshot",
+            ],
+            60,
+        ),
+        (
+            [
+                str(browser_bin),
+                "--session",
+                "tinyhat-provisioning-smoke",
+                "close",
+            ],
+            30,
+        ),
+    ]
+    assert result["ok"] is True
+    assert result["smoke_status"] == "passed"
+
+
+def test_agent_browser_binary_uses_upstream_project_install() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "hermes-agent"
+        (project_dir / "venv" / "bin").mkdir(parents=True)
+        (project_dir / "venv" / "bin" / "python").write_text("", encoding="utf-8")
+        (project_dir / "pyproject.toml").write_text(
+            "[project]\nname='hermes-agent'\n",
+            encoding="utf-8",
+        )
+        browser_bin = project_dir / "node_modules" / ".bin" / "agent-browser"
+        browser_bin.parent.mkdir(parents=True)
+        browser_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        browser_bin.chmod(0o755)
+
+        with (
+            patch.dict(
+                os.environ,
+                {"HERMES_PROJECT_DIR": str(project_dir)},
+                clear=False,
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.shutil.which",
+                return_value=None,
+            ),
+        ):
+            result = install_hermes._agent_browser_binary()
+
+    assert result == browser_bin
 
 
 def test_install_hermes_is_noop_when_cli_exists() -> None:
@@ -211,8 +317,12 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
-            _fake_day_one_multimedia,
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            _fake_browser_smoke,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
@@ -273,8 +383,12 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
-            _fake_day_one_multimedia,
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            _fake_browser_smoke,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
@@ -344,8 +458,12 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             _fake_local_stt_model_prefetch,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
-            _fake_day_one_multimedia,
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            _fake_browser_smoke,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
@@ -363,9 +481,11 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert len(install_calls) == 1
     script, env = install_calls[0]
     assert (
-        "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser"
+        "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | "
+        "bash -s -- --commit 40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b"
         in script
     )
+    assert "--skip-browser" not in script
     assert env == {"CI": "1"}
     assert result["installed_before"] is False
     assert result["installed_now"] is True
@@ -374,6 +494,16 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     assert result["changed"] is True
     assert result["messaging"]["changed"] is True
     assert result["multimodal_defaults"]["ok"] is True
+    assert result["browser_smoke"]["smoke_status"] == "passed"
+    assert result["day_one_capabilities"]["baseline_id"] == (
+        "tinyhat-hermes-day-one-v1"
+    )
+    assert result["day_one_capabilities"]["capabilities"]["web_search"] == {
+        "state": "ready",
+        "provider": "ddgs",
+        "dependency_ready": True,
+        "smoke_status": "not_run",
+    }
     assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True
@@ -441,8 +571,12 @@ def test_install_hermes_retries_transient_status_failure_after_install() -> None
             _fake_local_stt_model_prefetch,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
-            _fake_day_one_multimedia,
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            _fake_browser_smoke,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._install_codex_auth_quick_commands",
@@ -645,7 +779,7 @@ def test_install_hermes_raises_when_status_check_fails_after_install() -> None:
             asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
 
 
-def test_install_hermes_raises_when_messaging_is_unavailable() -> None:
+def test_install_hermes_raises_when_day_one_dependencies_are_unavailable() -> None:
     async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
         return _status()
 
@@ -666,7 +800,7 @@ def test_install_hermes_raises_when_messaging_is_unavailable() -> None:
             fake_messaging,
         ),
     ):
-        with _raises_runtime("messaging dependencies"):
+        with _raises_runtime("day-one dependencies"):
             asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))
 
 
@@ -786,8 +920,12 @@ def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
             fake_prefetch,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._configure_day_one_multimedia",
-            _fake_day_one_multimedia,
+            "hermes_runtime.commands.install_hermes._configure_day_one_capabilities",
+            _fake_day_one_capabilities,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_browser_automation",
+            _fake_browser_smoke,
         ),
     ):
         result = asyncio.run(run_command(SimpleNamespace(), {"kind": "install_hermes"}))

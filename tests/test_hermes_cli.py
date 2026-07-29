@@ -17,6 +17,14 @@ sys.path.insert(0, str(ROOT))
 from hermes_runtime import hermes_cli  # noqa: E402
 
 
+def test_default_install_args_pin_upstream_and_enable_browser() -> None:
+    assert hermes_cli.DEFAULT_HERMES_INSTALL_ARGS == (
+        "--commit",
+        "40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b",
+    )
+    assert "--skip-browser" not in hermes_cli.DEFAULT_HERMES_INSTALL_ARGS
+
+
 def load_tests(
     loader: unittest.TestLoader,
     tests: unittest.TestSuite,
@@ -353,7 +361,7 @@ def test_debian_prerequisites_include_media_vision_and_build_tools() -> None:
         result = asyncio.run(hermes_cli.maybe_install_debian_prerequisites())
 
     assert result["attempted"] is True
-    assert {"ffmpeg", "rg", "g++", "xclip", "wl-paste"}.issubset(
+    assert {"ffmpeg", "rg", "g++", "xclip", "wl-paste", "chromium"}.issubset(
         set(result["missing_before"])
     )
     assert len(calls) == 1
@@ -363,3 +371,4 @@ def test_debian_prerequisites_include_media_vision_and_build_tools() -> None:
     assert "ripgrep" in install_script
     assert "xclip" in install_script
     assert "wl-clipboard" in install_script
+    assert "chromium" in install_script

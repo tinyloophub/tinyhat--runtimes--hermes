@@ -1150,6 +1150,45 @@ def test_configure_day_one_multimedia_uses_overrides() -> None:
     ]
 
 
+def test_creation_baseline_does_not_extend_assignment_defaults() -> None:
+    baseline_commands: list[tuple[str, str]] = []
+
+    async def fake_run_config_set_commands(
+        _hermes_bin: Path,
+        commands: list[tuple[str, str]],
+    ) -> dict[str, object]:
+        baseline_commands.extend(commands)
+        return {"ok": True, "commands": [{"ok": True} for _ in commands]}
+
+    async def fake_multimedia(_hermes_bin: Path) -> dict[str, object]:
+        return {"ok": True, "commands": [{"key": "stt.enabled", "ok": True}]}
+
+    with (
+        patch(
+            "hermes_runtime.commands.configure_telegram._run_config_set_commands",
+            fake_run_config_set_commands,
+        ),
+        patch(
+            "hermes_runtime.commands.configure_telegram._configure_day_one_multimedia",
+            fake_multimedia,
+        ),
+    ):
+        result = asyncio.run(
+            configure_telegram._configure_day_one_capabilities(Path("/bin/hermes"))
+        )
+
+    assert baseline_commands == [
+        ("web.search_backend", "ddgs"),
+        ("browser.cloud_provider", "local"),
+        ("browser.engine", "chrome"),
+        ("image_gen.provider", "openrouter"),
+        ("image_gen.model", "google/gemini-3.1-flash-image"),
+        ("tts.provider", "edge"),
+    ]
+    assert result["ok"] is True
+    assert result["multimedia"]["commands"] == [{"key": "stt.enabled", "ok": True}]
+
+
 def test_run_gateway_rejects_foreground_adapter_failure() -> None:
     async def fake_run_process(
         args: list[str],

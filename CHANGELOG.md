@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Prepare fresh Computers with the public `tinyhat-hermes-day-one-v1`
+  capability baseline before assignment: pin the upstream Hermes commit,
+  install the official local browser stack, pin DDGS search and Edge TTS,
+  configure DDGS/local-browser/OpenRouter-image/Edge defaults, and require a
+  blank-page browser smoke before provisioning reports ready. The later
+  Telegram assignment sequence remains unchanged.
+
 ## 0.0.46 - 2026-07-21
 
 - Add the generation-bound `remove_private_secret` runtime command. It removes

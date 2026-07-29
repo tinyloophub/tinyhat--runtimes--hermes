@@ -83,6 +83,14 @@ import time
 from typing import Any
 from urllib import error, parse, request
 
+from hermes_runtime.day_one_capabilities import (
+    BROWSER_CLOUD_PROVIDER,
+    BROWSER_ENGINE,
+    IMAGE_GENERATION_MODEL,
+    IMAGE_GENERATION_PROVIDER,
+    TTS_PROVIDER,
+    WEB_SEARCH_BACKEND,
+)
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     probe_hermes_status,
@@ -1505,6 +1513,29 @@ async def _configure_day_one_multimedia(hermes_bin: Path) -> dict[str, Any]:
         active_model=active_vision_model,
     )
     return result
+
+
+async def _configure_day_one_capabilities(hermes_bin: Path) -> dict[str, Any]:
+    """Apply creation-time defaults without extending later assignment."""
+    commands = [
+        ("web.search_backend", WEB_SEARCH_BACKEND),
+        ("browser.cloud_provider", BROWSER_CLOUD_PROVIDER),
+        ("browser.engine", BROWSER_ENGINE),
+        ("image_gen.provider", IMAGE_GENERATION_PROVIDER),
+        ("image_gen.model", IMAGE_GENERATION_MODEL),
+        ("tts.provider", TTS_PROVIDER),
+    ]
+    baseline = await _run_config_set_commands(hermes_bin, commands)
+    multimedia = await _configure_day_one_multimedia(hermes_bin)
+    return {
+        "ok": bool(baseline.get("ok")) and bool(multimedia.get("ok")),
+        "commands": [
+            *(baseline.get("commands") or []),
+            *(multimedia.get("commands") or []),
+        ],
+        "baseline": baseline,
+        "multimedia": multimedia,
+    }
 
 
 def _run_config_set_commands_sync(
