@@ -88,6 +88,8 @@ from hermes_runtime.day_one_capabilities import (
     BROWSER_ENGINE,
     IMAGE_GENERATION_MODEL,
     IMAGE_GENERATION_PROVIDER,
+    TELEGRAM_RICH_DRAFTS,
+    TELEGRAM_RICH_MESSAGES,
     TTS_PROVIDER,
     WEB_SEARCH_BACKEND,
 )
@@ -1524,6 +1526,14 @@ async def _configure_day_one_capabilities(hermes_bin: Path) -> dict[str, Any]:
         ("image_gen.provider", IMAGE_GENERATION_PROVIDER),
         ("image_gen.model", IMAGE_GENERATION_MODEL),
         ("tts.provider", TTS_PROVIDER),
+        (
+            "platforms.telegram.extra.rich_messages",
+            str(TELEGRAM_RICH_MESSAGES).lower(),
+        ),
+        (
+            "platforms.telegram.extra.rich_drafts",
+            str(TELEGRAM_RICH_DRAFTS).lower(),
+        ),
     ]
     baseline = await _run_config_set_commands(hermes_bin, commands)
     multimedia = await _configure_day_one_multimedia(hermes_bin)

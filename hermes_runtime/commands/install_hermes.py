@@ -92,6 +92,8 @@ from hermes_runtime.day_one_capabilities import (
     HERMES_UPSTREAM_COMMIT,
     IMAGE_GENERATION_MODEL,
     IMAGE_GENERATION_PROVIDER,
+    TELEGRAM_RICH_DRAFTS,
+    TELEGRAM_RICH_MESSAGES,
     TTS_PROVIDER,
     WEB_SEARCH_BACKEND,
 )
@@ -451,6 +453,12 @@ def _day_one_capability_report(
                 "state": "ready",
                 "provider": TTS_PROVIDER,
                 "dependency_ready": bool(dependencies.get("ok")),
+                "smoke_status": "not_run",
+            },
+            "telegram_rich_rendering": {
+                "state": "configured_waiting_for_assignment",
+                "rich_messages": TELEGRAM_RICH_MESSAGES,
+                "rich_drafts": TELEGRAM_RICH_DRAFTS,
                 "smoke_status": "not_run",
             },
         },

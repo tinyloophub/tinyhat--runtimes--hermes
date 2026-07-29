@@ -747,6 +747,14 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
         "dependency_ready": True,
         "smoke_status": "not_run",
     }
+    assert result["day_one_capabilities"]["capabilities"][
+        "telegram_rich_rendering"
+    ] == {
+        "state": "configured_waiting_for_assignment",
+        "rich_messages": True,
+        "rich_drafts": False,
+        "smoke_status": "not_run",
+    }
     assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["codex_auth"]["quick_commands"]["installed"] is True
     assert result["codex_auth"]["plugin_commands"]["installed"] is True

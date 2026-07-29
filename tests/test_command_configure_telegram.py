@@ -1184,6 +1184,8 @@ def test_creation_baseline_does_not_extend_assignment_defaults() -> None:
         ("image_gen.provider", "openrouter"),
         ("image_gen.model", "google/gemini-3.1-flash-image"),
         ("tts.provider", "edge"),
+        ("platforms.telegram.extra.rich_messages", "true"),
+        ("platforms.telegram.extra.rich_drafts", "false"),
     ]
     assert result["ok"] is True
     assert result["multimedia"]["commands"] == [{"key": "stt.enabled", "ok": True}]
