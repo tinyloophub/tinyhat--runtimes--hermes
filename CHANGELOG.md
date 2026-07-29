@@ -7,10 +7,10 @@
   install the official local browser stack, pin DDGS search and Edge TTS,
   configure DDGS/local-browser/OpenRouter-image/Edge defaults, and require a
   blank-page browser smoke before provisioning reports ready. The runtime
-  leaves x86 browser installation to Playwright instead of preselecting
-  Ubuntu's root-incompatible Chromium snap, with a distro-Chromium fallback
-  only for Linux ARM. The later Telegram assignment sequence remains
-  unchanged.
+  avoids Ubuntu's root-incompatible Chromium snap and repairs a missing x86
+  browser with the public `agent-browser install --with-deps` command, while
+  retaining a distro-Chromium fallback only for Linux ARM. The later Telegram
+  assignment sequence remains unchanged.
 
 ## 0.0.46 - 2026-07-21
 

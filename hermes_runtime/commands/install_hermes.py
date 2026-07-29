@@ -9,8 +9,11 @@ What it does:
         curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
     Tinyhat pins the upstream Hermes checkout and lets the official installer
-    install its browser dependencies. Set ``TINYHAT_HERMES_INSTALL_ARGS`` on
-    the machine to override those installer arguments.
+    install its browser dependencies. If its workspace-local Playwright command
+    does not leave a browser behind on Linux x86, Tinyhat runs the public
+    ``agent-browser install --with-deps`` command and repeats the smoke check.
+    Set ``TINYHAT_HERMES_INSTALL_ARGS`` on the machine to override the upstream
+    installer arguments.
 
     After Hermes is present, the command verifies the Hermes venv can import
     the Telegram gateway adapter, voice-transcription dependencies, pinned
@@ -58,8 +61,8 @@ Side effects:
     ``messaging``/``voice`` extras into the Hermes venv and download the selected
     local STT model weights. Prefetch failures are reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
-    On Linux ARM only, may install distro Chromium after the official
-    Playwright browser probe fails.
+    After a failed browser probe, may install Chrome for Testing through
+    ``agent-browser`` on Linux x86 or distro Chromium on Linux ARM.
     Does not configure Tinyhat platform state.
 """
 
@@ -310,6 +313,47 @@ def _needs_arm_system_browser_fallback() -> bool:
     return platform.machine().strip().lower() in {"aarch64", "arm64"}
 
 
+def _needs_managed_browser_fallback() -> bool:
+    return (
+        platform.system().strip().lower() == "linux"
+        and platform.machine().strip().lower() in {"x86_64", "amd64"}
+    )
+
+
+async def _install_managed_browser_fallback() -> dict[str, Any]:
+    """Install agent-browser's Chrome for Testing when x86 has no browser.
+
+    Hermes' root npm workspace can expose a broken ``playwright`` shim even
+    though ``agent-browser`` itself is installed. The upstream installer treats
+    that browser download failure as a warning. Running agent-browser's own
+    public installer is the smallest deterministic repair: it downloads Chrome
+    for Testing and, on Linux, installs the libraries that binary needs.
+    """
+    result: dict[str, Any] = {
+        "attempted": False,
+        "architecture": platform.machine(),
+        "reason": "managed_browser_not_applicable",
+        "result": None,
+    }
+    if not _needs_managed_browser_fallback():
+        return result
+
+    browser_bin = _agent_browser_binary()
+    if browser_bin is None:
+        result["reason"] = "agent_browser_missing"
+        return result
+
+    install = await run_process(
+        [str(browser_bin), "install", "--with-deps"],
+        timeout_seconds=900,
+    )
+    result["attempted"] = True
+    result["reason"] = "managed_chrome_for_testing_missing"
+    result["browser_bin"] = str(browser_bin)
+    result["result"] = install
+    return result
+
+
 async def _install_arm_system_browser_fallback() -> dict[str, Any]:
     """Install distro Chromium only when Playwright has no ARM browser.
 
@@ -343,6 +387,12 @@ async def _install_arm_system_browser_fallback() -> dict[str, Any]:
     result["attempted"] = True
     result["result"] = install
     return result
+
+
+async def _install_browser_fallback() -> dict[str, Any]:
+    if _needs_managed_browser_fallback():
+        return await _install_managed_browser_fallback()
+    return await _install_arm_system_browser_fallback()
 
 
 def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
@@ -652,7 +702,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     browser_smoke = await _probe_browser_automation()
     browser_fallback: dict[str, Any] | None = None
     if not browser_smoke.get("ok"):
-        browser_fallback = await _install_arm_system_browser_fallback()
+        browser_fallback = await _install_browser_fallback()
         if browser_fallback.get("attempted"):
             browser_smoke = await _probe_browser_automation()
     if not browser_smoke.get("ok"):

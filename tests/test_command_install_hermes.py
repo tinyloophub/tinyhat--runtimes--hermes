@@ -249,6 +249,73 @@ def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
     assert result["smoke_status"] == "passed"
 
 
+def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
+    calls: list[tuple[list[str], int]] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        calls.append((args, timeout_seconds))
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    browser_bin = Path("/opt/hermes/bin/agent-browser")
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.system",
+            return_value="Linux",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.machine",
+            return_value="x86_64",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=browser_bin,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(
+            install_hermes._install_managed_browser_fallback()
+        )
+
+    assert result["attempted"] is True
+    assert result["reason"] == "managed_chrome_for_testing_missing"
+    assert result["browser_bin"] == str(browser_bin)
+    assert calls == [([str(browser_bin), "install", "--with-deps"], 900)]
+
+
+def test_managed_browser_fallback_skips_arm() -> None:
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.system",
+            return_value="Linux",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.machine",
+            return_value="aarch64",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            side_effect=AssertionError("managed browser install should not run"),
+        ),
+    ):
+        result = asyncio.run(
+            install_hermes._install_managed_browser_fallback()
+        )
+
+    assert result == {
+        "attempted": False,
+        "architecture": "aarch64",
+        "reason": "managed_browser_not_applicable",
+        "result": None,
+    }
+
+
 def test_arm_browser_fallback_installs_distro_chromium_after_probe_failure() -> None:
     calls: list[tuple[str, int]] = []
 
@@ -441,7 +508,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["status"]["ok"] is True
 
 
-def test_install_hermes_retries_browser_smoke_after_arm_fallback() -> None:
+def test_install_hermes_retries_browser_smoke_after_fallback() -> None:
     browser_probes = [
         {
             "ok": False,
@@ -476,8 +543,8 @@ def test_install_hermes_retries_browser_smoke_after_arm_fallback() -> None:
         fallback_calls += 1
         return {
             "attempted": True,
-            "architecture": "aarch64",
-            "reason": "arm_playwright_browser_unavailable",
+            "architecture": "x86_64",
+            "reason": "managed_chrome_for_testing_missing",
             "result": {"ok": True},
         }
 
@@ -507,7 +574,7 @@ def test_install_hermes_retries_browser_smoke_after_arm_fallback() -> None:
             fake_browser_probe,
         ),
         patch(
-            "hermes_runtime.commands.install_hermes._install_arm_system_browser_fallback",
+            "hermes_runtime.commands.install_hermes._install_browser_fallback",
             fake_browser_fallback,
         ),
         patch(
