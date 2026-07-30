@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Make Computer creation require Hermes' official diagnostics to report its
+  browser registration dependency ready, then navigate and snapshot a harmless
+  public page through the documented browser CLI. When Linux x86 needs repair,
+  install both `agent-browser`'s browser and pinned Playwright Chromium so a
+  fresh Hermes session exposes its browser tools immediately.
+- Install and verify Google Workspace CLI `0.22.5` during Computer creation
+  from Google's official statically linked Linux release assets, with
+  architecture-specific SHA-256 pins. Authentication remains a later,
+  user-controlled connection step.
+
 ## 0.0.47 - 2026-07-30
 
 - Prepare fresh Computers with the public `tinyhat-hermes-day-one-v1`
