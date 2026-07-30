@@ -6,7 +6,9 @@
   browser registration dependency ready, then navigate and snapshot a harmless
   public page through the documented browser CLI. When Linux x86 needs repair,
   install both `agent-browser`'s browser and pinned Playwright Chromium so a
-  fresh Hermes session exposes its browser tools immediately.
+  fresh Hermes session exposes its browser tools immediately. Record the
+  Chromium and automation CLI versions plus executable location in the
+  capability fingerprint, and require the smoke session to close cleanly.
 - Install and verify Google Workspace CLI `0.22.5` during Computer creation
   from Google's official statically linked Linux release assets, with
   architecture-specific SHA-256 pins. Authentication remains a later,

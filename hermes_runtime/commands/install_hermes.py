@@ -77,6 +77,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -468,13 +469,27 @@ async def _probe_browser_automation() -> dict[str, Any]:
         "✓ Playwright Chromium" in line
         for line in doctor_text.splitlines()
     )
+    agent_browser_version_probe = await run_process(
+        [str(browser_bin), "--version"],
+        timeout_seconds=30,
+    )
+    agent_browser_version = str(
+        agent_browser_version_probe.get("stdout")
+        or agent_browser_version_probe.get("stderr")
+        or ""
+    ).strip().splitlines()
+    agent_browser_version_text = (
+        agent_browser_version[0].strip() if agent_browser_version else None
+    )
 
     session = "tinyhat-provisioning-smoke"
     attempts: list[dict[str, Any]] = []
     open_result: dict[str, Any] = {}
     snapshot_result: dict[str, Any] | None = None
+    engine_probe: dict[str, Any] | None = None
     close_result: dict[str, Any] = {}
     expected_page = False
+    engine_version: str | None = None
     for attempt_number in range(1, 4):
         open_result = await run_process(
             [
@@ -492,6 +507,18 @@ async def _probe_browser_automation() -> dict[str, Any]:
                 [str(browser_bin), "--session", session, "snapshot"],
                 timeout_seconds=60,
             )
+            engine_probe = await run_process(
+                [
+                    str(browser_bin),
+                    "--session",
+                    session,
+                    "eval",
+                    "navigator.userAgent",
+                ],
+                timeout_seconds=30,
+            )
+        else:
+            engine_probe = None
         close_result = await run_process(
             [str(browser_bin), "--session", session, "close"],
             timeout_seconds=30,
@@ -505,9 +532,22 @@ async def _probe_browser_automation() -> dict[str, Any]:
             ]
         )
         expected_page = "Example Domain" in page_text
+        engine_text = (
+            str(engine_probe.get("stdout") or "")
+            if isinstance(engine_probe, dict)
+            else ""
+        )
+        engine_match = re.search(
+            r"(?:HeadlessChrome|Chrome)/([0-9.]+)",
+            engine_text,
+        )
+        engine_version = engine_match.group(1) if engine_match else None
         attempt_ok = (
             bool(open_result.get("ok"))
             and bool(snapshot_result and snapshot_result.get("ok"))
+            and bool(engine_probe and engine_probe.get("ok"))
+            and bool(engine_version)
+            and bool(close_result.get("ok"))
             and expected_page
         )
         attempts.append(
@@ -516,8 +556,10 @@ async def _probe_browser_automation() -> dict[str, Any]:
                 "ok": attempt_ok,
                 "open": open_result,
                 "snapshot": snapshot_result,
+                "engine_probe": engine_probe,
                 "close": close_result,
                 "expected_page_found": expected_page,
+                "engine_version": engine_version,
             }
         )
         if attempt_ok:
@@ -527,8 +569,13 @@ async def _probe_browser_automation() -> dict[str, Any]:
 
     ok = (
         registered
+        and bool(agent_browser_version_probe.get("ok"))
+        and bool(agent_browser_version_text)
         and bool(open_result.get("ok"))
         and bool(snapshot_result and snapshot_result.get("ok"))
+        and bool(engine_probe and engine_probe.get("ok"))
+        and bool(engine_version)
+        and bool(close_result.get("ok"))
         and expected_page
     )
     return {
@@ -537,11 +584,15 @@ async def _probe_browser_automation() -> dict[str, Any]:
         "smoke_status": "passed" if ok else "failed",
         "hermes_bin": str(hermes_bin),
         "browser_bin": str(browser_bin),
+        "agent_browser_version": agent_browser_version_text,
+        "agent_browser_version_probe": agent_browser_version_probe,
+        "engine_version": engine_version,
         "target": "https://example.com",
         "expected_page_found": expected_page,
         "doctor": doctor,
         "open": open_result,
         "snapshot": snapshot_result,
+        "engine_probe": engine_probe,
         "close": close_result,
         "attempts": attempts,
     }
@@ -662,7 +713,13 @@ async def _install_browser_fallback() -> dict[str, Any]:
 def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
     if not browser_smoke.get("registered"):
         return "Hermes doctor did not report Playwright Chromium ready"
-    for step in ("open", "snapshot", "close"):
+    for step in (
+        "agent_browser_version_probe",
+        "open",
+        "snapshot",
+        "engine_probe",
+        "close",
+    ):
         probe = browser_smoke.get(step)
         if not isinstance(probe, dict) or probe.get("ok"):
             continue
@@ -674,6 +731,8 @@ def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
         return f"{step}: returncode={probe.get('returncode')}"
     if not browser_smoke.get("expected_page_found"):
         return "browser smoke did not find the Example Domain page"
+    if not browser_smoke.get("engine_version"):
+        return "browser smoke could not determine the Chromium version"
     return str(browser_smoke.get("message") or "unknown browser smoke failure")
 
 
@@ -705,6 +764,11 @@ def _day_one_capability_report(
                 "state": "ready" if browser_smoke.get("ok") else "failed",
                 "provider": BROWSER_CLOUD_PROVIDER,
                 "engine": BROWSER_ENGINE,
+                "version": browser_smoke.get("engine_version"),
+                "binary": browser_smoke.get("browser_bin"),
+                "automation_cli_version": browser_smoke.get(
+                    "agent_browser_version"
+                ),
                 "dependency_ready": bool(browser_smoke.get("ok")),
                 "registered": bool(browser_smoke.get("registered")),
                 "smoke_status": browser_smoke.get("smoke_status"),

@@ -83,6 +83,8 @@ async def _fake_browser_smoke() -> dict[str, object]:
         "registered": True,
         "smoke_status": "passed",
         "browser_bin": "/root/.hermes/node/bin/agent-browser",
+        "agent_browser_version": "agent-browser 0.14.0",
+        "engine_version": "140.0.7339.41",
     }
 
 
@@ -385,6 +387,12 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
         {
             "ok": True,
             "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
             "stdout": "✓ Example Domain\nhttps://example.com/\n",
             "stderr": "",
         },
@@ -392,6 +400,12 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
             "ok": True,
             "returncode": 0,
             "stdout": "- heading \"Example Domain\" [level=1]\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
             "stderr": "",
         },
         {
@@ -430,6 +444,7 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
 
     assert calls == [
         ([str(hermes_bin), "doctor"], 300),
+        ([str(browser_bin), "--version"], 30),
         (
             [
                 str(browser_bin),
@@ -454,6 +469,16 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
                 str(browser_bin),
                 "--session",
                 "tinyhat-provisioning-smoke",
+                "eval",
+                "navigator.userAgent",
+            ],
+            30,
+        ),
+        (
+            [
+                str(browser_bin),
+                "--session",
+                "tinyhat-provisioning-smoke",
                 "close",
             ],
             30,
@@ -464,6 +489,8 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
     assert result["registered"] is True
     assert result["smoke_status"] == "passed"
     assert result["expected_page_found"] is True
+    assert result["agent_browser_version"] == "agent-browser 0.14.0"
+    assert result["engine_version"] == "140.0.7339.41"
 
 
 def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
@@ -480,6 +507,12 @@ def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
         {
             "ok": True,
             "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
             "stdout": "Example Domain\n",
             "stderr": "",
         },
@@ -487,6 +520,12 @@ def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
             "ok": True,
             "returncode": 0,
             "stdout": "Example Domain\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
             "stderr": "",
         },
         {
@@ -536,6 +575,12 @@ def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
             "stderr": "",
         },
         {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
             "ok": False,
             "returncode": 1,
             "stdout": "",
@@ -557,6 +602,12 @@ def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
             "ok": True,
             "returncode": 0,
             "stdout": "heading \"Example Domain\"\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
             "stderr": "",
         },
         {
@@ -603,6 +654,80 @@ def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
     assert [attempt["ok"] for attempt in result["attempts"]] == [False, True]
     assert sleep_calls == [1.0]
     assert results == []
+
+
+def test_browser_smoke_fails_when_session_cannot_close() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        if args[-1] == "doctor":
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "  ✓ Playwright Chromium (browser engine)\n",
+                "stderr": "",
+            }
+        if args[-1] == "--version":
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "agent-browser 0.14.0\n",
+                "stderr": "",
+            }
+        if args[-1] == "close":
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "session still running",
+            }
+        if "eval" in args:
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
+                "stderr": "",
+            }
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "Example Domain\n",
+            "stderr": "",
+        }
+
+    async def fake_sleep(_delay: float) -> None:
+        return None
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/opt/hermes/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=Path("/opt/hermes/agent-browser"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.asyncio.sleep",
+            fake_sleep,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_browser_automation())
+
+    assert result["ok"] is False
+    assert result["smoke_status"] == "failed"
+    assert len(result["attempts"]) == 3
+    assert all(attempt["ok"] is False for attempt in result["attempts"])
+    assert install_hermes._browser_failure_summary(result) == (
+        "close: session still running"
+    )
 
 
 def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
@@ -1148,6 +1273,9 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
         "state": "ready",
         "provider": "local",
         "engine": "chrome",
+        "version": "140.0.7339.41",
+        "binary": "/root/.hermes/node/bin/agent-browser",
+        "automation_cli_version": "agent-browser 0.14.0",
         "dependency_ready": True,
         "registered": True,
         "smoke_status": "passed",
