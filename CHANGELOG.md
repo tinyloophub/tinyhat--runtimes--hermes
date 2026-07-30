@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.47 - 2026-07-30
 
 - Prepare fresh Computers with the public `tinyhat-hermes-day-one-v1`
   capability baseline before assignment: pin the upstream Hermes commit,
