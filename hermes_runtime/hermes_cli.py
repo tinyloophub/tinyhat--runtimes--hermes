@@ -11,8 +11,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from hermes_runtime.day_one_capabilities import HERMES_UPSTREAM_COMMIT
+
 HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
-DEFAULT_HERMES_INSTALL_ARGS = ("--skip-browser",)
+DEFAULT_HERMES_INSTALL_ARGS = ("--commit", HERMES_UPSTREAM_COMMIT)
 MAX_OUTPUT_CHARS = 12_000
 COMMUNICATE_SETTLE_SECONDS = 0.05
 COMMUNICATE_DRAIN_SECONDS = 1.0
@@ -280,7 +282,7 @@ async def maybe_install_debian_prerequisites() -> dict[str, Any]:
         "apt-get update\n"
         "apt-get install -y --no-install-recommends "
         + " ".join(shlex.quote(package) for package in packages),
-        timeout_seconds=240,
+        timeout_seconds=600,
     )
     result["attempted"] = True
     result["result"] = install

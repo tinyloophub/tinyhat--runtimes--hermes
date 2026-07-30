@@ -8,15 +8,20 @@ What it does:
 
         curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
-    By default Tinyhat passes ``--skip-browser`` to keep the first managed
-    Computer setup minimal. Set ``TINYHAT_HERMES_INSTALL_ARGS`` on the machine
-    to override those installer arguments.
+    Tinyhat pins the upstream Hermes checkout and lets the official installer
+    install its browser dependencies. If its workspace-local Playwright command
+    does not leave a browser behind on Linux x86, Tinyhat runs the public
+    ``agent-browser install --with-deps`` command and repeats the smoke check.
+    Set ``TINYHAT_HERMES_INSTALL_ARGS`` on the machine to override the upstream
+    installer arguments.
 
     After Hermes is present, the command verifies the Hermes venv can import
-    the Telegram gateway adapter and voice-transcription dependencies. If not,
-    it installs Hermes' official ``messaging`` and ``voice`` extras into the same
-    Hermes project venv. This keeps Tinyhat Computers warm: the later
-    agent-assignment step only writes the bot settings and starts the gateway.
+    the Telegram gateway adapter, voice-transcription dependencies, pinned
+    ``ddgs`` web search, and pinned Edge TTS. If not, it installs the missing
+    packages into the same Hermes project venv. It also proves the local
+    ``agent-browser``/Chromium path can open, snapshot, and close a blank page.
+    This keeps Tinyhat Computers warm: the later agent-assignment step only
+    writes the bot settings and starts the gateway.
     It also warms faster-whisper's selected local STT model cache so a Computer
     still has an on-box multilingual model ready if an operator switches Hermes
     to the local STT provider.
@@ -56,6 +61,8 @@ Side effects:
     ``messaging``/``voice`` extras into the Hermes venv and download the selected
     local STT model weights. Prefetch failures are reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
+    After a failed browser probe, may install Chrome for Testing through
+    ``agent-browser`` on Linux x86 or distro Chromium on Linux ARM.
     Does not configure Tinyhat platform state.
 """
 
@@ -63,6 +70,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -70,10 +78,24 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime.commands.configure_telegram import (
-    _configure_day_one_multimedia,
+    _configure_day_one_capabilities,
     _install_codex_auth_plugin_commands,
     _install_codex_auth_quick_commands,
     local_stt_model,
+)
+from hermes_runtime.day_one_capabilities import (
+    BASELINE_ID,
+    BROWSER_CLOUD_PROVIDER,
+    BROWSER_ENGINE,
+    DDGS_VERSION,
+    EDGE_TTS_VERSION,
+    HERMES_UPSTREAM_COMMIT,
+    IMAGE_GENERATION_MODEL,
+    IMAGE_GENERATION_PROVIDER,
+    TELEGRAM_RICH_DRAFTS,
+    TELEGRAM_RICH_MESSAGES,
+    TTS_PROVIDER,
+    WEB_SEARCH_BACKEND,
 )
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
@@ -122,11 +144,22 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
             str(python_bin),
             "-c",
             (
+                "import importlib.metadata\n"
                 "import importlib.util\n"
-                "missing=[name for name in ('telegram','telegram.ext','faster_whisper') "
-                "if importlib.util.find_spec(name) is None]\n"
-                "print('ok' if not missing else 'missing:' + ','.join(missing))\n"
-                "raise SystemExit(0 if not missing else 1)\n"
+                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts')\n"
+                "missing=[name for name in modules if importlib.util.find_spec(name) is None]\n"
+                f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}'}}\n"
+                "wrong=[]\n"
+                "for package, version in expected.items():\n"
+                "    try:\n"
+                "        actual=importlib.metadata.version(package)\n"
+                "    except importlib.metadata.PackageNotFoundError:\n"
+                "        actual='missing'\n"
+                "    if actual != version:\n"
+                "        wrong.append(f'{package}={actual} (expected {version})')\n"
+                "problems=missing+wrong\n"
+                "print('ok' if not problems else 'unready:' + ','.join(problems))\n"
+                "raise SystemExit(0 if not problems else 1)\n"
             ),
         ],
         timeout_seconds=30,
@@ -199,7 +232,10 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
         (
             f"cd {shlex.quote(str(project_dir))}\n"
             f"{_pip_command_for_python(python_bin)} install -e "
-            f"{shlex.quote(package_spec)}"
+            f"{shlex.quote(package_spec)}\n"
+            f"{_pip_command_for_python(python_bin)} install "
+            f"{shlex.quote(f'ddgs=={DDGS_VERSION}')} "
+            f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')}"
         ),
         timeout_seconds=900,
         env={"PIP_DISABLE_PIP_VERSION_CHECK": "1"},
@@ -213,6 +249,220 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
         "after": after,
         "install": install,
         "prerequisites": prerequisites,
+    }
+
+
+def _agent_browser_binary() -> Path | None:
+    explicit = (os.getenv("AGENT_BROWSER_BIN") or "").strip()
+    project_dir = _find_hermes_project_dir()
+    candidates = [
+        Path(explicit).expanduser() if explicit else None,
+        Path.home() / ".hermes" / "node" / "bin" / "agent-browser",
+        (
+            project_dir / "node_modules" / ".bin" / "agent-browser"
+            if project_dir is not None
+            else None
+        ),
+        Path(shutil.which("agent-browser") or ""),
+    ]
+    for candidate in candidates:
+        if candidate is None or not str(candidate):
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+async def _probe_browser_automation() -> dict[str, Any]:
+    """Prove the provisioned local browser can start without network access."""
+    browser_bin = _agent_browser_binary()
+    if browser_bin is None:
+        return {
+            "ok": False,
+            "smoke_status": "failed",
+            "message": "agent-browser was not found after Hermes installation.",
+        }
+
+    session = "tinyhat-provisioning-smoke"
+    open_result = await run_process(
+        [str(browser_bin), "--session", session, "open", "about:blank"],
+        timeout_seconds=120,
+    )
+    snapshot_result: dict[str, Any] | None = None
+    if open_result.get("ok"):
+        snapshot_result = await run_process(
+            [str(browser_bin), "--session", session, "snapshot"],
+            timeout_seconds=60,
+        )
+    close_result = await run_process(
+        [str(browser_bin), "--session", session, "close"],
+        timeout_seconds=30,
+    )
+    ok = bool(open_result.get("ok")) and bool(
+        snapshot_result and snapshot_result.get("ok")
+    )
+    return {
+        "ok": ok,
+        "smoke_status": "passed" if ok else "failed",
+        "browser_bin": str(browser_bin),
+        "open": open_result,
+        "snapshot": snapshot_result,
+        "close": close_result,
+    }
+
+
+def _needs_arm_system_browser_fallback() -> bool:
+    return platform.machine().strip().lower() in {"aarch64", "arm64"}
+
+
+def _needs_managed_browser_fallback() -> bool:
+    return (
+        platform.system().strip().lower() == "linux"
+        and platform.machine().strip().lower() in {"x86_64", "amd64"}
+    )
+
+
+async def _install_managed_browser_fallback() -> dict[str, Any]:
+    """Install agent-browser's Chrome for Testing when x86 has no browser.
+
+    Hermes' root npm workspace can expose a broken ``playwright`` shim even
+    though ``agent-browser`` itself is installed. The upstream installer treats
+    that browser download failure as a warning. Running agent-browser's own
+    public installer is the smallest deterministic repair: it downloads Chrome
+    for Testing and, on Linux, installs the libraries that binary needs.
+    """
+    result: dict[str, Any] = {
+        "attempted": False,
+        "architecture": platform.machine(),
+        "reason": "managed_browser_not_applicable",
+        "result": None,
+    }
+    if not _needs_managed_browser_fallback():
+        return result
+
+    browser_bin = _agent_browser_binary()
+    if browser_bin is None:
+        result["reason"] = "agent_browser_missing"
+        return result
+
+    install = await run_process(
+        [str(browser_bin), "install", "--with-deps"],
+        timeout_seconds=900,
+    )
+    result["attempted"] = True
+    result["reason"] = "managed_chrome_for_testing_missing"
+    result["browser_bin"] = str(browser_bin)
+    result["result"] = install
+    return result
+
+
+async def _install_arm_system_browser_fallback() -> dict[str, Any]:
+    """Install distro Chromium only when Playwright has no ARM browser.
+
+    The official Hermes installer owns the normal browser install. Installing
+    Ubuntu's ``chromium`` package before it runs makes Hermes select the
+    snap-confined wrapper, which cannot launch reliably from a root system
+    service. Linux ARM containers are the narrow exception: Playwright does
+    not provide the same managed Chromium build there, while Debian's native
+    Chromium package is known to work.
+    """
+    result: dict[str, Any] = {
+        "attempted": False,
+        "architecture": platform.machine(),
+        "reason": "playwright_browser_preferred",
+        "result": None,
+    }
+    if not _needs_arm_system_browser_fallback():
+        return result
+    result["reason"] = "arm_playwright_browser_unavailable"
+    if os.name != "posix" or getattr(os, "geteuid", lambda: -1)() != 0:
+        return result
+    if shutil.which("apt-get") is None:
+        return result
+
+    install = await run_shell(
+        "export DEBIAN_FRONTEND=noninteractive\n"
+        "apt-get update\n"
+        "apt-get install -y --no-install-recommends chromium",
+        timeout_seconds=600,
+    )
+    result["attempted"] = True
+    result["result"] = install
+    return result
+
+
+async def _install_browser_fallback() -> dict[str, Any]:
+    if _needs_managed_browser_fallback():
+        return await _install_managed_browser_fallback()
+    return await _install_arm_system_browser_fallback()
+
+
+def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
+    for step in ("open", "snapshot"):
+        step_result = browser_smoke.get(step)
+        if not isinstance(step_result, dict) or step_result.get("ok"):
+            continue
+        detail = str(step_result.get("stderr") or step_result.get("stdout") or "")
+        detail = detail.strip().splitlines()[0][:240] if detail.strip() else ""
+        if detail:
+            return f"{step}: {detail}"
+        if step_result.get("timed_out"):
+            return f"{step}: timed out"
+        return f"{step}: returncode={step_result.get('returncode')}"
+    return str(browser_smoke.get("message") or "unknown browser smoke failure")
+
+
+def _day_one_capability_report(
+    *,
+    dependencies: dict[str, Any],
+    config: dict[str, Any],
+    browser_smoke: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema": "tinyhat_hermes_day_one_capabilities_v1",
+        "baseline_id": BASELINE_ID,
+        "upstream_hermes_commit": HERMES_UPSTREAM_COMMIT,
+        "capabilities": {
+            "web_search": {
+                "state": "ready",
+                "provider": WEB_SEARCH_BACKEND,
+                "dependency_ready": bool(dependencies.get("ok")),
+                "smoke_status": "not_run",
+            },
+            "web_extract": {
+                "state": "available_when_connected",
+                "provider": None,
+                "dependency_ready": False,
+                "smoke_status": "not_run",
+            },
+            "browser": {
+                "state": "ready" if browser_smoke.get("ok") else "failed",
+                "provider": BROWSER_CLOUD_PROVIDER,
+                "engine": BROWSER_ENGINE,
+                "dependency_ready": bool(browser_smoke.get("ok")),
+                "smoke_status": browser_smoke.get("smoke_status"),
+            },
+            "image_generation": {
+                "state": "configured_waiting_for_assignment_credential",
+                "provider": IMAGE_GENERATION_PROVIDER,
+                "model": IMAGE_GENERATION_MODEL,
+                "credential_ready": False,
+                "smoke_status": "not_run",
+            },
+            "text_to_speech": {
+                "state": "ready",
+                "provider": TTS_PROVIDER,
+                "dependency_ready": bool(dependencies.get("ok")),
+                "smoke_status": "not_run",
+            },
+            "telegram_rich_rendering": {
+                "state": "configured_waiting_for_assignment",
+                "rich_messages": TELEGRAM_RICH_MESSAGES,
+                "rich_drafts": TELEGRAM_RICH_DRAFTS,
+                "smoke_status": "not_run",
+            },
+        },
+        "config_applied": bool(config.get("ok")),
     }
 
 
@@ -423,7 +673,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         prerequisites = await maybe_install_debian_prerequisites()
         install_result = await run_shell(
             hermes_install_script(),
-            timeout_seconds=900,
+            timeout_seconds=1500,
             env={"CI": "1"},
         )
         if not install_result.get("ok"):
@@ -453,8 +703,21 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     messaging = await _ensure_messaging_dependencies()
     if not messaging.get("ok"):
-        raise RuntimeError("Hermes messaging dependencies are not available.")
-    multimodal_defaults = await _configure_day_one_multimedia(hermes_bin)
+        raise RuntimeError("Hermes day-one dependencies are not available.")
+    day_one_defaults = await _configure_day_one_capabilities(hermes_bin)
+    if not day_one_defaults.get("ok"):
+        raise RuntimeError("Hermes day-one configuration could not be applied.")
+    browser_smoke = await _probe_browser_automation()
+    browser_fallback: dict[str, Any] | None = None
+    if not browser_smoke.get("ok"):
+        browser_fallback = await _install_browser_fallback()
+        if browser_fallback.get("attempted"):
+            browser_smoke = await _probe_browser_automation()
+    if not browser_smoke.get("ok"):
+        raise RuntimeError(
+            "Hermes browser automation smoke check failed: "
+            f"{_browser_failure_summary(browser_smoke)}"
+        )
     local_stt_model_prefetch = await _prefetch_local_stt_model()
     local_stt_model_prefetch_warning = None
     if not local_stt_model_prefetch.get("ok"):
@@ -469,6 +732,11 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     installed_after = bool(status.get("installed"))
     installed_by_command = not installed_before
+    day_one_capabilities = _day_one_capability_report(
+        dependencies=messaging,
+        config=day_one_defaults,
+        browser_smoke=browser_smoke,
+    )
 
     return {
         "schema": "tinyhat_hermes_install_v1",
@@ -479,10 +747,16 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "changed": installed_by_command,
         "install_url": "https://hermes-agent.nousresearch.com/install.sh",
         "install_args_source": "TINYHAT_HERMES_INSTALL_ARGS",
+        "upstream_hermes_commit": HERMES_UPSTREAM_COMMIT,
         "prerequisites": prerequisites,
         "install": install_result,
         "messaging": messaging,
-        "multimodal_defaults": multimodal_defaults,
+        "capability_dependencies": messaging,
+        "multimodal_defaults": day_one_defaults.get("multimedia"),
+        "day_one_defaults": day_one_defaults,
+        "browser_smoke": browser_smoke,
+        "browser_fallback": browser_fallback,
+        "day_one_capabilities": day_one_capabilities,
         "local_stt_model_prefetch": local_stt_model_prefetch,
         "local_stt_model_prefetch_warning": local_stt_model_prefetch_warning,
         "codex_auth": codex_auth,
