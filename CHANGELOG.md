@@ -11,6 +11,9 @@
   from Google's official statically linked Linux release assets, with
   architecture-specific SHA-256 pins. Authentication remains a later,
   user-controlled connection step.
+- Advance the pinned upstream Hermes commit to include the official fix that
+  preserves newly generated `MEDIA:` attachments through Telegram delivery,
+  so the creation-time Edge TTS capability produces an actual voice message.
 
 ## 0.0.47 - 2026-07-30
 

@@ -1122,7 +1122,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     script, env = install_calls[0]
     assert (
         "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | "
-        "bash -s -- --commit 40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b"
+        "bash -s -- --commit 646761c7831ff4c4cd0d6ac711ed791d487fb665"
         in script
     )
     assert "--skip-browser" not in script

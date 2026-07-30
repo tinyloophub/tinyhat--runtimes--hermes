@@ -12,7 +12,7 @@ BASELINE_ID = "tinyhat-hermes-day-one-v1"
 
 # Runtime releases deliberately advance this value after capability
 # verification instead of letting fresh Computers follow upstream ``main``.
-HERMES_UPSTREAM_COMMIT = "40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b"
+HERMES_UPSTREAM_COMMIT = "646761c7831ff4c4cd0d6ac711ed791d487fb665"
 
 # Optional upstream dependencies that Tinyhat promises on a fresh Computer.
 DDGS_VERSION = "9.14.4"
