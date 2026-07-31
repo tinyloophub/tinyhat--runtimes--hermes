@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.49 - 2026-07-31
+
 - Treat the user-manager `systemctl` error `Failed to connect to bus: No such
   file or directory` as an absent systemd manager. This lets local Docker and
   other non-systemd Computers use the existing generation-verified foreground
