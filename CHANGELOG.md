@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.48 - 2026-07-30
 
 - Make Computer creation require Hermes' official diagnostics to report its
   browser registration dependency ready, then navigate and snapshot a harmless
