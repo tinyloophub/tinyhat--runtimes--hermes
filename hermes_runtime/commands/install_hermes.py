@@ -711,6 +711,9 @@ async def _install_browser_fallback() -> dict[str, Any]:
 
 
 def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
+    message = str(browser_smoke.get("message") or "").strip()
+    if message and not isinstance(browser_smoke.get("doctor"), dict):
+        return message
     if not browser_smoke.get("registered"):
         return "Hermes doctor did not report Playwright Chromium ready"
     for step in (
@@ -733,7 +736,7 @@ def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
         return "browser smoke did not find the Example Domain page"
     if not browser_smoke.get("engine_version"):
         return "browser smoke could not determine the Chromium version"
-    return str(browser_smoke.get("message") or "unknown browser smoke failure")
+    return message or "unknown browser smoke failure"
 
 
 def _day_one_capability_report(

@@ -908,6 +908,23 @@ def test_browser_failure_summary_reports_the_failing_step() -> None:
     assert result == "open: command timed out after 120s"
 
 
+def test_browser_failure_summary_preserves_early_probe_failure() -> None:
+    for message in (
+        "Hermes CLI was not found.",
+        "agent-browser was not found after Hermes installation.",
+    ):
+        result = install_hermes._browser_failure_summary(
+            {
+                "ok": False,
+                "registered": False,
+                "smoke_status": "failed",
+                "message": message,
+            }
+        )
+
+        assert result == message
+
+
 def test_agent_browser_binary_uses_upstream_project_install() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         project_dir = Path(tmp) / "hermes-agent"
@@ -1054,7 +1071,7 @@ def test_install_hermes_retries_browser_smoke_after_fallback() -> None:
         return {
             "attempted": True,
             "architecture": "x86_64",
-            "reason": "managed_chrome_for_testing_missing",
+            "reason": "hermes_browser_registration_unready",
             "result": {"ok": True},
         }
 
