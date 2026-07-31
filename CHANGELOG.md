@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the generation-bound `disconnect_slack` runtime command. After owner
+  confirmation it uses Slack's supported token-revocation API when the bot
+  token is still valid, removes every local Slack env value and terminal alias
+  together, and requires a healthy Hermes restart before reporting verified
+  local disconnection. Already-uninstalled apps are treated as already revoked.
+
 ## 0.0.49 - 2026-07-31
 
 - Treat the user-manager `systemctl` error `Failed to connect to bus: No such
