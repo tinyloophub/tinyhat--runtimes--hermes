@@ -114,7 +114,7 @@ def test_discover_reports_explicitly_absent_systemd_managers() -> None:
         del timeout_seconds
         environments.append(env)
         error = (
-            "Failed to connect to bus: No medium found"
+            "Failed to connect to bus: No such file or directory"
             if "--user" in args
             else "System has not been booted with systemd as init system (PID 1)."
         )

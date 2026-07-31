@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Treat the user-manager `systemctl` error `Failed to connect to bus: No such
+  file or directory` as an absent systemd manager. This lets local Docker and
+  other non-systemd Computers use the existing generation-verified foreground
+  Hermes gateway restart path after a connection secret is saved.
+
 ## 0.0.48 - 2026-07-30
 
 - Make Computer creation require Hermes' official diagnostics to report its
