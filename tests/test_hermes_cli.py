@@ -20,7 +20,7 @@ from hermes_runtime import hermes_cli  # noqa: E402
 def test_default_install_args_pin_upstream_and_enable_browser() -> None:
     assert hermes_cli.DEFAULT_HERMES_INSTALL_ARGS == (
         "--commit",
-        "40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b",
+        "646761c7831ff4c4cd0d6ac711ed791d487fb665",
     )
     assert "--skip-browser" not in hermes_cli.DEFAULT_HERMES_INSTALL_ARGS
 

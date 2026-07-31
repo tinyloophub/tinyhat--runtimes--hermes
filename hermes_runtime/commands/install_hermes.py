@@ -9,17 +9,20 @@ What it does:
         curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
     Tinyhat pins the upstream Hermes checkout and lets the official installer
-    install its browser dependencies. If its workspace-local Playwright command
-    does not leave a browser behind on Linux x86, Tinyhat runs the public
-    ``agent-browser install --with-deps`` command and repeats the smoke check.
-    Set ``TINYHAT_HERMES_INSTALL_ARGS`` on the machine to override the upstream
+    install its browser dependencies. If that does not satisfy Hermes' own
+    browser registration gate, Tinyhat installs both ``agent-browser``'s local
+    browser and the pinned Playwright Chromium compatibility cache before
+    repeating Hermes' official diagnostics and public browser CLI smoke. Set
+    ``TINYHAT_HERMES_INSTALL_ARGS`` on the machine to override the upstream
     installer arguments.
 
     After Hermes is present, the command verifies the Hermes venv can import
     the Telegram gateway adapter, voice-transcription dependencies, pinned
     ``ddgs`` web search, and pinned Edge TTS. If not, it installs the missing
-    packages into the same Hermes project venv. It also proves the local
-    ``agent-browser``/Chromium path can open, snapshot, and close a blank page.
+    packages into the same Hermes project venv. It also installs and verifies
+    the pinned Google Workspace CLI, then proves Hermes will register its
+    browser tools and that the browser CLI can open, snapshot, and close a
+    harmless public page.
     This keeps Tinyhat Computers warm: the later agent-assignment step only
     writes the bot settings and starts the gateway.
     It also warms faster-whisper's selected local STT model cache so a Computer
@@ -62,7 +65,10 @@ Side effects:
     local STT model weights. Prefetch failures are reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
     After a failed browser probe, may install Chrome for Testing through
-    ``agent-browser`` on Linux x86 or distro Chromium on Linux ARM.
+    ``agent-browser`` plus pinned Playwright Chromium on Linux x86, or distro
+    Chromium on Linux ARM. Downloads and installs the pinned public Google
+    Workspace CLI release asset for the machine architecture after verifying
+    its SHA-256.
     Does not configure Tinyhat platform state.
 """
 
@@ -71,6 +77,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -89,9 +96,13 @@ from hermes_runtime.day_one_capabilities import (
     BROWSER_ENGINE,
     DDGS_VERSION,
     EDGE_TTS_VERSION,
+    GOOGLE_WORKSPACE_CLI_LINUX_ASSETS,
+    GOOGLE_WORKSPACE_CLI_RELEASE_TAG,
+    GOOGLE_WORKSPACE_CLI_VERSION,
     HERMES_UPSTREAM_COMMIT,
     IMAGE_GENERATION_MODEL,
     IMAGE_GENERATION_PROVIDER,
+    PLAYWRIGHT_VERSION,
     TELEGRAM_RICH_DRAFTS,
     TELEGRAM_RICH_MESSAGES,
     TTS_PROVIDER,
@@ -252,6 +263,145 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
     }
 
 
+def _google_workspace_cli_asset() -> dict[str, str] | None:
+    if platform.system().strip().lower() != "linux":
+        return None
+    machine = platform.machine().strip().lower()
+    architecture = {
+        "amd64": "x86_64",
+        "x86_64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+    }.get(machine)
+    if architecture is None:
+        return None
+    configured = GOOGLE_WORKSPACE_CLI_LINUX_ASSETS.get(architecture)
+    if configured is None:
+        return None
+    target = str(configured["target"])
+    archive = f"google-workspace-cli-{target}.tar.gz"
+    return {
+        "architecture": architecture,
+        "target": target,
+        "archive": archive,
+        "sha256": str(configured["sha256"]),
+        "url": (
+            "https://github.com/googleworkspace/cli/releases/download/"
+            f"{GOOGLE_WORKSPACE_CLI_RELEASE_TAG}/{archive}"
+        ),
+    }
+
+
+def _google_workspace_cli_install_path() -> Path:
+    explicit = (os.getenv("TINYHAT_GWS_INSTALL_PATH") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path("/usr/local/bin/gws")
+
+
+def _google_workspace_cli_binary() -> Path | None:
+    explicit = (os.getenv("GWS_BIN") or "").strip()
+    candidates = [
+        Path(explicit).expanduser() if explicit else None,
+        _google_workspace_cli_install_path(),
+        Path(shutil.which("gws") or ""),
+    ]
+    for candidate in candidates:
+        if candidate is None or not str(candidate):
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+async def _probe_google_workspace_cli() -> dict[str, Any]:
+    binary = _google_workspace_cli_binary()
+    if binary is None:
+        return {
+            "ok": False,
+            "installed": False,
+            "version": None,
+            "binary": None,
+            "message": "Google Workspace CLI was not found.",
+        }
+    probe = await run_process(
+        [str(binary), "--version"],
+        timeout_seconds=30,
+    )
+    stdout = str(probe.get("stdout") or "").strip()
+    first_line = stdout.splitlines()[0].strip() if stdout else ""
+    expected = f"gws {GOOGLE_WORKSPACE_CLI_VERSION}"
+    ok = bool(probe.get("ok")) and first_line == expected
+    return {
+        "ok": ok,
+        "installed": True,
+        "version": first_line.removeprefix("gws ").strip() or None,
+        "expected_version": GOOGLE_WORKSPACE_CLI_VERSION,
+        "binary": str(binary),
+        "probe": probe,
+        "message": (
+            "Google Workspace CLI is ready."
+            if ok
+            else f"Expected '{expected}', received '{first_line or 'no output'}'."
+        ),
+    }
+
+
+async def _ensure_google_workspace_cli() -> dict[str, Any]:
+    before = await _probe_google_workspace_cli()
+    if before.get("ok"):
+        return {
+            "ok": True,
+            "changed": False,
+            "before": before,
+            "after": before,
+            "asset": _google_workspace_cli_asset(),
+            "install": None,
+        }
+
+    asset = _google_workspace_cli_asset()
+    if asset is None:
+        return {
+            "ok": False,
+            "changed": False,
+            "before": before,
+            "after": before,
+            "asset": None,
+            "install": None,
+            "message": (
+                "Google Workspace CLI has no pinned release asset for "
+                f"{platform.system()} {platform.machine()}."
+            ),
+        }
+
+    install_path = _google_workspace_cli_install_path()
+    install = await run_shell(
+        (
+            "set -euo pipefail\n"
+            'tmp_dir="$(mktemp -d)"\n'
+            'trap \'rm -rf "$tmp_dir"\' EXIT\n'
+            f"archive=\"$tmp_dir/{asset['archive']}\"\n"
+            f"curl -fsSL {shlex.quote(asset['url'])} -o \"$archive\"\n"
+            f"printf '%s  %s\\n' {shlex.quote(asset['sha256'])} \"$archive\" "
+            "| sha256sum --check --status -\n"
+            'tar -xzf "$archive" -C "$tmp_dir"\n'
+            f"install -d {shlex.quote(str(install_path.parent))}\n"
+            f"install -m 0755 \"$tmp_dir/gws\" {shlex.quote(str(install_path))}"
+        ),
+        timeout_seconds=300,
+    )
+    after = await _probe_google_workspace_cli()
+    return {
+        "ok": bool(install.get("ok")) and bool(after.get("ok")),
+        "changed": bool(install.get("ok")) and bool(after.get("ok")),
+        "before": before,
+        "after": after,
+        "asset": asset,
+        "install_path": str(install_path),
+        "install": install,
+    }
+
+
 def _agent_browser_binary() -> Path | None:
     explicit = (os.getenv("AGENT_BROWSER_BIN") or "").strip()
     project_dir = _find_hermes_project_dir()
@@ -273,41 +423,178 @@ def _agent_browser_binary() -> Path | None:
     return None
 
 
+def _npx_binary() -> Path | None:
+    candidates = [
+        Path.home() / ".hermes" / "node" / "bin" / "npx",
+        Path(shutil.which("npx") or ""),
+    ]
+    for candidate in candidates:
+        if not str(candidate):
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 async def _probe_browser_automation() -> dict[str, Any]:
-    """Prove the provisioned local browser can start without network access."""
+    """Prove Hermes will expose browser tools and their public CLI works."""
+    hermes_bin = find_hermes_binary()
+    if hermes_bin is None:
+        return {
+            "ok": False,
+            "registered": False,
+            "smoke_status": "failed",
+            "message": "Hermes CLI was not found.",
+        }
     browser_bin = _agent_browser_binary()
     if browser_bin is None:
         return {
             "ok": False,
+            "registered": False,
             "smoke_status": "failed",
             "message": "agent-browser was not found after Hermes installation.",
         }
 
-    session = "tinyhat-provisioning-smoke"
-    open_result = await run_process(
-        [str(browser_bin), "--session", session, "open", "about:blank"],
-        timeout_seconds=120,
+    doctor = await run_process(
+        [str(hermes_bin), "doctor"],
+        timeout_seconds=300,
     )
-    snapshot_result: dict[str, Any] | None = None
-    if open_result.get("ok"):
-        snapshot_result = await run_process(
-            [str(browser_bin), "--session", session, "snapshot"],
-            timeout_seconds=60,
-        )
-    close_result = await run_process(
-        [str(browser_bin), "--session", session, "close"],
+    doctor_text = "\n".join(
+        [
+            str(doctor.get("stdout") or ""),
+            str(doctor.get("stderr") or ""),
+        ]
+    )
+    registered = any(
+        "✓ Playwright Chromium" in line
+        for line in doctor_text.splitlines()
+    )
+    agent_browser_version_probe = await run_process(
+        [str(browser_bin), "--version"],
         timeout_seconds=30,
     )
-    ok = bool(open_result.get("ok")) and bool(
-        snapshot_result and snapshot_result.get("ok")
+    agent_browser_version = str(
+        agent_browser_version_probe.get("stdout")
+        or agent_browser_version_probe.get("stderr")
+        or ""
+    ).strip().splitlines()
+    agent_browser_version_text = (
+        agent_browser_version[0].strip() if agent_browser_version else None
+    )
+
+    session = "tinyhat-provisioning-smoke"
+    attempts: list[dict[str, Any]] = []
+    open_result: dict[str, Any] = {}
+    snapshot_result: dict[str, Any] | None = None
+    engine_probe: dict[str, Any] | None = None
+    close_result: dict[str, Any] = {}
+    expected_page = False
+    engine_version: str | None = None
+    for attempt_number in range(1, 4):
+        open_result = await run_process(
+            [
+                str(browser_bin),
+                "--session",
+                session,
+                "open",
+                "https://example.com",
+            ],
+            timeout_seconds=120,
+        )
+        snapshot_result = None
+        if open_result.get("ok"):
+            snapshot_result = await run_process(
+                [str(browser_bin), "--session", session, "snapshot"],
+                timeout_seconds=60,
+            )
+            engine_probe = await run_process(
+                [
+                    str(browser_bin),
+                    "--session",
+                    session,
+                    "eval",
+                    "navigator.userAgent",
+                ],
+                timeout_seconds=30,
+            )
+        else:
+            engine_probe = None
+        close_result = await run_process(
+            [str(browser_bin), "--session", session, "close"],
+            timeout_seconds=30,
+        )
+        page_text = "\n".join(
+            [
+                str(open_result.get("stdout") or ""),
+                str(snapshot_result.get("stdout") or "")
+                if isinstance(snapshot_result, dict)
+                else "",
+            ]
+        )
+        expected_page = "Example Domain" in page_text
+        engine_text = (
+            str(engine_probe.get("stdout") or "")
+            if isinstance(engine_probe, dict)
+            else ""
+        )
+        engine_match = re.search(
+            r"(?:HeadlessChrome|Chrome)/([0-9.]+)",
+            engine_text,
+        )
+        engine_version = engine_match.group(1) if engine_match else None
+        attempt_ok = (
+            bool(open_result.get("ok"))
+            and bool(snapshot_result and snapshot_result.get("ok"))
+            and bool(engine_probe and engine_probe.get("ok"))
+            and bool(engine_version)
+            and bool(close_result.get("ok"))
+            and expected_page
+        )
+        attempts.append(
+            {
+                "attempt": attempt_number,
+                "ok": attempt_ok,
+                "open": open_result,
+                "snapshot": snapshot_result,
+                "engine_probe": engine_probe,
+                "close": close_result,
+                "expected_page_found": expected_page,
+                "engine_version": engine_version,
+            }
+        )
+        if attempt_ok:
+            break
+        if attempt_number < 3:
+            await asyncio.sleep(float(attempt_number))
+
+    ok = (
+        registered
+        and bool(agent_browser_version_probe.get("ok"))
+        and bool(agent_browser_version_text)
+        and bool(open_result.get("ok"))
+        and bool(snapshot_result and snapshot_result.get("ok"))
+        and bool(engine_probe and engine_probe.get("ok"))
+        and bool(engine_version)
+        and bool(close_result.get("ok"))
+        and expected_page
     )
     return {
         "ok": ok,
+        "registered": registered,
         "smoke_status": "passed" if ok else "failed",
+        "hermes_bin": str(hermes_bin),
         "browser_bin": str(browser_bin),
+        "agent_browser_version": agent_browser_version_text,
+        "agent_browser_version_probe": agent_browser_version_probe,
+        "engine_version": engine_version,
+        "target": "https://example.com",
+        "expected_page_found": expected_page,
+        "doctor": doctor,
         "open": open_result,
         "snapshot": snapshot_result,
+        "engine_probe": engine_probe,
         "close": close_result,
+        "attempts": attempts,
     }
 
 
@@ -323,13 +610,13 @@ def _needs_managed_browser_fallback() -> bool:
 
 
 async def _install_managed_browser_fallback() -> dict[str, Any]:
-    """Install agent-browser's Chrome for Testing when x86 has no browser.
+    """Install both browser layouts required by agent-browser and Hermes.
 
-    Hermes' root npm workspace can expose a broken ``playwright`` shim even
-    though ``agent-browser`` itself is installed. The upstream installer treats
-    that browser download failure as a warning. Running agent-browser's own
-    public installer is the smallest deterministic repair: it downloads Chrome
-    for Testing and, on Linux, installs the libraries that binary needs.
+    ``agent-browser install`` can successfully run a browser that it downloaded
+    outside Playwright's cache. The pinned Hermes registration check does not
+    inspect that private cache; it looks for a system browser or a
+    Playwright-managed ``chromium-*`` directory. Install both public layouts so
+    the runtime smoke and the model's tool-registration gate agree.
     """
     result: dict[str, Any] = {
         "attempted": False,
@@ -345,14 +632,40 @@ async def _install_managed_browser_fallback() -> dict[str, Any]:
         result["reason"] = "agent_browser_missing"
         return result
 
-    install = await run_process(
+    agent_browser_install = await run_process(
         [str(browser_bin), "install", "--with-deps"],
         timeout_seconds=900,
     )
+    npx_bin = _npx_binary()
+    if npx_bin is None:
+        result["attempted"] = True
+        result["reason"] = "npx_missing"
+        result["browser_bin"] = str(browser_bin)
+        result["playwright_version"] = PLAYWRIGHT_VERSION
+        result["agent_browser_install"] = agent_browser_install
+        result["result"] = {"ok": False}
+        return result
+    playwright_install = await run_process(
+        [
+            str(npx_bin),
+            "--yes",
+            f"playwright@{PLAYWRIGHT_VERSION}",
+            "install",
+            "--with-deps",
+            "chromium",
+        ],
+        timeout_seconds=900,
+    )
     result["attempted"] = True
-    result["reason"] = "managed_chrome_for_testing_missing"
+    result["reason"] = "hermes_browser_registration_unready"
     result["browser_bin"] = str(browser_bin)
-    result["result"] = install
+    result["playwright_version"] = PLAYWRIGHT_VERSION
+    result["agent_browser_install"] = agent_browser_install
+    result["playwright_install"] = playwright_install
+    result["result"] = {
+        "ok": bool(agent_browser_install.get("ok"))
+        and bool(playwright_install.get("ok"))
+    }
     return result
 
 
@@ -398,18 +711,32 @@ async def _install_browser_fallback() -> dict[str, Any]:
 
 
 def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
-    for step in ("open", "snapshot"):
-        step_result = browser_smoke.get(step)
-        if not isinstance(step_result, dict) or step_result.get("ok"):
+    message = str(browser_smoke.get("message") or "").strip()
+    if message and not isinstance(browser_smoke.get("doctor"), dict):
+        return message
+    if not browser_smoke.get("registered"):
+        return "Hermes doctor did not report Playwright Chromium ready"
+    for step in (
+        "agent_browser_version_probe",
+        "open",
+        "snapshot",
+        "engine_probe",
+        "close",
+    ):
+        probe = browser_smoke.get(step)
+        if not isinstance(probe, dict) or probe.get("ok"):
             continue
-        detail = str(step_result.get("stderr") or step_result.get("stdout") or "")
-        detail = detail.strip().splitlines()[0][:240] if detail.strip() else ""
+        detail = str(probe.get("stderr") or probe.get("stdout") or "").strip()
         if detail:
-            return f"{step}: {detail}"
-        if step_result.get("timed_out"):
-            return f"{step}: timed out"
-        return f"{step}: returncode={step_result.get('returncode')}"
-    return str(browser_smoke.get("message") or "unknown browser smoke failure")
+            return f"{step}: {detail.splitlines()[0][:240]}"
+        if probe.get("timed_out"):
+            return f"{step}: browser probe timed out"
+        return f"{step}: returncode={probe.get('returncode')}"
+    if not browser_smoke.get("expected_page_found"):
+        return "browser smoke did not find the Example Domain page"
+    if not browser_smoke.get("engine_version"):
+        return "browser smoke could not determine the Chromium version"
+    return message or "unknown browser smoke failure"
 
 
 def _day_one_capability_report(
@@ -417,6 +744,7 @@ def _day_one_capability_report(
     dependencies: dict[str, Any],
     config: dict[str, Any],
     browser_smoke: dict[str, Any],
+    google_workspace_cli: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "schema": "tinyhat_hermes_day_one_capabilities_v1",
@@ -439,8 +767,30 @@ def _day_one_capability_report(
                 "state": "ready" if browser_smoke.get("ok") else "failed",
                 "provider": BROWSER_CLOUD_PROVIDER,
                 "engine": BROWSER_ENGINE,
+                "version": browser_smoke.get("engine_version"),
+                "binary": browser_smoke.get("browser_bin"),
+                "automation_cli_version": browser_smoke.get(
+                    "agent_browser_version"
+                ),
                 "dependency_ready": bool(browser_smoke.get("ok")),
+                "registered": bool(browser_smoke.get("registered")),
                 "smoke_status": browser_smoke.get("smoke_status"),
+            },
+            "google_workspace_cli": {
+                "state": (
+                    "ready" if google_workspace_cli.get("ok") else "failed"
+                ),
+                "version": GOOGLE_WORKSPACE_CLI_VERSION,
+                "binary": (
+                    google_workspace_cli.get("after", {}).get("binary")
+                    if isinstance(google_workspace_cli.get("after"), dict)
+                    else None
+                ),
+                "dependency_ready": bool(google_workspace_cli.get("ok")),
+                "authentication": "available_when_connected",
+                "smoke_status": (
+                    "passed" if google_workspace_cli.get("ok") else "failed"
+                ),
             },
             "image_generation": {
                 "state": "configured_waiting_for_assignment_credential",
@@ -704,6 +1054,9 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     messaging = await _ensure_messaging_dependencies()
     if not messaging.get("ok"):
         raise RuntimeError("Hermes day-one dependencies are not available.")
+    google_workspace_cli = await _ensure_google_workspace_cli()
+    if not google_workspace_cli.get("ok"):
+        raise RuntimeError("Google Workspace CLI is not available.")
     day_one_defaults = await _configure_day_one_capabilities(hermes_bin)
     if not day_one_defaults.get("ok"):
         raise RuntimeError("Hermes day-one configuration could not be applied.")
@@ -736,6 +1089,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         dependencies=messaging,
         config=day_one_defaults,
         browser_smoke=browser_smoke,
+        google_workspace_cli=google_workspace_cli,
     )
 
     return {
@@ -752,6 +1106,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "install": install_result,
         "messaging": messaging,
         "capability_dependencies": messaging,
+        "google_workspace_cli": google_workspace_cli,
         "multimodal_defaults": day_one_defaults.get("multimedia"),
         "day_one_defaults": day_one_defaults,
         "browser_smoke": browser_smoke,

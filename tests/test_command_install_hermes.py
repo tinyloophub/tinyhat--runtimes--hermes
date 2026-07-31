@@ -80,8 +80,27 @@ async def _fake_day_one_capabilities(_hermes_bin: Path) -> dict[str, object]:
 async def _fake_browser_smoke() -> dict[str, object]:
     return {
         "ok": True,
+        "registered": True,
         "smoke_status": "passed",
         "browser_bin": "/root/.hermes/node/bin/agent-browser",
+        "agent_browser_version": "agent-browser 0.14.0",
+        "engine_version": "140.0.7339.41",
+    }
+
+
+async def _fake_google_workspace_cli() -> dict[str, object]:
+    probe = {
+        "ok": True,
+        "installed": True,
+        "version": "0.22.5",
+        "binary": "/usr/local/bin/gws",
+    }
+    return {
+        "ok": True,
+        "changed": False,
+        "before": probe,
+        "after": probe,
+        "install": None,
     }
 
 
@@ -184,8 +203,218 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     assert env == {"PIP_DISABLE_PIP_VERSION_CHECK": "1"}
 
 
-def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
+def test_google_workspace_cli_selects_pinned_linux_assets() -> None:
+    expected = {
+        "x86_64": (
+            "x86_64-unknown-linux-musl",
+            "4db473dde4b1ab872e4ff35d769b0d4a"
+            "f1f1a6441a605e79d5cf8ada9c87e920",
+        ),
+        "aarch64": (
+            "aarch64-unknown-linux-musl",
+            "e700fe63524932b10ec2130b47ece90a"
+            "a850e66005fe52ccfc4cf8767bf9919a",
+        ),
+    }
+    for machine, (target, digest) in expected.items():
+        with (
+            patch(
+                "hermes_runtime.commands.install_hermes.platform.system",
+                return_value="Linux",
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.platform.machine",
+                return_value=machine,
+            ),
+        ):
+            asset = install_hermes._google_workspace_cli_asset()
+
+        assert asset is not None
+        assert asset["target"] == target
+        assert asset["sha256"] == digest
+        assert asset["url"].endswith(
+            f"/v0.22.5/google-workspace-cli-{target}.tar.gz"
+        )
+
+
+def test_google_workspace_cli_asset_rejects_unsupported_platform() -> None:
+    with patch(
+        "hermes_runtime.commands.install_hermes.platform.system",
+        return_value="Darwin",
+    ):
+        assert install_hermes._google_workspace_cli_asset() is None
+
+
+def test_google_workspace_cli_probe_requires_the_pinned_version() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        assert args == ["/tmp/gws", "--version"]
+        assert timeout_seconds == 30
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "gws 0.22.4\n",
+            "stderr": "",
+        }
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes._google_workspace_cli_binary",
+            return_value=Path("/tmp/gws"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_google_workspace_cli())
+
+    assert result["ok"] is False
+    assert result["installed"] is True
+    assert result["expected_version"] == "0.22.5"
+
+
+def test_google_workspace_cli_install_is_digest_pinned_and_reprobed() -> None:
+    probes = [
+        {"ok": False, "installed": False, "binary": None},
+        {
+            "ok": True,
+            "installed": True,
+            "version": "0.22.5",
+            "binary": "/tmp/bin/gws",
+        },
+    ]
+    calls: list[tuple[str, int]] = []
+
+    async def fake_probe() -> dict[str, object]:
+        return probes.pop(0)
+
+    async def fake_run_shell(
+        script: str,
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del env
+        calls.append((script, timeout_seconds))
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    with (
+        patch.dict(
+            os.environ,
+            {"TINYHAT_GWS_INSTALL_PATH": "/tmp/bin/gws"},
+            clear=False,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.system",
+            return_value="Linux",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.platform.machine",
+            return_value="x86_64",
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_google_workspace_cli",
+            fake_probe,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_shell",
+            fake_run_shell,
+        ),
+    ):
+        result = asyncio.run(install_hermes._ensure_google_workspace_cli())
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert probes == []
+    assert len(calls) == 1
+    script, timeout = calls[0]
+    assert timeout == 300
+    assert (
+        "googleworkspace/cli/releases/download/v0.22.5/"
+        "google-workspace-cli-x86_64-unknown-linux-musl.tar.gz"
+    ) in script
+    assert (
+        "4db473dde4b1ab872e4ff35d769b0d4a"
+        "f1f1a6441a605e79d5cf8ada9c87e920"
+    ) in script
+    assert "sha256sum --check --status" in script
+    assert "install -m 0755" in script
+    assert "/tmp/bin/gws" in script
+
+
+def test_google_workspace_cli_install_is_idempotent() -> None:
+    ready = {
+        "ok": True,
+        "installed": True,
+        "version": "0.22.5",
+        "binary": "/usr/local/bin/gws",
+    }
+
+    async def fake_probe() -> dict[str, object]:
+        return ready
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes._probe_google_workspace_cli",
+            fake_probe,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_shell",
+            side_effect=AssertionError("ready gws must not be reinstalled"),
+        ),
+    ):
+        result = asyncio.run(install_hermes._ensure_google_workspace_cli())
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["before"] == ready
+    assert result["after"] == ready
+
+
+def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
     calls: list[tuple[list[str], int]] = []
+    results = [
+        {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "  ✓ Playwright Chromium (browser engine)\n",
+            "stderr": "other optional dependency missing",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "✓ Example Domain\nhttps://example.com/\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "- heading \"Example Domain\" [level=1]\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "closed\n",
+            "stderr": "",
+        },
+    ]
 
     async def fake_run_process(
         args: list[str],
@@ -193,17 +422,15 @@ def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
         timeout_seconds: int,
     ) -> dict[str, object]:
         calls.append((args, timeout_seconds))
-        return {
-            "args": args,
-            "returncode": 0,
-            "ok": True,
-            "timed_out": False,
-            "stdout": "ok",
-            "stderr": "",
-        }
+        return results.pop(0)
 
+    hermes_bin = Path("/opt/hermes/bin/hermes")
     browser_bin = Path("/opt/hermes/bin/agent-browser")
     with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=hermes_bin,
+        ),
         patch(
             "hermes_runtime.commands.install_hermes._agent_browser_binary",
             return_value=browser_bin,
@@ -216,13 +443,15 @@ def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
         result = asyncio.run(install_hermes._probe_browser_automation())
 
     assert calls == [
+        ([str(hermes_bin), "doctor"], 300),
+        ([str(browser_bin), "--version"], 30),
         (
             [
                 str(browser_bin),
                 "--session",
                 "tinyhat-provisioning-smoke",
                 "open",
-                "about:blank",
+                "https://example.com",
             ],
             120,
         ),
@@ -240,13 +469,265 @@ def test_browser_smoke_opens_snapshots_and_closes_blank_page() -> None:
                 str(browser_bin),
                 "--session",
                 "tinyhat-provisioning-smoke",
+                "eval",
+                "navigator.userAgent",
+            ],
+            30,
+        ),
+        (
+            [
+                str(browser_bin),
+                "--session",
+                "tinyhat-provisioning-smoke",
                 "close",
             ],
             30,
         ),
     ]
+    assert results == []
     assert result["ok"] is True
+    assert result["registered"] is True
     assert result["smoke_status"] == "passed"
+    assert result["expected_page_found"] is True
+    assert result["agent_browser_version"] == "agent-browser 0.14.0"
+    assert result["engine_version"] == "140.0.7339.41"
+
+
+def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
+    results = [
+        {
+            "ok": False,
+            "returncode": 1,
+            "stdout": (
+                "  ⚠ Playwright Chromium not installed "
+                "(browser_* tools will be hidden from the agent)\n"
+            ),
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "Example Domain\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "Example Domain\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "closed\n",
+            "stderr": "",
+        },
+    ]
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del args, timeout_seconds
+        return results.pop(0)
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/opt/hermes/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=Path("/opt/hermes/agent-browser"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_browser_automation())
+
+    assert result["ok"] is False
+    assert result["registered"] is False
+    assert result["smoke_status"] == "failed"
+    assert result["expected_page_found"] is True
+
+
+def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
+    results = [
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "  ✓ Playwright Chromium (browser engine)\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "agent-browser 0.14.0\n",
+            "stderr": "",
+        },
+        {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "net::ERR_NAME_NOT_RESOLVED",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "closed\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "Example Domain\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "heading \"Example Domain\"\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
+            "stderr": "",
+        },
+        {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "closed\n",
+            "stderr": "",
+        },
+    ]
+    sleep_calls: list[float] = []
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del args, timeout_seconds
+        return results.pop(0)
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/opt/hermes/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=Path("/opt/hermes/agent-browser"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.asyncio.sleep",
+            fake_sleep,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_browser_automation())
+
+    assert result["ok"] is True
+    assert [attempt["ok"] for attempt in result["attempts"]] == [False, True]
+    assert sleep_calls == [1.0]
+    assert results == []
+
+
+def test_browser_smoke_fails_when_session_cannot_close() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        if args[-1] == "doctor":
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "  ✓ Playwright Chromium (browser engine)\n",
+                "stderr": "",
+            }
+        if args[-1] == "--version":
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "agent-browser 0.14.0\n",
+                "stderr": "",
+            }
+        if args[-1] == "close":
+            return {
+                "ok": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "session still running",
+            }
+        if "eval" in args:
+            return {
+                "ok": True,
+                "returncode": 0,
+                "stdout": "\"Mozilla/5.0 HeadlessChrome/140.0.7339.41\"\n",
+                "stderr": "",
+            }
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "Example Domain\n",
+            "stderr": "",
+        }
+
+    async def fake_sleep(_delay: float) -> None:
+        return None
+
+    with (
+        patch(
+            "hermes_runtime.commands.install_hermes.find_hermes_binary",
+            return_value=Path("/opt/hermes/hermes"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._agent_browser_binary",
+            return_value=Path("/opt/hermes/agent-browser"),
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.run_process",
+            fake_run_process,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes.asyncio.sleep",
+            fake_sleep,
+        ),
+    ):
+        result = asyncio.run(install_hermes._probe_browser_automation())
+
+    assert result["ok"] is False
+    assert result["smoke_status"] == "failed"
+    assert len(result["attempts"]) == 3
+    assert all(attempt["ok"] is False for attempt in result["attempts"])
+    assert install_hermes._browser_failure_summary(result) == (
+        "close: session still running"
+    )
 
 
 def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
@@ -261,6 +742,7 @@ def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
         return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
 
     browser_bin = Path("/opt/hermes/bin/agent-browser")
+    npx_bin = Path("/opt/hermes/bin/npx")
     with (
         patch(
             "hermes_runtime.commands.install_hermes.platform.system",
@@ -275,6 +757,10 @@ def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
             return_value=browser_bin,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._npx_binary",
+            return_value=npx_bin,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes.run_process",
             fake_run_process,
         ),
@@ -284,9 +770,24 @@ def test_x86_browser_fallback_installs_managed_chrome_for_testing() -> None:
         )
 
     assert result["attempted"] is True
-    assert result["reason"] == "managed_chrome_for_testing_missing"
+    assert result["reason"] == "hermes_browser_registration_unready"
     assert result["browser_bin"] == str(browser_bin)
-    assert calls == [([str(browser_bin), "install", "--with-deps"], 900)]
+    assert result["playwright_version"] == "1.58.2"
+    assert result["result"]["ok"] is True
+    assert calls == [
+        ([str(browser_bin), "install", "--with-deps"], 900),
+        (
+            [
+                str(npx_bin),
+                "--yes",
+                "playwright@1.58.2",
+                "install",
+                "--with-deps",
+                "chromium",
+            ],
+            900,
+        ),
+    ]
 
 
 def test_managed_browser_fallback_skips_arm() -> None:
@@ -390,18 +891,38 @@ def test_x86_browser_failure_does_not_install_ubuntu_snap_chromium() -> None:
 def test_browser_failure_summary_reports_the_failing_step() -> None:
     result = install_hermes._browser_failure_summary(
         {
+            "registered": True,
+            "expected_page_found": False,
             "open": {
                 "ok": False,
                 "returncode": None,
                 "timed_out": True,
                 "stdout": "",
-                "stderr": "command timed out after 120s\nmore detail",
+                "stderr": "command timed out after 120s",
             },
             "snapshot": None,
+            "close": {"ok": True},
         }
     )
 
     assert result == "open: command timed out after 120s"
+
+
+def test_browser_failure_summary_preserves_early_probe_failure() -> None:
+    for message in (
+        "Hermes CLI was not found.",
+        "agent-browser was not found after Hermes installation.",
+    ):
+        result = install_hermes._browser_failure_summary(
+            {
+                "ok": False,
+                "registered": False,
+                "smoke_status": "failed",
+                "message": message,
+            }
+        )
+
+        assert result == message
 
 
 def test_agent_browser_binary_uses_upstream_project_install() -> None:
@@ -468,6 +989,10 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
             fake_messaging,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
             _fake_local_stt_model_prefetch,
         ),
@@ -500,6 +1025,7 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
     assert result["changed"] is False
     assert result["messaging"]["ok"] is True
     assert result["messaging"]["changed"] is False
+    assert result["google_workspace_cli"]["ok"] is True
     assert result["multimodal_defaults"]["ok"] is True
     assert result["local_stt_model_prefetch"]["model"] == "small"
     assert result["local_stt_model_prefetch_warning"] is None
@@ -522,6 +1048,7 @@ def test_install_hermes_retries_browser_smoke_after_fallback() -> None:
         },
         {
             "ok": True,
+            "registered": True,
             "smoke_status": "passed",
             "browser_bin": "/usr/bin/agent-browser",
         },
@@ -544,7 +1071,7 @@ def test_install_hermes_retries_browser_smoke_after_fallback() -> None:
         return {
             "attempted": True,
             "architecture": "x86_64",
-            "reason": "managed_chrome_for_testing_missing",
+            "reason": "hermes_browser_registration_unready",
             "result": {"ok": True},
         }
 
@@ -560,6 +1087,10 @@ def test_install_hermes_retries_browser_smoke_after_fallback() -> None:
         patch(
             "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
             fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
@@ -620,6 +1151,10 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
         patch(
             "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
             fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
@@ -697,6 +1232,10 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             fake_messaging,
         ),
         patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
+        ),
+        patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
             _fake_local_stt_model_prefetch,
         ),
@@ -725,7 +1264,7 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
     script, env = install_calls[0]
     assert (
         "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | "
-        "bash -s -- --commit 40a53ca0317b0ddc1a79133fb70fc5eb75c3d74b"
+        "bash -s -- --commit 646761c7831ff4c4cd0d6ac711ed791d487fb665"
         in script
     )
     assert "--skip-browser" not in script
@@ -746,6 +1285,27 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
         "provider": "ddgs",
         "dependency_ready": True,
         "smoke_status": "not_run",
+    }
+    assert result["day_one_capabilities"]["capabilities"]["browser"] == {
+        "state": "ready",
+        "provider": "local",
+        "engine": "chrome",
+        "version": "140.0.7339.41",
+        "binary": "/root/.hermes/node/bin/agent-browser",
+        "automation_cli_version": "agent-browser 0.14.0",
+        "dependency_ready": True,
+        "registered": True,
+        "smoke_status": "passed",
+    }
+    assert result["day_one_capabilities"]["capabilities"][
+        "google_workspace_cli"
+    ] == {
+        "state": "ready",
+        "version": "0.22.5",
+        "binary": "/usr/local/bin/gws",
+        "dependency_ready": True,
+        "authentication": "available_when_connected",
+        "smoke_status": "passed",
     }
     assert result["day_one_capabilities"]["capabilities"][
         "telegram_rich_rendering"
@@ -816,6 +1376,10 @@ def test_install_hermes_retries_transient_status_failure_after_install() -> None
         patch(
             "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
             fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
@@ -1165,6 +1729,10 @@ def test_install_hermes_reports_prefetch_failure_without_blocking() -> None:
         patch(
             "hermes_runtime.commands.install_hermes._ensure_messaging_dependencies",
             fake_messaging,
+        ),
+        patch(
+            "hermes_runtime.commands.install_hermes._ensure_google_workspace_cli",
+            _fake_google_workspace_cli,
         ),
         patch(
             "hermes_runtime.commands.install_hermes._prefetch_local_stt_model",
