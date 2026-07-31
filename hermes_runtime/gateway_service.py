@@ -27,6 +27,7 @@ _SYSTEMD_MANAGER_ABSENT_MARKERS = (
     "system has not been booted with systemd",
     "failed to connect to bus: host is down",
     "failed to connect to bus: no medium found",
+    "failed to connect to bus: no such file or directory",
 )
 _SHOW_PROPERTIES = (
     "LoadState,ActiveState,SubState,Result,MainPID,InvocationID,"
