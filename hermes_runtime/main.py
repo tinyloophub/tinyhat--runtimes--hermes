@@ -230,6 +230,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "runtime_version": __version__,
         "capabilities": {
             "check_and_stage_updates": True,
+            "google_workspace_reviewer_oauth_start": True,
         },
         "current_version": ctx.current_version(),
         "current_commit_sha": current_commit_sha,

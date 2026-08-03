@@ -19,6 +19,9 @@ COMMAND_MODULES = {
     "multimodal_status": "hermes_runtime.commands.multimodal_status",
     "tinyhat_plugin_status": "hermes_runtime.commands.tinyhat_plugin_status",
     "check_tinyhat_plugin_update": "hermes_runtime.commands.check_tinyhat_plugin_update",
+    "start_google_workspace_reviewer_oauth": (
+        "hermes_runtime.commands.start_google_workspace_reviewer_oauth"
+    ),
     "install_tinyhat_plugin": "hermes_runtime.commands.install_tinyhat_plugin",
     "update_tinyhat_plugin": "hermes_runtime.commands.update_tinyhat_plugin",
     "configure_telegram": "hermes_runtime.commands.configure_telegram",

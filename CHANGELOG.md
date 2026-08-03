@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the explicit `start_google_workspace_reviewer_oauth` runtime command for
+  a platform-bound assessment reviewer flow. It accepts only one validated
+  opaque request id, invokes only the installed Tinyhat plugin's documented
+  reviewer-OAuth entry point, advertises the capability in heartbeat metrics,
+  and keeps command results and failures free of OAuth values.
+
 ## 0.0.49 - 2026-07-31
 
 - Treat the user-manager `systemctl` error `Failed to connect to bus: No such
