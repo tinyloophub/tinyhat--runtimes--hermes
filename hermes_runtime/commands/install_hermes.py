@@ -22,7 +22,8 @@ What it does:
     packages into the same Hermes project venv. It also installs and verifies
     the pinned Google Workspace CLI, then proves Hermes will register its
     browser tools and that the browser CLI can open, snapshot, and close a
-    harmless public page.
+    deterministic local page without depending on external DNS or network
+    availability.
     This keeps Tinyhat Computers warm: the later agent-assignment step only
     writes the bot settings and starts the gateway.
     It also warms faster-whisper's selected local STT model cache so a Computer
@@ -436,8 +437,15 @@ def _npx_binary() -> Path | None:
     return None
 
 
+BROWSER_SMOKE_EXPECTED_TEXT = "Tinyhat Browser Smoke"
+BROWSER_SMOKE_TARGET = (
+    "data:text/html,%3Ctitle%3ETinyhat%20Browser%20Smoke%3C%2Ftitle%3E"
+    "%3Ch1%3ETinyhat%20Browser%20Smoke%3C%2Fh1%3E"
+)
+
+
 async def _probe_browser_automation() -> dict[str, Any]:
-    """Prove Hermes will expose browser tools and their public CLI works."""
+    """Prove Hermes browser tools work without requiring network access."""
     hermes_bin = find_hermes_binary()
     if hermes_bin is None:
         return {
@@ -497,7 +505,7 @@ async def _probe_browser_automation() -> dict[str, Any]:
                 "--session",
                 session,
                 "open",
-                "https://example.com",
+                BROWSER_SMOKE_TARGET,
             ],
             timeout_seconds=120,
         )
@@ -531,7 +539,7 @@ async def _probe_browser_automation() -> dict[str, Any]:
                 else "",
             ]
         )
-        expected_page = "Example Domain" in page_text
+        expected_page = BROWSER_SMOKE_EXPECTED_TEXT in page_text
         engine_text = (
             str(engine_probe.get("stdout") or "")
             if isinstance(engine_probe, dict)
@@ -587,7 +595,8 @@ async def _probe_browser_automation() -> dict[str, Any]:
         "agent_browser_version": agent_browser_version_text,
         "agent_browser_version_probe": agent_browser_version_probe,
         "engine_version": engine_version,
-        "target": "https://example.com",
+        "target": BROWSER_SMOKE_TARGET,
+        "network_required": False,
         "expected_page_found": expected_page,
         "doctor": doctor,
         "open": open_result,
@@ -733,7 +742,7 @@ def _browser_failure_summary(browser_smoke: dict[str, Any]) -> str:
             return f"{step}: browser probe timed out"
         return f"{step}: returncode={probe.get('returncode')}"
     if not browser_smoke.get("expected_page_found"):
-        return "browser smoke did not find the Example Domain page"
+        return "browser smoke did not find the deterministic local page"
     if not browser_smoke.get("engine_version"):
         return "browser smoke could not determine the Chromium version"
     return message or "unknown browser smoke failure"
