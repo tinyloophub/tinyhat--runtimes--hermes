@@ -375,7 +375,11 @@ def test_google_workspace_cli_install_is_idempotent() -> None:
     assert result["after"] == ready
 
 
-def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
+def test_browser_smoke_exercises_hermes_doctor_without_network() -> None:
+    assert (
+        install_hermes.BROWSER_SMOKE_EXPECTED_TEXT
+        not in install_hermes.BROWSER_SMOKE_TARGET
+    )
     calls: list[tuple[list[str], int]] = []
     results = [
         {
@@ -393,13 +397,13 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "✓ Example Domain\nhttps://example.com/\n",
+            "stdout": "✓ Tinyhat Browser Smoke\ndata:text/html,...\n",
             "stderr": "",
         },
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "- heading \"Example Domain\" [level=1]\n",
+            "stdout": "- heading \"Tinyhat Browser Smoke\" [level=1]\n",
             "stderr": "",
         },
         {
@@ -451,7 +455,7 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
                 "--session",
                 "tinyhat-provisioning-smoke",
                 "open",
-                "https://example.com",
+                install_hermes.BROWSER_SMOKE_TARGET,
             ],
             120,
         ),
@@ -489,6 +493,8 @@ def test_browser_smoke_exercises_hermes_doctor_and_public_page() -> None:
     assert result["registered"] is True
     assert result["smoke_status"] == "passed"
     assert result["expected_page_found"] is True
+    assert result["target"] == install_hermes.BROWSER_SMOKE_TARGET
+    assert result["network_required"] is False
     assert result["agent_browser_version"] == "agent-browser 0.14.0"
     assert result["engine_version"] == "140.0.7339.41"
 
@@ -513,13 +519,13 @@ def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "Example Domain\n",
+            "stdout": "Tinyhat Browser Smoke\n",
             "stderr": "",
         },
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "Example Domain\n",
+            "stdout": "Tinyhat Browser Smoke\n",
             "stderr": "",
         },
         {
@@ -566,7 +572,7 @@ def test_browser_smoke_fails_when_hermes_does_not_register_tools() -> None:
     assert result["expected_page_found"] is True
 
 
-def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
+def test_browser_smoke_retries_a_transient_browser_startup_failure() -> None:
     results = [
         {
             "ok": True,
@@ -584,7 +590,7 @@ def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
             "ok": False,
             "returncode": 1,
             "stdout": "",
-            "stderr": "net::ERR_NAME_NOT_RESOLVED",
+            "stderr": "browser process exited before ready",
         },
         {
             "ok": True,
@@ -595,13 +601,13 @@ def test_browser_smoke_retries_a_transient_navigation_failure() -> None:
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "Example Domain\n",
+            "stdout": "Tinyhat Browser Smoke\n",
             "stderr": "",
         },
         {
             "ok": True,
             "returncode": 0,
-            "stdout": "heading \"Example Domain\"\n",
+            "stdout": "heading \"Tinyhat Browser Smoke\"\n",
             "stderr": "",
         },
         {
@@ -694,7 +700,7 @@ def test_browser_smoke_fails_when_session_cannot_close() -> None:
         return {
             "ok": True,
             "returncode": 0,
-            "stdout": "Example Domain\n",
+            "stdout": "Tinyhat Browser Smoke\n",
             "stderr": "",
         }
 
@@ -906,6 +912,17 @@ def test_browser_failure_summary_reports_the_failing_step() -> None:
     )
 
     assert result == "open: command timed out after 120s"
+
+
+def test_browser_failure_summary_reports_missing_local_page() -> None:
+    result = install_hermes._browser_failure_summary(
+        {
+            "registered": True,
+            "expected_page_found": False,
+        }
+    )
+
+    assert result == "browser smoke did not find the deterministic local page"
 
 
 def test_browser_failure_summary_preserves_early_probe_failure() -> None:
