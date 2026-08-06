@@ -6,6 +6,10 @@
   deterministic local `data:` page instead of a public website. This keeps the
   Chromium and automation proof independent of transient internet or DNS
   availability.
+- Add the `configure_hat_credentials` runtime command so the Hat preview can
+  close itself and ask the assigned Computer to send the first encrypted,
+  grouped credential form in Telegram. The command stores no values on the
+  platform and never restarts Hermes.
 
 ## 0.0.49 - 2026-07-31
 
