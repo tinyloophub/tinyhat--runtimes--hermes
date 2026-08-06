@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make the creation-time browser readiness smoke open and snapshot a
+  deterministic local `data:` page instead of a public website. This keeps the
+  Chromium and automation proof independent of transient internet or DNS
+  availability.
+
 ## 0.0.49 - 2026-07-31
 
 - Treat the user-manager `systemctl` error `Failed to connect to bus: No such

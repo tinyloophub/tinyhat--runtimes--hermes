@@ -376,6 +376,10 @@ def test_google_workspace_cli_install_is_idempotent() -> None:
 
 
 def test_browser_smoke_exercises_hermes_doctor_without_network() -> None:
+    assert (
+        install_hermes.BROWSER_SMOKE_EXPECTED_TEXT
+        not in install_hermes.BROWSER_SMOKE_TARGET
+    )
     calls: list[tuple[list[str], int]] = []
     results = [
         {
@@ -908,6 +912,17 @@ def test_browser_failure_summary_reports_the_failing_step() -> None:
     )
 
     assert result == "open: command timed out after 120s"
+
+
+def test_browser_failure_summary_reports_missing_local_page() -> None:
+    result = install_hermes._browser_failure_summary(
+        {
+            "registered": True,
+            "expected_page_found": False,
+        }
+    )
+
+    assert result == "browser smoke did not find the deterministic local page"
 
 
 def test_browser_failure_summary_preserves_early_probe_failure() -> None:

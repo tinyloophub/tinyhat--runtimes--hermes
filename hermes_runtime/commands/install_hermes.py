@@ -438,6 +438,8 @@ def _npx_binary() -> Path | None:
 
 
 BROWSER_SMOKE_EXPECTED_TEXT = "Tinyhat Browser Smoke"
+# Keep the visible marker percent-encoded in the target. The browser CLI echoes
+# the URL, so a raw marker could satisfy the text check without a rendered page.
 BROWSER_SMOKE_TARGET = (
     "data:text/html,%3Ctitle%3ETinyhat%20Browser%20Smoke%3C%2Ftitle%3E"
     "%3Ch1%3ETinyhat%20Browser%20Smoke%3C%2Fh1%3E"
