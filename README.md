@@ -58,6 +58,29 @@ server for a short-lived VM identity token, reuses that token until it is close
 to expiry, and sends it to the existing `/hapi/v1/computers/me/*` platform APIs.
 The platform verifies the Google token before accepting the call.
 
+### Private Hat repository access
+
+Hat repository authoring uses a second, narrower boundary. Tinyhat gives the
+Computer an opaque repository grant, not a GitHub credential. When Git asks for
+authentication, this runtime exchanges that grant for a short-lived GitHub App
+installation token constrained by GitHub to exactly one immutable repository
+id and the `git-direct` permission profile. The credential helper writes the
+token only to Git's private helper pipe.
+
+The checkout lives under `~/.hermes/hat-repositories/<owner>/<hat-key>`. Its
+remote is an ordinary credential-free `https://github.com/...` URL; local Git
+configuration contains only the opaque grant id and server-derived repository
+identity. The bounded helper can check out or fast-forward the repository,
+report local status, commit an explicit set of non-secret paths atomically,
+push the verified default branch, and reset renewal. A reset leaves the clone
+for recovery but removes its credential helper. Local status remains usable
+without contacting Tinyhat or reactivating access.
+
+The Computer never receives either GitHub App private key, the Hat provisioner
+credential, a personal access token, or an SSH deploy key. GitHub App setup,
+repository enrollment, branch rules, and Actions policy remain control-plane
+responsibilities; the plugin only invokes this public runtime surface.
+
 ## How a Computer is set up
 
 The installer is intentionally a regular public shell script. You can read

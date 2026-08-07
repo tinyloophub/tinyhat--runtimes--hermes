@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.51 - 2026-08-07
+
+- Add Computer-local Git checkouts for Tinyhat-managed Hat repositories. Git
+  obtains a one-hour, one-repository GitHub App lease through an opaque grant
+  and a repository-specific credential helper; the token is never written to
+  the remote URL, Git config, command line, plugin output, or platform ledger.
+- Add bounded checkout, local status, atomic explicit-path sync, and reset
+  operations. Reset stops future renewal while retaining the local clone, and
+  a local status check cannot reactivate a revoked grant.
+- Install GitHub CLI with the runtime's recommended Debian prerequisites so
+  future permission profiles can use reviewed `gh` operations without adding
+  machine setup outside this public repository.
+
 ## 0.0.50 - 2026-08-06
 
 - Make the creation-time browser readiness smoke open and snapshot a
