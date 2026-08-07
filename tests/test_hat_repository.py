@@ -415,6 +415,297 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["credential_helper_removed"])
         self.assertGreaterEqual(run_git.call_count, 5)
 
+    async def test_failed_push_restores_changes_for_successful_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote = root / "remote.git"
+            seed = root / "seed"
+            home = root / "home"
+            target = (
+                home
+                / "hat-repositories"
+                / "itsfaridkia"
+                / "example-hat"
+            )
+            subprocess.run(
+                ["git", "init", "--bare", "-q", "--initial-branch=main", str(remote)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "init", "-q", "--initial-branch=main", str(seed)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+                subprocess.run(
+                    ["git", "-C", str(seed), "config", key, value],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            (seed / "README.md").write_text("initial\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(seed), "add", "README.md"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(seed), "commit", "-qm", "initial"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(seed), "remote", "add", "origin", str(remote)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(seed), "push", "-q", "origin", "main"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            target.parent.mkdir(parents=True)
+            subprocess.run(
+                ["git", "clone", "-q", str(remote), str(target)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            reject_once = root / "reject-once"
+            reject_once.touch()
+            hook = remote / "hooks" / "pre-receive"
+            hook.write_text(
+                "#!/bin/sh\n"
+                f"if [ -f {reject_once.as_posix()} ]; then\n"
+                f"  rm {reject_once.as_posix()}\n"
+                "  exit 1\n"
+                "fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            hook.chmod(0o755)
+            (target / "notes.md").write_text("retry me\n", encoding="utf-8")
+            prepared = {
+                "grant_id": GRANT_ID,
+                "hat_handle": "itsfaridkia/hats/example-hat",
+            }
+            context = mock.Mock()
+            context.client.post_json = mock.AsyncMock(return_value={"verified": True})
+            context.computer_path.side_effect = lambda value: f"/hapi/v1/{value}"
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(
+                    hat_repository,
+                    "_prepare",
+                    mock.AsyncMock(return_value=prepared),
+                ),
+                mock.patch.object(
+                    hat_repository,
+                    "_repository_payload",
+                    return_value=(
+                        "tinyhat-ai",
+                        "example-hat",
+                        "main",
+                        str(remote),
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "remain in the worktree",
+                ):
+                    await hat_repository._sync(
+                        context,
+                        "example-hat",
+                        raw_paths=["notes.md"],
+                        message="test: retry rejected push",
+                    )
+
+                local_after_failure = subprocess.run(
+                    ["git", "-C", str(target), "rev-parse", "HEAD"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                remote_after_failure = subprocess.run(
+                    ["git", "-C", str(target), "rev-parse", "origin/main"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                self.assertEqual(local_after_failure, remote_after_failure)
+                self.assertIn(
+                    "notes.md",
+                    subprocess.run(
+                        ["git", "-C", str(target), "status", "--porcelain"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout,
+                )
+
+                result = await hat_repository._sync(
+                    context,
+                    "example-hat",
+                    raw_paths=["notes.md"],
+                    message="test: retry rejected push",
+                )
+
+            self.assertTrue(result["pushed"])
+            self.assertFalse(reject_once.exists())
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "--git-dir", str(remote), "rev-parse", "main"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                result["head_sha"],
+            )
+
+    async def test_pending_sync_resumes_after_push_and_fetch_outage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            remote = root / "remote.git"
+            target = root / "checkout"
+            subprocess.run(
+                ["git", "init", "--bare", "-q", "--initial-branch=main", str(remote)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "clone", "-q", str(remote), str(target)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+                subprocess.run(
+                    ["git", "-C", str(target), "config", key, value],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            (target / "README.md").write_text("initial\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(target), "add", "README.md"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(target), "commit", "-qm", "initial"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(target), "push", "-q", "origin", "main"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            base = subprocess.run(
+                ["git", "-C", str(target), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            (target / "notes.md").write_text("pending\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(target), "add", "notes.md"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(target), "commit", "-qm", "pending"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", str(target), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            hat_repository._set_pending_sync(
+                target,
+                head=head,
+                base=base,
+                branch="main",
+            )
+            context = mock.Mock()
+            context.client.post_json = mock.AsyncMock(return_value={"verified": True})
+            context.computer_path.side_effect = lambda value: f"/hapi/v1/{value}"
+            original_run_git = hat_repository._run_git
+            fetch_failed = False
+
+            def fail_first_fetch(args, **kwargs):
+                nonlocal fetch_failed
+                if args and args[0] == "fetch" and not fetch_failed:
+                    fetch_failed = True
+                    return subprocess.CompletedProcess(
+                        args=args,
+                        returncode=1,
+                        stdout="",
+                        stderr="offline",
+                    )
+                return original_run_git(args, **kwargs)
+
+            with mock.patch.object(
+                hat_repository,
+                "_run_git",
+                side_effect=fail_first_fetch,
+            ):
+                with self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "pending Hat sync could not reach",
+                ):
+                    await hat_repository._resume_pending_sync(
+                        context,
+                        target=target,
+                        handle="itsfaridkia/hats/example-hat",
+                        grant_id=GRANT_ID,
+                        owner="tinyhat-ai",
+                        repo="example-hat",
+                        branch="main",
+                    )
+
+            self.assertEqual(hat_repository._pending_sync(target), (head, base, "main"))
+            result = await hat_repository._resume_pending_sync(
+                context,
+                target=target,
+                handle="itsfaridkia/hats/example-hat",
+                grant_id=GRANT_ID,
+                owner="tinyhat-ai",
+                repo="example-hat",
+                branch="main",
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["head_sha"], head)
+            self.assertEqual(result["synced_paths"], ["notes.md"])
+            self.assertIsNone(hat_repository._pending_sync(target))
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "--git-dir", str(remote), "rev-parse", "main"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                head,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

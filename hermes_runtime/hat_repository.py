@@ -39,6 +39,9 @@ _CONFIG_GRANT_ID = "tinyhat.repositoryGrantId"
 _CONFIG_OWNER = "tinyhat.repositoryOwner"
 _CONFIG_REPO = "tinyhat.repositoryName"
 _CONFIG_BRANCH = "tinyhat.repositoryBranch"
+_CONFIG_PENDING_HEAD = "tinyhat.pendingSyncHead"
+_CONFIG_PENDING_BASE = "tinyhat.pendingSyncBase"
+_CONFIG_PENDING_BRANCH = "tinyhat.pendingSyncBranch"
 
 
 class HatRepositoryError(RuntimeError):
@@ -150,6 +153,12 @@ def _local_config(path: Path, key: str) -> str:
             "The local Hat checkout is missing Tinyhat repository metadata."
         )
     return value
+
+
+def _optional_local_config(path: Path, key: str) -> str | None:
+    result = _run_git(["config", "--local", "--get", key], cwd=path, check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
 
 
 def _local_grant_metadata(path: Path) -> tuple[str, str, str, str]:
@@ -314,6 +323,55 @@ def _configure_checkout_identity(
         (_CONFIG_BRANCH, branch),
     ):
         _run_git(["config", "--local", key, value], cwd=path)
+
+
+def _set_pending_sync(path: Path, *, head: str, base: str, branch: str) -> None:
+    for key, value in (
+        (_CONFIG_PENDING_HEAD, head),
+        (_CONFIG_PENDING_BASE, base),
+        (_CONFIG_PENDING_BRANCH, branch),
+    ):
+        _run_git(["config", "--local", key, value], cwd=path)
+
+
+def _clear_pending_sync(path: Path) -> None:
+    for key in (
+        _CONFIG_PENDING_HEAD,
+        _CONFIG_PENDING_BASE,
+        _CONFIG_PENDING_BRANCH,
+    ):
+        _run_git(
+            ["config", "--local", "--unset-all", key],
+            cwd=path,
+            check=False,
+        )
+
+
+def _pending_sync(path: Path) -> tuple[str, str, str] | None:
+    values = tuple(
+        _optional_local_config(path, key)
+        for key in (
+            _CONFIG_PENDING_HEAD,
+            _CONFIG_PENDING_BASE,
+            _CONFIG_PENDING_BRANCH,
+        )
+    )
+    if values == (None, None, None):
+        return None
+    if any(value is None for value in values):
+        raise HatRepositoryError(
+            "The local Hat checkout has incomplete pending-sync metadata."
+        )
+    head, base, branch = values
+    if (
+        _SHA_RE.fullmatch(head or "") is None
+        or _SHA_RE.fullmatch(base or "") is None
+        or _BRANCH_RE.fullmatch(branch or "") is None
+    ):
+        raise HatRepositoryError(
+            "The local Hat checkout has invalid pending-sync metadata."
+        )
+    return str(head), str(base), str(branch)
 
 
 def _clone_or_refresh(
@@ -495,6 +553,116 @@ async def _status(identifier: str) -> dict[str, Any]:
     }
 
 
+async def _record_synced_head(
+    context: StandalonePlatformContext, *, grant_id: str, head: str
+) -> None:
+    recorded = await context.client.post_json(
+        context.computer_path(
+            f"repository-grants/{quote(grant_id, safe='')}/sync"
+        ),
+        {"head_sha": head},
+    )
+    if recorded.get("verified") is not True:
+        raise HatRepositoryError("Tinyhat could not verify the pushed Hat commit.")
+
+
+async def _resume_pending_sync(
+    context: StandalonePlatformContext,
+    *,
+    target: Path,
+    handle: str,
+    grant_id: str,
+    owner: str,
+    repo: str,
+    branch: str,
+) -> dict[str, Any] | None:
+    pending = await asyncio.to_thread(_pending_sync, target)
+    if pending is None:
+        return None
+    pending_head, pending_base, pending_branch = pending
+    if pending_branch != branch:
+        raise HatRepositoryError(
+            "The pending Hat sync belongs to another branch. Review the checkout."
+        )
+    current_head = await asyncio.to_thread(
+        _run_git,
+        ["rev-parse", "HEAD"],
+        cwd=target,
+        check=False,
+    )
+    current_parent = await asyncio.to_thread(
+        _run_git,
+        ["rev-parse", "HEAD^"],
+        cwd=target,
+        check=False,
+    )
+    if (
+        current_head.returncode != 0
+        or current_parent.returncode != 0
+        or current_head.stdout.strip().casefold() != pending_head
+        or current_parent.stdout.strip().casefold() != pending_base
+    ):
+        raise HatRepositoryError(
+            "The local Hat checkout changed after a pending sync. Review it before retrying."
+        )
+    fetched = await asyncio.to_thread(
+        _run_git,
+        ["fetch", "--prune", "origin"],
+        cwd=target,
+        check=False,
+    )
+    if fetched.returncode != 0:
+        raise HatRepositoryError(
+            "The pending Hat sync could not reach the remote. Retry when access is available."
+        )
+    remote = await asyncio.to_thread(
+        _run_git,
+        ["rev-parse", f"origin/{branch}"],
+        cwd=target,
+        check=False,
+    )
+    remote_head = remote.stdout.strip().casefold()
+    if remote.returncode != 0:
+        raise HatRepositoryError(
+            "The pending Hat sync could not read the remote branch."
+        )
+    if remote_head == pending_base:
+        pushed = await asyncio.to_thread(
+            _run_git,
+            ["push", "origin", f"HEAD:refs/heads/{branch}"],
+            cwd=target,
+            check=False,
+        )
+        if pushed.returncode != 0:
+            raise HatRepositoryError(
+                "The pending Hat sync could not be pushed. Retry when access is available."
+            )
+    elif remote_head != pending_head:
+        raise HatRepositoryError(
+            "The remote Hat changed while a sync was pending. Review both versions."
+        )
+    changed = await asyncio.to_thread(
+        _run_git,
+        ["diff", "--name-only", "-z", pending_base, pending_head, "--"],
+        cwd=target,
+    )
+    synced_paths = [item for item in changed.stdout.split("\0") if item]
+    await _record_synced_head(context, grant_id=grant_id, head=pending_head)
+    await asyncio.to_thread(_clear_pending_sync, target)
+    return {
+        "schema": SCHEMA,
+        "action": "sync",
+        "hat_handle": handle,
+        "repository": {"owner": owner, "name": repo},
+        "path": str(target),
+        "head_sha": pending_head,
+        "changed": True,
+        "pushed": True,
+        "synced_paths": synced_paths,
+        "credential_persisted": False,
+    }
+
+
 async def _sync(
     context: StandalonePlatformContext,
     identifier: str,
@@ -531,6 +699,18 @@ async def _sync(
     clean_message = str(message or "").strip()
     if not clean_message or len(clean_message) > 200 or "\n" in clean_message:
         raise HatRepositoryError("The Git commit message must be one line under 200 characters.")
+
+    resumed = await _resume_pending_sync(
+        context,
+        target=target,
+        handle=handle,
+        grant_id=grant_id,
+        owner=owner,
+        repo=repo,
+        branch=branch,
+    )
+    if resumed is not None:
+        return resumed
 
     await asyncio.to_thread(_run_git, ["fetch", "--prune", "origin"], cwd=target)
     local_head = (
@@ -570,24 +750,94 @@ async def _sync(
             "synced_paths": [],
         }
     await asyncio.to_thread(_run_git, ["commit", "-m", clean_message], cwd=target)
-    await asyncio.to_thread(
-        _run_git,
-        ["push", "origin", f"HEAD:refs/heads/{branch}"],
-        cwd=target,
-    )
     head = (
         await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip().casefold()
-    if _SHA_RE.fullmatch(head) is None:
-        raise HatRepositoryError("Git returned an invalid commit id after push.")
-    recorded = await context.client.post_json(
-        context.computer_path(
-            f"repository-grants/{quote(grant_id, safe='')}/sync"
-        ),
-        {"head_sha": head},
+    parent_head = (
+        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD^"], cwd=target)
+    ).stdout.strip().casefold()
+    if _SHA_RE.fullmatch(head) is None or parent_head != local_head:
+        raise HatRepositoryError(
+            "Git returned an invalid commit relationship before push."
+        )
+    await asyncio.to_thread(
+        _set_pending_sync,
+        target,
+        head=head,
+        base=local_head,
+        branch=branch,
     )
-    if recorded.get("verified") is not True:
-        raise HatRepositoryError("Tinyhat could not verify the pushed Hat commit.")
+    pushed = await asyncio.to_thread(
+        _run_git,
+        ["push", "origin", f"HEAD:refs/heads/{branch}"],
+        cwd=target,
+        check=False,
+    )
+    if pushed.returncode != 0:
+        fetched = await asyncio.to_thread(
+            _run_git,
+            ["fetch", "--prune", "origin"],
+            cwd=target,
+            check=False,
+        )
+        remote_after = await asyncio.to_thread(
+            _run_git,
+            ["rev-parse", f"origin/{branch}"],
+            cwd=target,
+            check=False,
+        )
+        remote_after_sha = remote_after.stdout.strip().casefold()
+        if fetched.returncode == 0 and remote_after.returncode == 0 and remote_after_sha == head:
+            # The server accepted the commit but the client lost the success
+            # response. Continue to platform verification instead of creating
+            # a duplicate commit on retry.
+            pass
+        elif (
+            fetched.returncode == 0
+            and remote_after.returncode == 0
+            and remote_after_sha == local_head
+        ):
+            current_head = await asyncio.to_thread(
+                _run_git,
+                ["rev-parse", "HEAD"],
+                cwd=target,
+                check=False,
+            )
+            current_parent = await asyncio.to_thread(
+                _run_git,
+                ["rev-parse", "HEAD^"],
+                cwd=target,
+                check=False,
+            )
+            if (
+                current_head.returncode == 0
+                and current_parent.returncode == 0
+                and current_head.stdout.strip().casefold() == head
+                and current_parent.stdout.strip().casefold() == local_head
+            ):
+                restored = await asyncio.to_thread(
+                    _run_git,
+                    ["reset", "--mixed", local_head],
+                    cwd=target,
+                    check=False,
+                )
+                if restored.returncode == 0:
+                    await asyncio.to_thread(_clear_pending_sync, target)
+                    raise HatRepositoryError(
+                        "Git could not push the Hat commit. The selected changes "
+                        "remain in the worktree so the sync can be retried."
+                    )
+            raise HatRepositoryError(
+                "Git could not push or safely restore the local Hat commit. "
+                "Review the checkout before retrying."
+            )
+        else:
+            raise HatRepositoryError(
+                "Git could not confirm whether the Hat commit reached the remote. "
+                "Review the checkout before retrying."
+            )
+    await _record_synced_head(context, grant_id=grant_id, head=head)
+    await asyncio.to_thread(_clear_pending_sync, target)
     return {
         "schema": SCHEMA,
         "action": "sync",
