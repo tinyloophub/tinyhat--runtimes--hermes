@@ -409,6 +409,7 @@ async def _checkout(
         "schema": SCHEMA,
         "action": "checkout",
         "hat_handle": handle,
+        "repository": {"owner": owner, "name": repo},
         "path": str(target),
         "branch": branch,
         "head_sha": head,
@@ -421,7 +422,7 @@ async def _status(identifier: str) -> dict[str, Any]:
     # Status is deliberately local-only. A read must never reactivate a grant
     # that the user previously reset.
     target = _existing_checkout(identifier)
-    handle, _, _ = _canonical_handle(_local_config(target, _CONFIG_HANDLE))
+    handle, _, owner, repo = _local_grant_metadata(target)
     changed = await asyncio.to_thread(_status_paths, target)
     head = (
         await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
@@ -430,6 +431,7 @@ async def _status(identifier: str) -> dict[str, Any]:
         "schema": SCHEMA,
         "action": "status",
         "hat_handle": handle,
+        "repository": {"owner": owner, "name": repo},
         "path": str(target),
         "head_sha": head,
         "changed_paths": changed,
@@ -504,6 +506,7 @@ async def _sync(
             "schema": SCHEMA,
             "action": "sync",
             "hat_handle": handle,
+            "repository": {"owner": owner, "name": repo},
             "path": str(target),
             "head_sha": local_head,
             "changed": False,
@@ -533,6 +536,7 @@ async def _sync(
         "schema": SCHEMA,
         "action": "sync",
         "hat_handle": handle,
+        "repository": {"owner": owner, "name": repo},
         "path": str(target),
         "head_sha": head,
         "changed": True,
@@ -562,6 +566,7 @@ async def _reset(
         "schema": SCHEMA,
         "action": "reset",
         "hat_handle": handle,
+        "repository": {"owner": owner, "name": repo},
         "path": str(target),
         "renewal_stopped": bool(result.get("renewal_stopped")),
         "residual_access_expires_at": result.get("residual_access_expires_at"),

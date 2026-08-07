@@ -178,6 +178,13 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("grant_id", result)
         self.assertNotIn("token", result)
         self.assertEqual(clone.call_args.kwargs["grant_id"], GRANT_ID)
+        self.assertEqual(
+            result["repository"],
+            {
+                "owner": "tinyhat-ai",
+                "name": "tld--itsfaridkia--hats--example-hat",
+            },
+        )
 
     async def test_status_is_local_only_and_does_not_prepare_access(self) -> None:
         with (
@@ -210,6 +217,17 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
+            for key, value in (
+                ("tinyhat.repositoryGrantId", GRANT_ID),
+                ("tinyhat.repositoryOwner", "tinyhat-ai"),
+                ("tinyhat.repositoryName", "example-hat"),
+            ):
+                subprocess.run(
+                    ["git", "-C", str(checkout), "config", "--local", key, value],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
             subprocess.run(
                 ["git", "-C", str(checkout), "config", "user.name", "Test"],
                 check=True,
@@ -238,6 +256,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             result = await hat_repository._status("example-hat")
 
         self.assertTrue(result["clean"])
+        self.assertEqual(
+            result["repository"],
+            {"owner": "tinyhat-ai", "name": "example-hat"},
+        )
         prepare.assert_not_awaited()
 
     async def test_reset_removes_helper_but_retains_local_clone(self) -> None:
