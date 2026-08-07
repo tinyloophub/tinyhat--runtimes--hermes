@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.50 - 2026-08-06
+
 - Make the creation-time browser readiness smoke open and snapshot a
   deterministic local `data:` page instead of a public website. This keeps the
   Chromium and automation proof independent of transient internet or DNS
