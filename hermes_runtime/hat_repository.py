@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, AsyncIterator
 from urllib.parse import quote, urlsplit
 
 from hermes_runtime.platform_context import StandalonePlatformContext
@@ -59,6 +63,55 @@ def _required_text(
 
 def _repository_root() -> Path:
     return hermes_home() / "hat-repositories"
+
+
+def _acquire_checkout_lock(target: Path) -> int:
+    """Acquire one process-wide mutation lock for a canonical checkout."""
+
+    root = _repository_root().expanduser().resolve()
+    try:
+        relative = target.resolve().relative_to(root)
+    except ValueError as exc:
+        raise HatRepositoryError("The Hat checkout lock path is unsafe.") from exc
+    lock_directory = root / ".locks"
+    lock_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if lock_directory.is_symlink() or lock_directory.resolve() != lock_directory:
+        raise HatRepositoryError("The Hat checkout lock directory is unsafe.")
+    os.chmod(lock_directory, 0o700)
+    lock_name = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()
+    flags = os.O_CREAT | os.O_RDWR
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_directory / f"{lock_name}.lock", flags, 0o600)
+    except OSError as exc:
+        raise HatRepositoryError("The Hat checkout lock could not be opened.") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise HatRepositoryError("The Hat checkout lock file is unsafe.")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _release_checkout_lock(descriptor: int) -> None:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+@asynccontextmanager
+async def _checkout_mutation_lock(target: Path) -> AsyncIterator[None]:
+    descriptor = await asyncio.to_thread(_acquire_checkout_lock, target)
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(_release_checkout_lock, descriptor)
 
 
 def _canonical_handle(value: Any) -> tuple[str, str, str]:
@@ -506,19 +559,20 @@ async def _checkout(
     grant_id = _grant_id(prepared)
     owner, repo, branch, url = _repository_payload(prepared)
     target = _checkout_path(handle)
-    created = await asyncio.to_thread(
-        _clone_or_refresh,
-        target=target,
-        url=url,
-        branch=branch,
-        handle=handle,
-        grant_id=grant_id,
-        owner=owner,
-        repo=repo,
-    )
-    head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
-    ).stdout.strip()
+    async with _checkout_mutation_lock(target):
+        created = await asyncio.to_thread(
+            _clone_or_refresh,
+            target=target,
+            url=url,
+            branch=branch,
+            handle=handle,
+            grant_id=grant_id,
+            owner=owner,
+            repo=repo,
+        )
+        head = (
+            await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+        ).stdout.strip()
     return {
         "schema": SCHEMA,
         "action": "checkout",
@@ -675,6 +729,34 @@ async def _sync(
     grant_id = _grant_id(prepared)
     owner, repo, branch, url = _repository_payload(prepared)
     target = _checkout_path(handle)
+    async with _checkout_mutation_lock(target):
+        return await _sync_locked(
+            context,
+            target=target,
+            handle=handle,
+            grant_id=grant_id,
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            url=url,
+            raw_paths=raw_paths,
+            message=message,
+        )
+
+
+async def _sync_locked(
+    context: StandalonePlatformContext,
+    *,
+    target: Path,
+    handle: str,
+    grant_id: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    url: str,
+    raw_paths: Any,
+    message: str,
+) -> dict[str, Any]:
     if not (target / ".git").is_dir():
         raise HatRepositoryError("Check out this Hat repository before syncing it.")
     remote = (
@@ -858,16 +940,17 @@ async def _reset(
     # Reset consumes the already-persisted opaque grant id. Calling prepare
     # here would reactivate a revoked grant immediately before revoking it.
     target = _existing_checkout(identifier)
-    handle, grant_id, owner, repo = _local_grant_metadata(target)
-    await asyncio.to_thread(
-        _disable_checkout_credentials,
-        target,
-        owner=owner,
-        repo=repo,
-    )
-    result = await context.client.delete_json(
-        context.computer_path(f"repository-grants/{quote(grant_id, safe='')}")
-    )
+    async with _checkout_mutation_lock(target):
+        handle, grant_id, owner, repo = _local_grant_metadata(target)
+        await asyncio.to_thread(
+            _disable_checkout_credentials,
+            target,
+            owner=owner,
+            repo=repo,
+        )
+        result = await context.client.delete_json(
+            context.computer_path(f"repository-grants/{quote(grant_id, safe='')}")
+        )
     return {
         "schema": SCHEMA,
         "action": "reset",

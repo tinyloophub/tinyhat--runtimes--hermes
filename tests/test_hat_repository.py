@@ -5,7 +5,10 @@ from __future__ import annotations
 import io
 import os
 import subprocess
+import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -80,6 +83,106 @@ class GitHubCredentialHelperTests(unittest.TestCase):
 
 
 class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    def test_checkout_mutation_lock_serializes_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            target = home / "hat-repositories" / "itsfaridkia" / "example-hat"
+            log = Path(tmp) / "order.log"
+            ready = Path(tmp) / "first-ready"
+            release = Path(tmp) / "release-first"
+            script = textwrap.dedent(
+                """
+                import asyncio
+                import sys
+                from pathlib import Path
+
+                from hermes_runtime import hat_repository
+
+                async def main():
+                    target = Path(sys.argv[1])
+                    log = Path(sys.argv[2])
+                    label = sys.argv[3]
+                    ready = Path(sys.argv[4])
+                    release = Path(sys.argv[5])
+                    async with hat_repository._checkout_mutation_lock(target):
+                        with log.open("a", encoding="utf-8") as stream:
+                            stream.write(f"{label}:start\\n")
+                            stream.flush()
+                        if label == "first":
+                            ready.write_text("ready", encoding="utf-8")
+                            for _ in range(500):
+                                if release.exists():
+                                    break
+                                await asyncio.sleep(0.01)
+                            else:
+                                raise RuntimeError("release was not signalled")
+                        with log.open("a", encoding="utf-8") as stream:
+                            stream.write(f"{label}:end\\n")
+
+                asyncio.run(main())
+                """
+            )
+            env = dict(os.environ)
+            env["HERMES_HOME"] = str(home)
+            first = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    str(target),
+                    str(log),
+                    "first",
+                    str(ready),
+                    str(release),
+                ],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "first process never acquired the lock")
+            second = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    str(target),
+                    str(log),
+                    "second",
+                    str(ready),
+                    str(release),
+                ],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(0.2)
+            blocked_order = log.read_text(encoding="utf-8")
+            release.write_text("release", encoding="utf-8")
+            first_stdout, first_stderr = first.communicate(timeout=5)
+            second_stdout, second_stderr = second.communicate(timeout=5)
+            final_order = log.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(blocked_order, "first:start\n")
+        self.assertEqual(
+            (first.returncode, first_stdout, first_stderr),
+            (0, "", ""),
+        )
+        self.assertEqual(
+            (second.returncode, second_stdout, second_stderr),
+            (0, "", ""),
+        )
+        self.assertEqual(
+            final_order,
+            ["first:start", "first:end", "second:start", "second:end"],
+        )
+
     def test_bounded_helper_shadows_global_and_reset_stays_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
