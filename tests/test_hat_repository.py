@@ -98,9 +98,24 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 branch="main",
             )
             config = (checkout / ".git" / "config").read_text(encoding="utf-8")
+            matched_helper = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "config",
+                    "--get-urlmatch",
+                    "credential.helper",
+                    "https://github.com/tinyhat-ai/example-hat.git",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
 
         self.assertIn(GRANT_ID, config)
         self.assertIn("github_credential_helper", config)
+        self.assertIn("github_credential_helper", matched_helper)
         self.assertIn("itsfaridkia/hats/example-hat", config)
         self.assertNotIn("password", config.casefold())
         self.assertNotIn("x-access-token", config)

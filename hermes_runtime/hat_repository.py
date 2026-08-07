@@ -180,7 +180,11 @@ def _credential_helper_command(*, grant_id: str, owner: str, repo: str) -> str:
 
 
 def _credential_key(owner: str, repo: str) -> str:
-    return f"credential.https://github.com/{owner}/{repo}.helper"
+    # Git includes the literal ``.git`` suffix from the remote URL in the
+    # credential context path.  The URL-scoped helper must match that exact
+    # context when ``credential.useHttpPath`` is enabled, otherwise Git skips
+    # the helper and falls back to an interactive username prompt.
+    return f"credential.https://github.com/{owner}/{repo}.git.helper"
 
 
 def _run_git(
