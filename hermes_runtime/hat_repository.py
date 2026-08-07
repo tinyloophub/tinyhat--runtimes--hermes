@@ -239,15 +239,69 @@ def _configure_checkout(
         owner=owner,
         repo=repo,
     )
+    _disable_checkout_credentials(path, owner=owner, repo=repo)
+    _run_git(
+        [
+            "config",
+            "--local",
+            "--add",
+            _credential_key(owner, repo),
+            helper,
+        ],
+        cwd=path,
+    )
+    _configure_checkout_identity(
+        path,
+        handle=handle,
+        grant_id=grant_id,
+        owner=owner,
+        repo=repo,
+        branch=branch,
+    )
+
+
+def _disable_checkout_credentials(path: Path, *, owner: str, repo: str) -> None:
+    """Shadow every inherited helper and leave this repository fail-closed."""
+
     _run_git(["config", "--local", "credential.useHttpPath", "true"], cwd=path)
+    # An empty helper resets Git's accumulated system/global helper list. The
+    # exact URL sentinel does the same after URL matching and remains in place
+    # after reset, so Git cannot fall through to a broad GitHub credential.
+    _run_git(
+        ["config", "--local", "--unset-all", "credential.helper"],
+        cwd=path,
+        check=False,
+    )
+    _run_git(
+        ["config", "--local", "--add", "credential.helper", ""],
+        cwd=path,
+    )
     _run_git(
         ["config", "--local", "--unset-all", _credential_key(owner, repo)],
         cwd=path,
         check=False,
     )
     _run_git(
-        ["config", "--local", _credential_key(owner, repo), helper], cwd=path
+        [
+            "config",
+            "--local",
+            "--add",
+            _credential_key(owner, repo),
+            "",
+        ],
+        cwd=path,
     )
+
+
+def _configure_checkout_identity(
+    path: Path,
+    *,
+    handle: str,
+    grant_id: str,
+    owner: str,
+    repo: str,
+    branch: str,
+) -> None:
     _run_git(["config", "--local", "user.name", "Tinyhat Agent"], cwd=path)
     _run_git(
         ["config", "--local", "user.email", "agent@tinyhat.ai"], cwd=path
@@ -288,6 +342,8 @@ def _clone_or_refresh(
                 ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
                 extra_config=[
                     ("credential.useHttpPath", "true"),
+                    ("credential.helper", ""),
+                    (_credential_key(owner, repo), ""),
                     (_credential_key(owner, repo), helper),
                 ],
             )
@@ -554,10 +610,10 @@ async def _reset(
     target = _existing_checkout(identifier)
     handle, grant_id, owner, repo = _local_grant_metadata(target)
     await asyncio.to_thread(
-        _run_git,
-        ["config", "--local", "--unset-all", _credential_key(owner, repo)],
-        cwd=target,
-        check=False,
+        _disable_checkout_credentials,
+        target,
+        owner=owner,
+        repo=repo,
     )
     result = await context.client.delete_json(
         context.computer_path(f"repository-grants/{quote(grant_id, safe='')}")

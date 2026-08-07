@@ -80,6 +80,104 @@ class GitHubCredentialHelperTests(unittest.TestCase):
 
 
 class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    def test_bounded_helper_shadows_global_and_reset_stays_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            global_config = root / "global.gitconfig"
+            broad_marker = root / "broad-helper-ran"
+            broad_helper = root / "broad-helper"
+            safe_helper = root / "safe-helper"
+            broad_helper.write_text(
+                "#!/bin/sh\n"
+                f"touch {broad_marker.as_posix()}\n"
+                "printf 'username=broad\\npassword=broad\\n\\n'\n",
+                encoding="utf-8",
+            )
+            safe_helper.write_text(
+                "#!/bin/sh\n"
+                "printf 'username=safe\\npassword=safe\\n\\n'\n",
+                encoding="utf-8",
+            )
+            broad_helper.chmod(0o755)
+            safe_helper.chmod(0o755)
+            subprocess.run(
+                ["git", "init", "-q", str(checkout)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "--file",
+                    str(global_config),
+                    "credential.helper",
+                    f"!{broad_helper}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            git_env = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_SYSTEM": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+                "GCM_INTERACTIVE": "never",
+            }
+            credential_input = (
+                "protocol=https\n"
+                "host=github.com\n"
+                "path=tinyhat-ai/example-hat.git\n\n"
+            )
+            with (
+                mock.patch.dict(os.environ, git_env, clear=True),
+                mock.patch.object(
+                    hat_repository,
+                    "_credential_helper_command",
+                    return_value=f"!{safe_helper}",
+                ),
+            ):
+                hat_repository._configure_checkout(
+                    checkout,
+                    handle="itsfaridkia/hats/example-hat",
+                    grant_id=GRANT_ID,
+                    owner="tinyhat-ai",
+                    repo="example-hat",
+                    branch="main",
+                )
+                active = subprocess.run(
+                    ["git", "-C", str(checkout), "credential", "fill"],
+                    input=credential_input,
+                    env=git_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(active.returncode, 0)
+                self.assertIn("username=safe", active.stdout)
+                self.assertFalse(broad_marker.exists())
+
+                hat_repository._disable_checkout_credentials(
+                    checkout,
+                    owner="tinyhat-ai",
+                    repo="example-hat",
+                )
+                reset = subprocess.run(
+                    ["git", "-C", str(checkout), "credential", "fill"],
+                    input=credential_input,
+                    env=git_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+            self.assertNotEqual(reset.returncode, 0)
+            self.assertNotIn("username=broad", reset.stdout)
+            self.assertFalse(broad_marker.exists())
+
     def test_local_git_config_contains_a_grant_but_no_credential(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkout = Path(tmp)
