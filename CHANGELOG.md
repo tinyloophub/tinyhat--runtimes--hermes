@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.52 - 2026-08-08
+
 - Delete confirmed Hat repository checkouts only when the control-plane owner,
   repository name, and HTTPS remote match the local checkout. Atomic quarantine
   plus file-descriptor-bound traversal prevents a path swap from deleting an
