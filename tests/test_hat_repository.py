@@ -296,6 +296,56 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(checkout.is_dir())
             self.assertTrue(validated.is_dir())
 
+    async def test_delete_local_restores_after_unlink_error_and_retry_removes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(checkout, "itsfaridkia/hats/expected")
+            (checkout / "private-notes.txt").write_text(
+                "private checkout content", encoding="utf-8"
+            )
+            real_unlink = os.unlink
+            failed_once = False
+
+            def fail_one_unlink(
+                path: str,
+                *,
+                dir_fd: int | None = None,
+            ) -> None:
+                nonlocal failed_once
+                if not failed_once:
+                    failed_once = True
+                    raise PermissionError("simulated one-time unlink failure")
+                real_unlink(path, dir_fd=dir_fd)
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(hat_repository.os, "unlink", fail_one_unlink),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "could not be safely deleted",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            quarantine = checkout.with_name(f".tinyhat-delete-{checkout.name}")
+            self.assertTrue(failed_once)
+            self.assertTrue(checkout.is_dir())
+            self.assertFalse(quarantine.exists())
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            self.assertTrue(result["removed"])
+            self.assertFalse(checkout.exists())
+            self.assertFalse(quarantine.exists())
+
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"

@@ -7,7 +7,6 @@ import fcntl
 import hashlib
 import os
 import re
-import secrets
 import shlex
 import shutil
 import stat
@@ -1042,6 +1041,58 @@ def _restore_quarantined_checkout(
         )
 
 
+def _pending_quarantine_name(target: Path) -> str:
+    """Return the deterministic recovery name for one canonical checkout."""
+
+    return f".tinyhat-delete-{target.name}"
+
+
+def _restore_pending_quarantine(target: Path) -> None:
+    """Restore an interrupted deletion so normal identity checks can resume."""
+
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_CLOEXEC", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_descriptor = os.open(target.parent, parent_flags)
+    except FileNotFoundError:
+        return
+    quarantine_name = _pending_quarantine_name(target)
+    try:
+        try:
+            os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
+            return
+        except FileNotFoundError:
+            pass
+        try:
+            quarantined = os.stat(
+                quarantine_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        if (
+            not stat.S_ISDIR(quarantined.st_mode)
+            or quarantined.st_uid != os.geteuid()
+        ):
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion is unsafe to restore."
+            )
+        os.rename(
+            quarantine_name,
+            target.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+    except OSError as exc:
+        raise HatRepositoryError(
+            "The pending local Hat checkout deletion could not be restored."
+        ) from exc
+    finally:
+        os.close(parent_descriptor)
+
+
 def _remove_directory_contents(descriptor: int) -> None:
     """Remove one opened directory tree without following path swaps or symlinks."""
 
@@ -1114,7 +1165,7 @@ def _delete_verified_checkout(
         if not _same_file(metadata, after_validation):
             raise HatRepositoryError("The local Hat checkout changed during deletion.")
 
-        quarantine_name = f".tinyhat-delete-{target.name}-{secrets.token_hex(12)}"
+        quarantine_name = _pending_quarantine_name(target)
         os.rename(
             target.name,
             quarantine_name,
@@ -1152,7 +1203,27 @@ def _delete_verified_checkout(
         finally:
             os.close(checkout_descriptor)
         os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+    except HatRepositoryError:
+        if quarantine_name:
+            try:
+                _restore_quarantined_checkout(
+                    parent_descriptor,
+                    quarantine_name=quarantine_name,
+                    target_name=target.name,
+                )
+            except OSError:
+                pass
+        raise
     except OSError as exc:
+        if quarantine_name:
+            try:
+                _restore_quarantined_checkout(
+                    parent_descriptor,
+                    quarantine_name=quarantine_name,
+                    target_name=target.name,
+                )
+            except OSError:
+                pass
         raise HatRepositoryError(
             "The local Hat checkout could not be safely deleted."
         ) from exc
@@ -1167,6 +1238,7 @@ async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, A
     expected_owner, expected_repo, expected_url = _deletion_repository_payload(payload)
     target = _deletion_checkout_path(handle)
     async with _checkout_mutation_lock(target):
+        await asyncio.to_thread(_restore_pending_quarantine, target)
         if not target.exists():
             return {
                 "schema": SCHEMA,
