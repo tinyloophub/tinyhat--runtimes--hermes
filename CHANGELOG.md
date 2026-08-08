@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Delete confirmed Hat repository checkouts only when the control-plane owner,
+  repository name, and HTTPS remote match the local checkout. Atomic quarantine
+  plus file-descriptor-bound traversal prevents a path swap from deleting an
+  unrelated directory, while current and pre-rename checkouts remain eligible.
+
 ## 0.0.51 - 2026-08-07
 
 - Add Computer-local Git checkouts for Tinyhat-managed Hat repositories. Git

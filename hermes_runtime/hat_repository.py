@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -153,6 +154,40 @@ def _repository_payload(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     ):
         raise HatRepositoryError("The platform returned an unsafe repository URL.")
     return owner, name, branch, url
+
+
+def _deletion_repository_payload(payload: dict[str, Any]) -> tuple[str, str, str]:
+    """Return the control-plane identity required for destructive cleanup."""
+
+    repository = payload.get("repository")
+    if not isinstance(repository, dict) or set(repository) != {
+        "owner",
+        "name",
+        "url",
+    }:
+        raise HatRepositoryError(
+            "Trusted repository metadata is required to delete a Hat checkout."
+        )
+    owner = str(repository.get("owner") or "").strip()
+    name = str(repository.get("name") or "").strip()
+    url = str(repository.get("url") or "").strip()
+    if (
+        _PROVIDER_PART_RE.fullmatch(owner) is None
+        or _PROVIDER_PART_RE.fullmatch(name) is None
+    ):
+        raise HatRepositoryError("The platform returned invalid repository metadata.")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.casefold() != f"/{owner}/{name}.git".casefold()
+    ):
+        raise HatRepositoryError("The platform returned an unsafe repository URL.")
+    return owner, name, url
 
 
 def _grant_id(payload: dict[str, Any]) -> str:
@@ -987,10 +1022,149 @@ async def _reset(
     }
 
 
-async def _delete_local(identifier: str) -> dict[str, Any]:
+def _same_file(first: os.stat_result, second: os.stat_result) -> bool:
+    return first.st_dev == second.st_dev and first.st_ino == second.st_ino
+
+
+def _restore_quarantined_checkout(
+    parent_descriptor: int, *, quarantine_name: str, target_name: str
+) -> None:
+    """Best-effort restore after a path swap; never overwrite a new target."""
+
+    try:
+        os.stat(target_name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        os.rename(
+            quarantine_name,
+            target_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+
+
+def _remove_directory_contents(descriptor: int) -> None:
+    """Remove one opened directory tree without following path swaps or symlinks."""
+
+    for entry in os.listdir(descriptor):
+        metadata = os.stat(entry, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            child = os.open(entry, flags, dir_fd=descriptor)
+            try:
+                if not _same_file(metadata, os.fstat(child)):
+                    raise HatRepositoryError(
+                        "The local Hat checkout changed during deletion."
+                    )
+                _remove_directory_contents(child)
+            finally:
+                os.close(child)
+            os.rmdir(entry, dir_fd=descriptor)
+        else:
+            os.unlink(entry, dir_fd=descriptor)
+
+
+def _delete_verified_checkout(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> None:
+    """Validate, atomically quarantine, then fd-delete one exact checkout."""
+
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_CLOEXEC", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_descriptor = os.open(target.parent, parent_flags)
+    quarantine_name = ""
+    try:
+        parent_metadata = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(parent_metadata.st_mode)
+            or parent_metadata.st_uid != os.geteuid()
+        ):
+            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
+        metadata = os.stat(
+            target.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        git_directory = target / ".git"
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or git_directory.is_symlink()
+            or not git_directory.is_dir()
+        ):
+            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
+        local_handle, _grant_id_value, owner, repo = _local_grant_metadata(target)
+        remote = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()
+        if local_handle != handle:
+            raise HatRepositoryError("The local Hat checkout belongs to another Hat.")
+        if owner != expected_owner or repo != expected_repo or remote != expected_url:
+            raise HatRepositoryError(
+                "The local Hat checkout points at another repository."
+            )
+        _disable_checkout_credentials(target, owner=owner, repo=repo)
+
+        after_validation = os.stat(
+            target.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not _same_file(metadata, after_validation):
+            raise HatRepositoryError("The local Hat checkout changed during deletion.")
+
+        quarantine_name = f".tinyhat-delete-{target.name}-{secrets.token_hex(12)}"
+        os.rename(
+            target.name,
+            quarantine_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        quarantined = os.stat(
+            quarantine_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not _same_file(metadata, quarantined):
+            _restore_quarantined_checkout(
+                parent_descriptor,
+                quarantine_name=quarantine_name,
+                target_name=target.name,
+            )
+            raise HatRepositoryError("The local Hat checkout changed during deletion.")
+
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+        checkout_descriptor = os.open(
+            quarantine_name, directory_flags, dir_fd=parent_descriptor
+        )
+        try:
+            if not _same_file(metadata, os.fstat(checkout_descriptor)):
+                _restore_quarantined_checkout(
+                    parent_descriptor,
+                    quarantine_name=quarantine_name,
+                    target_name=target.name,
+                )
+                raise HatRepositoryError(
+                    "The local Hat checkout changed during deletion."
+                )
+            _remove_directory_contents(checkout_descriptor)
+        finally:
+            os.close(checkout_descriptor)
+        os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise HatRepositoryError(
+            "The local Hat checkout could not be safely deleted."
+        ) from exc
+    finally:
+        os.close(parent_descriptor)
+
+
+async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Delete only the verified checkout for one canonical Hat handle."""
 
     handle, _, _ = _canonical_handle(identifier)
+    expected_owner, expected_repo, expected_url = _deletion_repository_payload(payload)
     target = _deletion_checkout_path(handle)
     async with _checkout_mutation_lock(target):
         if not target.exists():
@@ -1001,37 +1175,14 @@ async def _delete_local(identifier: str) -> dict[str, Any]:
                 "path": str(target),
                 "removed": False,
             }
-        try:
-            metadata = target.lstat()
-        except OSError as exc:
-            raise HatRepositoryError(
-                "The local Hat checkout could not be inspected."
-            ) from exc
-        git_directory = target / ".git"
-        if (
-            target.parent.is_symlink()
-            or target.is_symlink()
-            or not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or git_directory.is_symlink()
-            or not git_directory.is_dir()
-        ):
-            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
-        local_handle, _grant_id_value, owner, repo = _local_grant_metadata(target)
-        if local_handle != handle:
-            raise HatRepositoryError("The local Hat checkout belongs to another Hat.")
         await asyncio.to_thread(
-            _disable_checkout_credentials,
+            _delete_verified_checkout,
             target,
-            owner=owner,
-            repo=repo,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
         )
-        try:
-            await asyncio.to_thread(shutil.rmtree, target)
-        except OSError as exc:
-            raise HatRepositoryError(
-                "The local Hat checkout could not be deleted."
-            ) from exc
         if target.exists():
             raise HatRepositoryError("The local Hat checkout could not be deleted.")
     return {
@@ -1064,7 +1215,7 @@ async def run(
     if action == "reset":
         return await _reset(context, identifier)
     if action == "delete_local":
-        return await _delete_local(identifier)
+        return await _delete_local(identifier, payload)
     raise HatRepositoryError("Unsupported Hat repository action.")
 
 

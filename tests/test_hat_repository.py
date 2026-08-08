@@ -84,7 +84,14 @@ class GitHubCredentialHelperTests(unittest.TestCase):
 
 class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
-    def _create_checkout(path: Path, handle: str) -> None:
+    def _create_checkout(
+        path: Path,
+        handle: str,
+        *,
+        owner: str = "tinyhat-ai",
+        repo: str | None = None,
+    ) -> None:
+        repo = repo or f"repo-{path.name}"
         subprocess.run(
             ["git", "init", "-q", str(path)],
             check=True,
@@ -94,8 +101,8 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
         for key, value in (
             ("tinyhat.hatHandle", handle),
             ("tinyhat.repositoryGrantId", GRANT_ID),
-            ("tinyhat.repositoryOwner", "tinyhat-ai"),
-            ("tinyhat.repositoryName", f"repo-{path.name}"),
+            ("tinyhat.repositoryOwner", owner),
+            ("tinyhat.repositoryName", repo),
         ):
             subprocess.run(
                 ["git", "-C", str(path), "config", "--local", key, value],
@@ -103,6 +110,33 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/{owner}/{repo}.git",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @staticmethod
+    def _delete_payload(path: Path) -> dict[str, object]:
+        repo = f"repo-{path.name}"
+        return {
+            "action": "delete_local",
+            "identifier": f"itsfaridkia/hats/{path.name}",
+            "repository": {
+                "owner": "tinyhat-ai",
+                "name": repo,
+                "url": f"https://github.com/tinyhat-ai/{repo}.git",
+            },
+        }
 
     async def test_delete_local_removes_only_the_verified_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -116,10 +150,11 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
                 old_result = await hat_repository._delete_local(
-                    "itsfaridkia/hats/old-hat"
+                    "itsfaridkia/hats/old-hat", self._delete_payload(old_checkout)
                 )
                 current_result = await hat_repository._delete_local(
-                    "itsfaridkia/hats/current-hat"
+                    "itsfaridkia/hats/current-hat",
+                    self._delete_payload(current_checkout),
                 )
 
             self.assertTrue(old_result["removed"])
@@ -133,7 +168,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             tempfile.TemporaryDirectory() as tmp,
             mock.patch.dict(os.environ, {"HERMES_HOME": tmp}),
         ):
-            result = await hat_repository._delete_local("itsfaridkia/hats/missing-hat")
+            missing = Path(tmp) / "hat-repositories" / "itsfaridkia" / "missing-hat"
+            result = await hat_repository._delete_local(
+                "itsfaridkia/hats/missing-hat", self._delete_payload(missing)
+            )
 
         self.assertFalse(result["removed"])
 
@@ -149,7 +187,9 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     "belongs to another Hat",
                 ),
             ):
-                await hat_repository._delete_local("itsfaridkia/hats/expected")
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
 
             self.assertTrue(checkout.is_dir())
 
@@ -167,9 +207,94 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                     "unsafe to delete",
                 ),
             ):
-                await hat_repository._delete_local("itsfaridkia/hats/expected")
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(root / "expected")
+                )
 
             self.assertTrue(unrelated.is_dir())
+
+    async def test_delete_local_rejects_untrusted_repository_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(
+                checkout,
+                "itsfaridkia/hats/expected",
+                owner="attacker",
+                repo="unrelated",
+            )
+            payload = self._delete_payload(checkout)
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "points at another repository",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", payload
+                )
+
+            self.assertTrue(checkout.is_dir())
+
+    async def test_delete_local_restores_swapped_checkout_without_deleting_it(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            parent = home / "hat-repositories" / "itsfaridkia"
+            checkout = parent / "expected"
+            unrelated = parent / "unrelated"
+            validated = parent / "validated"
+            self._create_checkout(checkout, "itsfaridkia/hats/expected")
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+            real_rename = os.rename
+            swapped = False
+
+            def swap_before_quarantine(
+                source: str,
+                destination: str,
+                *,
+                src_dir_fd: int | None = None,
+                dst_dir_fd: int | None = None,
+            ) -> None:
+                nonlocal swapped
+                if not swapped and source == "expected":
+                    swapped = True
+                    real_rename(
+                        source,
+                        "validated",
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
+                    )
+                    real_rename(
+                        "unrelated",
+                        source,
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
+                    )
+                real_rename(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(hat_repository.os, "rename", swap_before_quarantine),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "changed during deletion",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            self.assertTrue(swapped)
+            self.assertTrue(checkout.is_dir())
+            self.assertTrue(validated.is_dir())
 
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
