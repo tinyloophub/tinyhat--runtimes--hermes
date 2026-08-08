@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncIterator
@@ -47,6 +48,7 @@ _CONFIG_PENDING_HEAD = "tinyhat.pendingSyncHead"
 _CONFIG_PENDING_BASE = "tinyhat.pendingSyncBase"
 _CONFIG_PENDING_BRANCH = "tinyhat.pendingSyncBranch"
 _DELETION_JOURNAL_SCHEMA = "tinyhat_hat_deletion_journal_v1"
+_CLONE_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
 
 
 class HatRepositoryError(RuntimeError):
@@ -474,6 +476,44 @@ def _pending_sync(path: Path) -> tuple[str, str, str] | None:
     return str(head), str(base), str(branch)
 
 
+def _clone_repository(
+    *,
+    target: Path,
+    url: str,
+    branch: str,
+    owner: str,
+    repo: str,
+    helper: str,
+) -> None:
+    """Clone once GitHub's renamed-repository access has propagated."""
+
+    delays: tuple[float | None, ...] = (*_CLONE_RETRY_DELAYS_SECONDS, None)
+    for delay in delays:
+        temporary = Path(
+            tempfile.mkdtemp(prefix=".tinyhat-clone-", dir=str(target.parent))
+        )
+        try:
+            _run_git(
+                ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
+                extra_config=[
+                    ("credential.useHttpPath", "true"),
+                    ("credential.helper", ""),
+                    (_credential_key(owner, repo), ""),
+                    (_credential_key(owner, repo), helper),
+                ],
+            )
+            temporary.replace(target)
+            return
+        except HatRepositoryError:
+            shutil.rmtree(temporary, ignore_errors=True)
+            if delay is None:
+                raise
+            time.sleep(delay)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+
+
 def _clone_or_refresh(
     *,
     target: Path,
@@ -492,24 +532,15 @@ def _clone_or_refresh(
     )
     created = False
     if not target.exists():
-        temporary = Path(
-            tempfile.mkdtemp(prefix=".tinyhat-clone-", dir=str(target.parent))
+        _clone_repository(
+            target=target,
+            url=url,
+            branch=branch,
+            owner=owner,
+            repo=repo,
+            helper=helper,
         )
-        try:
-            _run_git(
-                ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
-                extra_config=[
-                    ("credential.useHttpPath", "true"),
-                    ("credential.helper", ""),
-                    (_credential_key(owner, repo), ""),
-                    (_credential_key(owner, repo), helper),
-                ],
-            )
-            temporary.replace(target)
-            created = True
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
+        created = True
     if not (target / ".git").is_dir():
         raise HatRepositoryError("The Hat checkout path is not a Git repository.")
     remote = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()

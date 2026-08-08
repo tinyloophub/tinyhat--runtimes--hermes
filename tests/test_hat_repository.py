@@ -708,6 +708,78 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def test_clone_retries_renamed_repository_propagation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            attempts = 0
+
+            def fake_run_git(args, **_kwargs):
+                nonlocal attempts
+                attempts += 1
+                clone_target = Path(args[-1])
+                if attempts < 3:
+                    raise hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    )
+                (clone_target / ".git").mkdir()
+                return mock.Mock(returncode=0, stdout="")
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0, 0.0),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(hat_repository.time, "sleep") as sleep,
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            self.assertEqual(attempts, 3)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertEqual(sleep.call_count, 2)
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
+
+    def test_clone_exhaustion_leaves_no_partial_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0,),
+                ),
+                mock.patch.object(
+                    hat_repository,
+                    "_run_git",
+                    side_effect=hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    ),
+                ),
+                mock.patch.object(hat_repository.time, "sleep"),
+                self.assertRaises(hat_repository.HatRepositoryError),
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            self.assertFalse(target.exists())
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
+
     async def test_status_is_local_only_and_does_not_prepare_access(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
