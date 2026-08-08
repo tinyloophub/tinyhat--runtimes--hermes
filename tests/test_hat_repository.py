@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -175,6 +177,55 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(result["removed"])
+
+    async def test_cancelled_delete_holds_lock_until_worker_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            target = home / "hat-repositories" / "itsfaridkia" / "cancelled-hat"
+            worker_started = threading.Event()
+            release_worker = threading.Event()
+
+            def blocked_resume(*_args, **_kwargs):
+                worker_started.set()
+                if not release_worker.wait(timeout=5):
+                    raise AssertionError("test worker was not released")
+                return None
+
+            second_entered = asyncio.Event()
+
+            async def enter_same_lock() -> None:
+                async with hat_repository._checkout_mutation_lock(target):
+                    second_entered.set()
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(
+                    hat_repository,
+                    "_resume_pending_deletion",
+                    side_effect=blocked_resume,
+                ),
+            ):
+                first = asyncio.create_task(
+                    hat_repository._delete_local(
+                        "itsfaridkia/hats/cancelled-hat",
+                        self._delete_payload(target),
+                    )
+                )
+                self.assertTrue(
+                    await asyncio.to_thread(worker_started.wait, 2),
+                    "the first mutation worker did not start",
+                )
+                first.cancel()
+                second = asyncio.create_task(enter_same_lock())
+                await asyncio.sleep(0.1)
+                self.assertFalse(second_entered.is_set())
+
+                release_worker.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+                await asyncio.wait_for(second, timeout=2)
+
+            self.assertTrue(second_entered.is_set())
 
     async def test_delete_local_rejects_checkout_with_mismatched_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

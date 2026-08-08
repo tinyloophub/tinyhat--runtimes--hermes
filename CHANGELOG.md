@@ -7,6 +7,8 @@
   plus file-descriptor-bound traversal prevents a path swap from deleting an
   unrelated directory, while an inode-bound private journal safely resumes an
   interrupted deletion even after Git metadata has already been removed.
+  Cancellation waits for an in-flight checkout worker before releasing its
+  cross-process lock, so a second mutation cannot overlap the first.
 - Retry a bounded fresh clone while GitHub propagates a renamed private Hat
   repository to its selected runtime App installation. A target-bound staging
   path is reconciled under the checkout lock before any later attempt, so a

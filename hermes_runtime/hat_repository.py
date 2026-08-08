@@ -17,7 +17,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable, TypeVar
 from urllib.parse import quote, urlsplit
 
 from hermes_runtime.platform_context import StandalonePlatformContext
@@ -49,6 +49,7 @@ _CONFIG_PENDING_BASE = "tinyhat.pendingSyncBase"
 _CONFIG_PENDING_BRANCH = "tinyhat.pendingSyncBranch"
 _DELETION_JOURNAL_SCHEMA = "tinyhat_hat_deletion_journal_v1"
 _CLONE_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
+_ThreadResult = TypeVar("_ThreadResult")
 
 
 class HatRepositoryError(RuntimeError):
@@ -108,13 +109,58 @@ def _release_checkout_lock(descriptor: int) -> None:
         os.close(descriptor)
 
 
+async def _drain_thread_worker(
+    worker: asyncio.Task[_ThreadResult],
+) -> _ThreadResult:
+    """Wait through repeated caller cancellation until one worker is finished."""
+
+    while True:
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker.done():
+                return worker.result()
+
+
+async def _await_thread_completion(
+    function: Callable[..., _ThreadResult],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> _ThreadResult:
+    """Propagate cancellation only after the underlying thread has stopped."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await _drain_thread_worker(worker)
+        except BaseException:
+            # Cancellation remains the caller-visible outcome, but retrieving a
+            # worker failure prevents an unobserved Task exception.
+            pass
+        raise
+
+
 @asynccontextmanager
 async def _checkout_mutation_lock(target: Path) -> AsyncIterator[None]:
-    descriptor = await asyncio.to_thread(_acquire_checkout_lock, target)
+    worker = asyncio.create_task(asyncio.to_thread(_acquire_checkout_lock, target))
+    try:
+        descriptor = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        descriptor: int | None = None
+        try:
+            descriptor = await _drain_thread_worker(worker)
+        except BaseException:
+            pass
+        if descriptor is not None:
+            _release_checkout_lock(descriptor)
+        raise
     try:
         yield
     finally:
-        await asyncio.to_thread(_release_checkout_lock, descriptor)
+        _release_checkout_lock(descriptor)
 
 
 def _canonical_handle(value: Any) -> tuple[str, str, str]:
@@ -666,7 +712,7 @@ async def _checkout(
     owner, repo, branch, url = _repository_payload(prepared)
     target = _checkout_path(handle)
     async with _checkout_mutation_lock(target):
-        created = await asyncio.to_thread(
+        created = await _await_thread_completion(
             _clone_or_refresh,
             target=target,
             url=url,
@@ -677,7 +723,7 @@ async def _checkout(
             repo=repo,
         )
         head = (
-            await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+            await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
         ).stdout.strip()
     return {
         "schema": SCHEMA,
@@ -697,9 +743,9 @@ async def _status(identifier: str) -> dict[str, Any]:
     # that the user previously reset.
     target = _existing_checkout(identifier)
     handle, _, owner, repo = _local_grant_metadata(target)
-    changed = await asyncio.to_thread(_status_paths, target)
+    changed = await _await_thread_completion(_status_paths, target)
     head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+        await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip()
     return {
         "schema": SCHEMA,
@@ -736,7 +782,7 @@ async def _resume_pending_sync(
     repo: str,
     branch: str,
 ) -> dict[str, Any] | None:
-    pending = await asyncio.to_thread(_pending_sync, target)
+    pending = await _await_thread_completion(_pending_sync, target)
     if pending is None:
         return None
     pending_head, pending_base, pending_branch = pending
@@ -744,13 +790,13 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The pending Hat sync belongs to another branch. Review the checkout."
         )
-    current_head = await asyncio.to_thread(
+    current_head = await _await_thread_completion(
         _run_git,
         ["rev-parse", "HEAD"],
         cwd=target,
         check=False,
     )
-    current_parent = await asyncio.to_thread(
+    current_parent = await _await_thread_completion(
         _run_git,
         ["rev-parse", "HEAD^"],
         cwd=target,
@@ -765,7 +811,7 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The local Hat checkout changed after a pending sync. Review it before retrying."
         )
-    fetched = await asyncio.to_thread(
+    fetched = await _await_thread_completion(
         _run_git,
         ["fetch", "--prune", "origin"],
         cwd=target,
@@ -775,7 +821,7 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The pending Hat sync could not reach the remote. Retry when access is available."
         )
-    remote = await asyncio.to_thread(
+    remote = await _await_thread_completion(
         _run_git,
         ["rev-parse", f"origin/{branch}"],
         cwd=target,
@@ -787,7 +833,7 @@ async def _resume_pending_sync(
             "The pending Hat sync could not read the remote branch."
         )
     if remote_head == pending_base:
-        pushed = await asyncio.to_thread(
+        pushed = await _await_thread_completion(
             _run_git,
             ["push", "origin", f"HEAD:refs/heads/{branch}"],
             cwd=target,
@@ -801,14 +847,14 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The remote Hat changed while a sync was pending. Review both versions."
         )
-    changed = await asyncio.to_thread(
+    changed = await _await_thread_completion(
         _run_git,
         ["diff", "--name-only", "-z", pending_base, pending_head, "--"],
         cwd=target,
     )
     synced_paths = [item for item in changed.stdout.split("\0") if item]
     await _record_synced_head(context, grant_id=grant_id, head=pending_head)
-    await asyncio.to_thread(_clear_pending_sync, target)
+    await _await_thread_completion(_clear_pending_sync, target)
     return {
         "schema": SCHEMA,
         "action": "sync",
@@ -866,11 +912,11 @@ async def _sync_locked(
     if not (target / ".git").is_dir():
         raise HatRepositoryError("Check out this Hat repository before syncing it.")
     remote = (
-        await asyncio.to_thread(_run_git, ["remote", "get-url", "origin"], cwd=target)
+        await _await_thread_completion(_run_git, ["remote", "get-url", "origin"], cwd=target)
     ).stdout.strip()
     if remote != url:
         raise HatRepositoryError("The local Hat checkout points at another repository.")
-    await asyncio.to_thread(
+    await _await_thread_completion(
         _configure_checkout,
         target,
         handle=handle,
@@ -902,20 +948,20 @@ async def _sync_locked(
     if resumed is not None:
         return resumed
 
-    await asyncio.to_thread(_run_git, ["fetch", "--prune", "origin"], cwd=target)
+    await _await_thread_completion(_run_git, ["fetch", "--prune", "origin"], cwd=target)
     local_head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+        await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip()
     remote_head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", f"origin/{branch}"], cwd=target)
+        await _await_thread_completion(_run_git, ["rev-parse", f"origin/{branch}"], cwd=target)
     ).stdout.strip()
     if local_head != remote_head:
         raise HatRepositoryError(
             "The remote Hat changed after checkout. Refresh it and review the changes "
             "before creating a commit."
         )
-    await asyncio.to_thread(_run_git, ["add", "--", *paths], cwd=target)
-    staged = await asyncio.to_thread(
+    await _await_thread_completion(_run_git, ["add", "--", *paths], cwd=target)
+    staged = await _await_thread_completion(
         _run_git,
         ["diff", "--cached", "--name-only", "-z"],
         cwd=target,
@@ -923,7 +969,7 @@ async def _sync_locked(
     staged_paths = [item for item in staged.stdout.split("\0") if item]
     unexpected = sorted(set(staged_paths) - set(paths))
     if unexpected:
-        await asyncio.to_thread(
+        await _await_thread_completion(
             _run_git, ["reset", "--quiet", "HEAD", "--", *paths], cwd=target
         )
         raise HatRepositoryError(
@@ -941,14 +987,14 @@ async def _sync_locked(
             "pushed": False,
             "synced_paths": [],
         }
-    await asyncio.to_thread(_run_git, ["commit", "-m", clean_message], cwd=target)
+    await _await_thread_completion(_run_git, ["commit", "-m", clean_message], cwd=target)
     head = (
-        (await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target))
+        (await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target))
         .stdout.strip()
         .casefold()
     )
     parent_head = (
-        (await asyncio.to_thread(_run_git, ["rev-parse", "HEAD^"], cwd=target))
+        (await _await_thread_completion(_run_git, ["rev-parse", "HEAD^"], cwd=target))
         .stdout.strip()
         .casefold()
     )
@@ -956,27 +1002,27 @@ async def _sync_locked(
         raise HatRepositoryError(
             "Git returned an invalid commit relationship before push."
         )
-    await asyncio.to_thread(
+    await _await_thread_completion(
         _set_pending_sync,
         target,
         head=head,
         base=local_head,
         branch=branch,
     )
-    pushed = await asyncio.to_thread(
+    pushed = await _await_thread_completion(
         _run_git,
         ["push", "origin", f"HEAD:refs/heads/{branch}"],
         cwd=target,
         check=False,
     )
     if pushed.returncode != 0:
-        fetched = await asyncio.to_thread(
+        fetched = await _await_thread_completion(
             _run_git,
             ["fetch", "--prune", "origin"],
             cwd=target,
             check=False,
         )
-        remote_after = await asyncio.to_thread(
+        remote_after = await _await_thread_completion(
             _run_git,
             ["rev-parse", f"origin/{branch}"],
             cwd=target,
@@ -997,13 +1043,13 @@ async def _sync_locked(
             and remote_after.returncode == 0
             and remote_after_sha == local_head
         ):
-            current_head = await asyncio.to_thread(
+            current_head = await _await_thread_completion(
                 _run_git,
                 ["rev-parse", "HEAD"],
                 cwd=target,
                 check=False,
             )
-            current_parent = await asyncio.to_thread(
+            current_parent = await _await_thread_completion(
                 _run_git,
                 ["rev-parse", "HEAD^"],
                 cwd=target,
@@ -1015,14 +1061,14 @@ async def _sync_locked(
                 and current_head.stdout.strip().casefold() == head
                 and current_parent.stdout.strip().casefold() == local_head
             ):
-                restored = await asyncio.to_thread(
+                restored = await _await_thread_completion(
                     _run_git,
                     ["reset", "--mixed", local_head],
                     cwd=target,
                     check=False,
                 )
                 if restored.returncode == 0:
-                    await asyncio.to_thread(_clear_pending_sync, target)
+                    await _await_thread_completion(_clear_pending_sync, target)
                     raise HatRepositoryError(
                         "Git could not push the Hat commit. The selected changes "
                         "remain in the worktree so the sync can be retried."
@@ -1037,7 +1083,7 @@ async def _sync_locked(
                 "Review the checkout before retrying."
             )
     await _record_synced_head(context, grant_id=grant_id, head=head)
-    await asyncio.to_thread(_clear_pending_sync, target)
+    await _await_thread_completion(_clear_pending_sync, target)
     return {
         "schema": SCHEMA,
         "action": "sync",
@@ -1060,7 +1106,7 @@ async def _reset(
     target = _existing_checkout(identifier)
     async with _checkout_mutation_lock(target):
         handle, grant_id, owner, repo = _local_grant_metadata(target)
-        await asyncio.to_thread(
+        await _await_thread_completion(
             _disable_checkout_credentials,
             target,
             owner=owner,
@@ -1551,7 +1597,7 @@ async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, A
     expected_owner, expected_repo, expected_url = _deletion_repository_payload(payload)
     target = _deletion_checkout_path(handle)
     async with _checkout_mutation_lock(target):
-        resumed = await asyncio.to_thread(
+        resumed = await _await_thread_completion(
             _resume_pending_deletion,
             target,
             handle=handle,
@@ -1580,7 +1626,7 @@ async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, A
                 "path": str(target),
                 "removed": False,
             }
-        await asyncio.to_thread(
+        await _await_thread_completion(
             _delete_verified_checkout,
             target,
             handle=handle,
