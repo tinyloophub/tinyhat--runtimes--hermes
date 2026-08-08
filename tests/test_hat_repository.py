@@ -83,6 +83,94 @@ class GitHubCredentialHelperTests(unittest.TestCase):
 
 
 class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _create_checkout(path: Path, handle: str) -> None:
+        subprocess.run(
+            ["git", "init", "-q", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (
+            ("tinyhat.hatHandle", handle),
+            ("tinyhat.repositoryGrantId", GRANT_ID),
+            ("tinyhat.repositoryOwner", "tinyhat-ai"),
+            ("tinyhat.repositoryName", f"repo-{path.name}"),
+        ):
+            subprocess.run(
+                ["git", "-C", str(path), "config", "--local", key, value],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+    async def test_delete_local_removes_only_the_verified_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_checkout = home / "hat-repositories" / "itsfaridkia" / "old-hat"
+            current_checkout = home / "hat-repositories" / "itsfaridkia" / "current-hat"
+            unrelated = home / "hat-repositories" / "itsfaridkia" / "unrelated"
+            self._create_checkout(old_checkout, "itsfaridkia/hats/old-hat")
+            self._create_checkout(current_checkout, "itsfaridkia/hats/current-hat")
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                old_result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/old-hat"
+                )
+                current_result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/current-hat"
+                )
+
+            self.assertTrue(old_result["removed"])
+            self.assertTrue(current_result["removed"])
+            self.assertFalse(old_checkout.exists())
+            self.assertFalse(current_checkout.exists())
+            self.assertTrue(unrelated.is_dir())
+
+    async def test_delete_local_is_idempotent_for_an_absent_checkout(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"HERMES_HOME": tmp}),
+        ):
+            result = await hat_repository._delete_local("itsfaridkia/hats/missing-hat")
+
+        self.assertFalse(result["removed"])
+
+    async def test_delete_local_rejects_checkout_with_mismatched_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(checkout, "itsfaridkia/hats/another-hat")
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "belongs to another Hat",
+                ),
+            ):
+                await hat_repository._delete_local("itsfaridkia/hats/expected")
+
+            self.assertTrue(checkout.is_dir())
+
+    async def test_delete_local_rejects_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            root = home / "hat-repositories" / "itsfaridkia"
+            unrelated = root / "unrelated"
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+            (root / "expected").symlink_to(unrelated, target_is_directory=True)
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "unsafe to delete",
+                ),
+            ):
+                await hat_repository._delete_local("itsfaridkia/hats/expected")
+
+            self.assertTrue(unrelated.is_dir())
+
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -198,8 +286,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             safe_helper.write_text(
-                "#!/bin/sh\n"
-                "printf 'username=safe\\npassword=safe\\n\\n'\n",
+                "#!/bin/sh\nprintf 'username=safe\\npassword=safe\\n\\n'\n",
                 encoding="utf-8",
             )
             broad_helper.chmod(0o755)
@@ -231,9 +318,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 "GCM_INTERACTIVE": "never",
             }
             credential_input = (
-                "protocol=https\n"
-                "host=github.com\n"
-                "path=tinyhat-ai/example-hat.git\n\n"
+                "protocol=https\nhost=github.com\npath=tinyhat-ai/example-hat.git\n\n"
             )
             with (
                 mock.patch.dict(os.environ, git_env, clear=True),
@@ -524,12 +609,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             remote = root / "remote.git"
             seed = root / "seed"
             home = root / "home"
-            target = (
-                home
-                / "hat-repositories"
-                / "itsfaridkia"
-                / "example-hat"
-            )
+            target = home / "hat-repositories" / "itsfaridkia" / "example-hat"
             subprocess.run(
                 ["git", "init", "--bare", "-q", "--initial-branch=main", str(remote)],
                 check=True,
@@ -542,7 +622,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
-            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+            for key, value in (
+                ("user.name", "Test"),
+                ("user.email", "test@example.com"),
+            ):
                 subprocess.run(
                     ["git", "-C", str(seed), "config", key, value],
                     check=True,
@@ -690,7 +773,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
-            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+            for key, value in (
+                ("user.name", "Test"),
+                ("user.email", "test@example.com"),
+            ):
                 subprocess.run(
                     ["git", "-C", str(target), "config", key, value],
                     check=True,
