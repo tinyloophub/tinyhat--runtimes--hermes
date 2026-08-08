@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -45,6 +46,7 @@ _CONFIG_BRANCH = "tinyhat.repositoryBranch"
 _CONFIG_PENDING_HEAD = "tinyhat.pendingSyncHead"
 _CONFIG_PENDING_BASE = "tinyhat.pendingSyncBase"
 _CONFIG_PENDING_BRANCH = "tinyhat.pendingSyncBranch"
+_DELETION_JOURNAL_SCHEMA = "tinyhat_hat_deletion_journal_v1"
 
 
 class HatRepositoryError(RuntimeError):
@@ -1047,23 +1049,203 @@ def _pending_quarantine_name(target: Path) -> str:
     return f".tinyhat-delete-{target.name}"
 
 
-def _restore_pending_quarantine(target: Path) -> None:
-    """Restore an interrupted deletion so normal identity checks can resume."""
+def _deletion_journal_location(target: Path) -> tuple[Path, str, str]:
+    """Return the protected journal directory, file name, and target identity."""
+
+    root = _repository_root().expanduser().resolve()
+    try:
+        relative = target.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise HatRepositoryError("The Hat deletion journal path is unsafe.") from exc
+    journal_directory = root / ".deletions"
+    journal_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if (
+        journal_directory.is_symlink()
+        or journal_directory.resolve() != journal_directory
+    ):
+        raise HatRepositoryError("The Hat deletion journal directory is unsafe.")
+    metadata = journal_directory.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise HatRepositoryError("The Hat deletion journal directory is unsafe.")
+    os.chmod(journal_directory, 0o700)
+    name = hashlib.sha256(relative.encode("utf-8")).hexdigest() + ".json"
+    return journal_directory, name, relative
+
+
+def _read_deletion_journal(target: Path) -> dict[str, Any] | None:
+    directory, name, _relative = _deletion_journal_location(target)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory / name, flags)
+    except FileNotFoundError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_size > 4096
+        ):
+            raise HatRepositoryError("The Hat deletion journal is unsafe.")
+        raw = bytearray()
+        while True:
+            chunk = os.read(descriptor, 4096 - len(raw) + 1)
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > 4096:
+                raise HatRepositoryError("The Hat deletion journal is unsafe.")
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HatRepositoryError("The Hat deletion journal is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    return payload
+
+
+def _write_deletion_journal(
+    target: Path,
+    *,
+    metadata: os.stat_result,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> None:
+    """Atomically persist the verified inode before destructive traversal."""
+
+    directory, name, relative = _deletion_journal_location(target)
+    payload = {
+        "schema": _DELETION_JOURNAL_SCHEMA,
+        "relative_path": relative,
+        "handle": handle,
+        "owner": expected_owner,
+        "repo": expected_repo,
+        "url": expected_url,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    temporary_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{name}.", suffix=".tmp", dir=directory
+    )
+    try:
+        os.fchmod(temporary_descriptor, 0o600)
+        remaining = memoryview(encoded)
+        while remaining:
+            written = os.write(temporary_descriptor, remaining)
+            if written <= 0:
+                raise OSError("The deletion journal write did not make progress.")
+            remaining = remaining[written:]
+        os.fsync(temporary_descriptor)
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+        os.replace(temporary_path, directory / name)
+        directory_descriptor = os.open(
+            directory,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _clear_deletion_journal(target: Path) -> None:
+    directory, name, _relative = _deletion_journal_location(target)
+    try:
+        os.unlink(directory / name)
+    except FileNotFoundError:
+        return
+
+
+def _validated_deletion_journal(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> dict[str, Any] | None:
+    journal = _read_deletion_journal(target)
+    if journal is None:
+        return None
+    _directory, _name, relative = _deletion_journal_location(target)
+    expected = {
+        "schema": _DELETION_JOURNAL_SCHEMA,
+        "relative_path": relative,
+        "handle": handle,
+        "owner": expected_owner,
+        "repo": expected_repo,
+        "url": expected_url,
+    }
+    if set(journal) != {*expected, "device", "inode"} or any(
+        journal.get(key) != value for key, value in expected.items()
+    ):
+        raise HatRepositoryError(
+            "The pending Hat deletion belongs to another repository."
+        )
+    if not all(
+        type(journal.get(key)) is int and journal[key] >= 0
+        for key in ("device", "inode")
+    ):
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    return journal
+
+
+def _resume_pending_deletion(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> bool | None:
+    """Resume only the inode already authenticated in the trusted journal."""
+
+    journal = _validated_deletion_journal(
+        target,
+        handle=handle,
+        expected_owner=expected_owner,
+        expected_repo=expected_repo,
+        expected_url=expected_url,
+    )
+    if journal is None:
+        return None
 
     parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     parent_flags |= getattr(os, "O_CLOEXEC", 0)
     parent_flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         parent_descriptor = os.open(target.parent, parent_flags)
-    except FileNotFoundError:
-        return
+    except FileNotFoundError as exc:
+        raise HatRepositoryError(
+            "The pending local Hat checkout deletion is unsafe to resume."
+        ) from exc
     quarantine_name = _pending_quarantine_name(target)
     try:
         try:
-            os.stat(target.name, dir_fd=parent_descriptor, follow_symlinks=False)
-            return
+            target_metadata = os.stat(
+                target.name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
         except FileNotFoundError:
-            pass
+            target_metadata = None
         try:
             quarantined = os.stat(
                 quarantine_name,
@@ -1071,23 +1253,53 @@ def _restore_pending_quarantine(target: Path) -> None:
                 follow_symlinks=False,
             )
         except FileNotFoundError:
-            return
+            quarantined = None
+        expected_identity = (journal["device"], journal["inode"])
+        if target_metadata is not None and quarantined is not None:
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion is unsafe to resume."
+            )
+        if target_metadata is None and quarantined is None:
+            _clear_deletion_journal(target)
+            return True
+        pending = quarantined if quarantined is not None else target_metadata
+        assert pending is not None
         if (
-            not stat.S_ISDIR(quarantined.st_mode)
-            or quarantined.st_uid != os.geteuid()
+            not stat.S_ISDIR(pending.st_mode)
+            or pending.st_uid != os.geteuid()
+            or (pending.st_dev, pending.st_ino) != expected_identity
         ):
             raise HatRepositoryError(
-                "The pending local Hat checkout deletion is unsafe to restore."
+                "The pending local Hat checkout deletion is unsafe to resume."
             )
-        os.rename(
-            quarantine_name,
-            target.name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
+        if quarantined is None:
+            os.rename(
+                target.name,
+                quarantine_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+        checkout_descriptor = os.open(
+            quarantine_name, directory_flags, dir_fd=parent_descriptor
         )
+        try:
+            opened = os.fstat(checkout_descriptor)
+            if (opened.st_dev, opened.st_ino) != expected_identity:
+                raise HatRepositoryError(
+                    "The pending local Hat checkout deletion is unsafe to resume."
+                )
+            _remove_directory_contents(checkout_descriptor)
+        finally:
+            os.close(checkout_descriptor)
+        os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _clear_deletion_journal(target)
+        return True
     except OSError as exc:
         raise HatRepositoryError(
-            "The pending local Hat checkout deletion could not be restored."
+            "The pending local Hat checkout deletion could not be safely resumed."
         ) from exc
     finally:
         os.close(parent_descriptor)
@@ -1165,6 +1377,14 @@ def _delete_verified_checkout(
         if not _same_file(metadata, after_validation):
             raise HatRepositoryError("The local Hat checkout changed during deletion.")
 
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+        )
         quarantine_name = _pending_quarantine_name(target)
         os.rename(
             target.name,
@@ -1181,6 +1401,7 @@ def _delete_verified_checkout(
                 quarantine_name=quarantine_name,
                 target_name=target.name,
             )
+            _clear_deletion_journal(target)
             raise HatRepositoryError("The local Hat checkout changed during deletion.")
 
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -1196,6 +1417,7 @@ def _delete_verified_checkout(
                     quarantine_name=quarantine_name,
                     target_name=target.name,
                 )
+                _clear_deletion_journal(target)
                 raise HatRepositoryError(
                     "The local Hat checkout changed during deletion."
                 )
@@ -1203,27 +1425,10 @@ def _delete_verified_checkout(
         finally:
             os.close(checkout_descriptor)
         os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _clear_deletion_journal(target)
     except HatRepositoryError:
-        if quarantine_name:
-            try:
-                _restore_quarantined_checkout(
-                    parent_descriptor,
-                    quarantine_name=quarantine_name,
-                    target_name=target.name,
-                )
-            except OSError:
-                pass
         raise
     except OSError as exc:
-        if quarantine_name:
-            try:
-                _restore_quarantined_checkout(
-                    parent_descriptor,
-                    quarantine_name=quarantine_name,
-                    target_name=target.name,
-                )
-            except OSError:
-                pass
         raise HatRepositoryError(
             "The local Hat checkout could not be safely deleted."
         ) from exc
@@ -1238,7 +1443,27 @@ async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, A
     expected_owner, expected_repo, expected_url = _deletion_repository_payload(payload)
     target = _deletion_checkout_path(handle)
     async with _checkout_mutation_lock(target):
-        await asyncio.to_thread(_restore_pending_quarantine, target)
+        resumed = await asyncio.to_thread(
+            _resume_pending_deletion,
+            target,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+        )
+        if resumed is not None:
+            return {
+                "schema": SCHEMA,
+                "action": "delete_local",
+                "hat_handle": handle,
+                "path": str(target),
+                "removed": resumed,
+            }
+        quarantine = target.with_name(_pending_quarantine_name(target))
+        if quarantine.exists():
+            raise HatRepositoryError(
+                "An untrusted pending Hat deletion requires manual inspection."
+            )
         if not target.exists():
             return {
                 "schema": SCHEMA,

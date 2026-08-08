@@ -296,7 +296,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(checkout.is_dir())
             self.assertTrue(validated.is_dir())
 
-    async def test_delete_local_restores_after_unlink_error_and_retry_removes(
+    async def test_delete_local_resumes_after_git_config_is_already_removed(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -307,17 +307,28 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 "private checkout content", encoding="utf-8"
             )
             real_unlink = os.unlink
-            failed_once = False
+            git_metadata = os.stat(checkout / ".git")
+            removed_config_then_failed = False
 
             def fail_one_unlink(
                 path: str,
                 *,
                 dir_fd: int | None = None,
             ) -> None:
-                nonlocal failed_once
-                if not failed_once:
-                    failed_once = True
-                    raise PermissionError("simulated one-time unlink failure")
+                nonlocal removed_config_then_failed
+                if (
+                    not removed_config_then_failed
+                    and path == "config"
+                    and dir_fd is not None
+                    and hat_repository._same_file(
+                        git_metadata, os.fstat(dir_fd)
+                    )
+                ):
+                    real_unlink(path, dir_fd=dir_fd)
+                    removed_config_then_failed = True
+                    raise PermissionError(
+                        "simulated failure after removing git config"
+                    )
                 real_unlink(path, dir_fd=dir_fd)
 
             with (
@@ -333,9 +344,14 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             quarantine = checkout.with_name(f".tinyhat-delete-{checkout.name}")
-            self.assertTrue(failed_once)
-            self.assertTrue(checkout.is_dir())
-            self.assertFalse(quarantine.exists())
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                journal_directory, journal_name, _relative = (
+                    hat_repository._deletion_journal_location(checkout.resolve())
+                )
+            self.assertTrue(removed_config_then_failed)
+            self.assertFalse(checkout.exists())
+            self.assertTrue(quarantine.is_dir())
+            self.assertTrue((journal_directory / journal_name).is_file())
 
             with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
                 result = await hat_repository._delete_local(
@@ -345,6 +361,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["removed"])
             self.assertFalse(checkout.exists())
             self.assertFalse(quarantine.exists())
+            self.assertFalse((journal_directory / journal_name).exists())
 
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
