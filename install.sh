@@ -93,6 +93,7 @@ RECOMMENDED_DEBIAN_PACKAGES=(
   ca-certificates
   curl
   git
+  gh
   xz-utils
   build-essential
   ffmpeg
@@ -279,6 +280,7 @@ apt_get() {
 recommended_package_commands_missing() {
   local missing=()
   command -v git >/dev/null 2>&1 || missing+=("git")
+  command -v gh >/dev/null 2>&1 || missing+=("gh")
   command -v curl >/dev/null 2>&1 || missing+=("curl")
   command -v xz >/dev/null 2>&1 || missing+=("xz")
   command -v g++ >/dev/null 2>&1 || missing+=("g++")

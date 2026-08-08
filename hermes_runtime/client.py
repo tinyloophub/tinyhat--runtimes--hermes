@@ -84,6 +84,9 @@ class PlatformClient:
     async def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(self._request_json, "POST", path, payload)
 
+    async def delete_json(self, path: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self._request_json, "DELETE", path, None)
+
     def _request_json(
         self, method: str, path: str, payload: dict[str, Any] | None
     ) -> dict[str, Any]:
