@@ -363,6 +363,50 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(quarantine.exists())
             self.assertFalse((journal_directory / journal_name).exists())
 
+    async def test_delete_local_rejects_a_moved_journaled_quarantine(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            handle = "itsfaridkia/hats/expected"
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            moved = checkout.with_name("moved-private-checkout")
+            self._create_checkout(checkout, handle)
+            payload = self._delete_payload(checkout)
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                target = hat_repository._deletion_checkout_path(handle)
+                metadata = target.stat()
+                hat_repository._write_deletion_journal(
+                    target,
+                    metadata=metadata,
+                    handle=handle,
+                    expected_owner="tinyhat-ai",
+                    expected_repo="repo-expected",
+                    expected_url=(
+                        "https://github.com/tinyhat-ai/repo-expected.git"
+                    ),
+                    phase="quarantined",
+                )
+                quarantine = target.with_name(
+                    hat_repository._pending_quarantine_name(target)
+                )
+                target.rename(quarantine)
+                quarantine.rename(moved)
+
+                with self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "cannot be proven complete",
+                ):
+                    await hat_repository._delete_local(handle, payload)
+
+                journal_directory, journal_name, _relative = (
+                    hat_repository._deletion_journal_location(target)
+                )
+
+            self.assertTrue(moved.is_dir())
+            self.assertTrue((journal_directory / journal_name).is_file())
+
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"

@@ -1115,6 +1115,7 @@ def _write_deletion_journal(
     expected_owner: str,
     expected_repo: str,
     expected_url: str,
+    phase: str,
 ) -> None:
     """Atomically persist the verified inode before destructive traversal."""
 
@@ -1128,6 +1129,7 @@ def _write_deletion_journal(
         "url": expected_url,
         "device": metadata.st_dev,
         "inode": metadata.st_ino,
+        "phase": phase,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
@@ -1195,7 +1197,7 @@ def _validated_deletion_journal(
         "repo": expected_repo,
         "url": expected_url,
     }
-    if set(journal) != {*expected, "device", "inode"} or any(
+    if set(journal) != {*expected, "device", "inode", "phase"} or any(
         journal.get(key) != value for key, value in expected.items()
     ):
         raise HatRepositoryError(
@@ -1205,6 +1207,8 @@ def _validated_deletion_journal(
         type(journal.get(key)) is int and journal[key] >= 0
         for key in ("device", "inode")
     ):
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    if journal.get("phase") not in {"validated", "quarantined", "removed"}:
         raise HatRepositoryError("The Hat deletion journal is invalid.")
     return journal
 
@@ -1260,8 +1264,16 @@ def _resume_pending_deletion(
                 "The pending local Hat checkout deletion is unsafe to resume."
             )
         if target_metadata is None and quarantined is None:
-            _clear_deletion_journal(target)
-            return True
+            if journal["phase"] == "removed":
+                _clear_deletion_journal(target)
+                return True
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion cannot be proven complete."
+            )
+        if journal["phase"] == "removed":
+            raise HatRepositoryError(
+                "The completed Hat deletion journal still has local data."
+            )
         pending = quarantined if quarantined is not None else target_metadata
         assert pending is not None
         if (
@@ -1279,6 +1291,15 @@ def _resume_pending_deletion(
                 src_dir_fd=parent_descriptor,
                 dst_dir_fd=parent_descriptor,
             )
+        _write_deletion_journal(
+            target,
+            metadata=pending,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="quarantined",
+        )
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         directory_flags |= getattr(os, "O_CLOEXEC", 0)
         directory_flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -1295,6 +1316,15 @@ def _resume_pending_deletion(
         finally:
             os.close(checkout_descriptor)
         os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _write_deletion_journal(
+            target,
+            metadata=pending,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="removed",
+        )
         _clear_deletion_journal(target)
         return True
     except OSError as exc:
@@ -1384,6 +1414,7 @@ def _delete_verified_checkout(
             expected_owner=expected_owner,
             expected_repo=expected_repo,
             expected_url=expected_url,
+            phase="validated",
         )
         quarantine_name = _pending_quarantine_name(target)
         os.rename(
@@ -1403,6 +1434,15 @@ def _delete_verified_checkout(
             )
             _clear_deletion_journal(target)
             raise HatRepositoryError("The local Hat checkout changed during deletion.")
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="quarantined",
+        )
 
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         directory_flags |= getattr(os, "O_CLOEXEC", 0)
@@ -1425,6 +1465,15 @@ def _delete_verified_checkout(
         finally:
             os.close(checkout_descriptor)
         os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="removed",
+        )
         _clear_deletion_journal(target)
     except HatRepositoryError:
         raise
