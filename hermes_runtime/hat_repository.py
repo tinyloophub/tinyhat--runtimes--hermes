@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import hashlib
-import json
 import os
 import re
 import shlex
@@ -169,6 +168,18 @@ def _checkout_path(handle: str) -> Path:
     target = (root / namespace / key).resolve()
     if target != root and root not in target.parents:
         raise HatRepositoryError("The Hat checkout path is unsafe.")
+    return target
+
+
+def _deletion_checkout_path(handle: str) -> Path:
+    """Return the lexical checkout path so symlink components stay detectable."""
+
+    _, namespace, key = _canonical_handle(handle)
+    root = _repository_root().expanduser().resolve()
+    namespace_path = root / namespace
+    target = namespace_path / key
+    if namespace_path.is_symlink() or target.is_symlink():
+        raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
     return target
 
 
@@ -780,7 +791,9 @@ async def _sync_locked(
         raise HatRepositoryError("Sync paths must be unique.")
     clean_message = str(message or "").strip()
     if not clean_message or len(clean_message) > 200 or "\n" in clean_message:
-        raise HatRepositoryError("The Git commit message must be one line under 200 characters.")
+        raise HatRepositoryError(
+            "The Git commit message must be one line under 200 characters."
+        )
 
     resumed = await _resume_pending_sync(
         context,
@@ -799,9 +812,7 @@ async def _sync_locked(
         await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip()
     remote_head = (
-        await asyncio.to_thread(
-            _run_git, ["rev-parse", f"origin/{branch}"], cwd=target
-        )
+        await asyncio.to_thread(_run_git, ["rev-parse", f"origin/{branch}"], cwd=target)
     ).stdout.strip()
     if local_head != remote_head:
         raise HatRepositoryError(
@@ -817,8 +828,12 @@ async def _sync_locked(
     staged_paths = [item for item in staged.stdout.split("\0") if item]
     unexpected = sorted(set(staged_paths) - set(paths))
     if unexpected:
-        await asyncio.to_thread(_run_git, ["reset", "--quiet", "HEAD", "--", *paths], cwd=target)
-        raise HatRepositoryError("Git staged an unexpected path; the commit was cancelled.")
+        await asyncio.to_thread(
+            _run_git, ["reset", "--quiet", "HEAD", "--", *paths], cwd=target
+        )
+        raise HatRepositoryError(
+            "Git staged an unexpected path; the commit was cancelled."
+        )
     if not staged_paths:
         return {
             "schema": SCHEMA,
@@ -833,11 +848,15 @@ async def _sync_locked(
         }
     await asyncio.to_thread(_run_git, ["commit", "-m", clean_message], cwd=target)
     head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
-    ).stdout.strip().casefold()
+        (await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target))
+        .stdout.strip()
+        .casefold()
+    )
     parent_head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD^"], cwd=target)
-    ).stdout.strip().casefold()
+        (await asyncio.to_thread(_run_git, ["rev-parse", "HEAD^"], cwd=target))
+        .stdout.strip()
+        .casefold()
+    )
     if _SHA_RE.fullmatch(head) is None or parent_head != local_head:
         raise HatRepositoryError(
             "Git returned an invalid commit relationship before push."
@@ -869,7 +888,11 @@ async def _sync_locked(
             check=False,
         )
         remote_after_sha = remote_after.stdout.strip().casefold()
-        if fetched.returncode == 0 and remote_after.returncode == 0 and remote_after_sha == head:
+        if (
+            fetched.returncode == 0
+            and remote_after.returncode == 0
+            and remote_after_sha == head
+        ):
             # The server accepted the commit but the client lost the success
             # response. Continue to platform verification instead of creating
             # a duplicate commit on retry.
@@ -964,6 +987,62 @@ async def _reset(
     }
 
 
+async def _delete_local(identifier: str) -> dict[str, Any]:
+    """Delete only the verified checkout for one canonical Hat handle."""
+
+    handle, _, _ = _canonical_handle(identifier)
+    target = _deletion_checkout_path(handle)
+    async with _checkout_mutation_lock(target):
+        if not target.exists():
+            return {
+                "schema": SCHEMA,
+                "action": "delete_local",
+                "hat_handle": handle,
+                "path": str(target),
+                "removed": False,
+            }
+        try:
+            metadata = target.lstat()
+        except OSError as exc:
+            raise HatRepositoryError(
+                "The local Hat checkout could not be inspected."
+            ) from exc
+        git_directory = target / ".git"
+        if (
+            target.parent.is_symlink()
+            or target.is_symlink()
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or git_directory.is_symlink()
+            or not git_directory.is_dir()
+        ):
+            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
+        local_handle, _grant_id_value, owner, repo = _local_grant_metadata(target)
+        if local_handle != handle:
+            raise HatRepositoryError("The local Hat checkout belongs to another Hat.")
+        await asyncio.to_thread(
+            _disable_checkout_credentials,
+            target,
+            owner=owner,
+            repo=repo,
+        )
+        try:
+            await asyncio.to_thread(shutil.rmtree, target)
+        except OSError as exc:
+            raise HatRepositoryError(
+                "The local Hat checkout could not be deleted."
+            ) from exc
+        if target.exists():
+            raise HatRepositoryError("The local Hat checkout could not be deleted.")
+    return {
+        "schema": SCHEMA,
+        "action": "delete_local",
+        "hat_handle": handle,
+        "path": str(target),
+        "removed": True,
+    }
+
+
 async def run(
     context: StandalonePlatformContext, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -984,12 +1063,16 @@ async def run(
         )
     if action == "reset":
         return await _reset(context, identifier)
+    if action == "delete_local":
+        return await _delete_local(identifier)
     raise HatRepositoryError("Unsupported Hat repository action.")
 
 
 def safe_error_payload(exc: Exception) -> dict[str, Any]:
-    message = str(exc) if isinstance(exc, HatRepositoryError) else (
-        "The Hat repository operation failed without changing repository access."
+    message = (
+        str(exc)
+        if isinstance(exc, HatRepositoryError)
+        else ("The Hat repository operation failed without changing repository access.")
     )
     return {
         "schema": SCHEMA,
