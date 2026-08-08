@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -820,6 +821,88 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             run_git.assert_called_once()
             sleep.assert_not_called()
             self.assertEqual(len(list(target.parent.glob(".tinyhat-clone-*"))), 1)
+
+    def test_next_clone_call_reconciles_failed_cleanup_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            git_attempts = 0
+            real_rmtree = shutil.rmtree
+
+            def fake_run_git(args, **_kwargs):
+                nonlocal git_attempts
+                git_attempts += 1
+                clone_target = Path(args[-1])
+                if git_attempts == 1:
+                    (clone_target / ".git").mkdir()
+                    (clone_target / "private-test-data.txt").write_text(
+                        "private fixture",
+                        encoding="utf-8",
+                    )
+                    raise hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    )
+                (clone_target / ".git").mkdir()
+                return mock.Mock(returncode=0, stdout="")
+
+            cleanup_attempts = 0
+
+            def fail_first_cleanup(path):
+                nonlocal cleanup_attempts
+                cleanup_attempts += 1
+                if cleanup_attempts == 1:
+                    raise OSError("simulated cleanup failure")
+                real_rmtree(path)
+
+            clone_kwargs = {
+                "target": target,
+                "url": "https://github.com/tinyhat-ai/renamed-hat.git",
+                "branch": "main",
+                "owner": "tinyhat-ai",
+                "repo": "renamed-hat",
+                "helper": "!bounded-helper",
+            }
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=fail_first_cleanup,
+                ),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "stopped for Computer repair",
+                ),
+            ):
+                hat_repository._clone_repository(**clone_kwargs)
+
+            stranded = list(target.parent.glob(".tinyhat-clone-*"))
+            self.assertEqual(len(stranded), 1)
+            self.assertTrue((stranded[0] / "private-test-data.txt").is_file())
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=fail_first_cleanup,
+                ),
+            ):
+                hat_repository._clone_repository(**clone_kwargs)
+
+            self.assertEqual(git_attempts, 2)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
 
     async def test_status_is_local_only_and_does_not_prepare_access(self) -> None:
         with (

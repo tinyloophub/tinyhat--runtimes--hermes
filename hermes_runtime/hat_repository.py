@@ -487,6 +487,9 @@ def _clone_repository(
 ) -> None:
     """Clone once GitHub's renamed-repository access has propagated."""
 
+    staging_name = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:24]
+    temporary = target.parent / f".tinyhat-clone-{staging_name}"
+
     def remove_failed_clone(path: Path) -> None:
         try:
             shutil.rmtree(path)
@@ -501,11 +504,16 @@ def _clone_repository(
                 "operation stopped for Computer repair."
             )
 
+    # The staging path is deterministic for this checkout and every caller holds
+    # its cross-process mutation lock.  Reconcile a clone left by an earlier
+    # invocation before starting new network work so private data cannot become
+    # unreachable under a random temporary name.
+    if temporary.exists() or temporary.is_symlink():
+        remove_failed_clone(temporary)
+
     delays: tuple[float | None, ...] = (*_CLONE_RETRY_DELAYS_SECONDS, None)
     for delay in delays:
-        temporary = Path(
-            tempfile.mkdtemp(prefix=".tinyhat-clone-", dir=str(target.parent))
-        )
+        temporary.mkdir(mode=0o700)
         try:
             _run_git(
                 ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
