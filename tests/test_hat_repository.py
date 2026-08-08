@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -83,6 +86,379 @@ class GitHubCredentialHelperTests(unittest.TestCase):
 
 
 class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _create_checkout(
+        path: Path,
+        handle: str,
+        *,
+        owner: str = "tinyhat-ai",
+        repo: str | None = None,
+    ) -> None:
+        repo = repo or f"repo-{path.name}"
+        subprocess.run(
+            ["git", "init", "-q", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (
+            ("tinyhat.hatHandle", handle),
+            ("tinyhat.repositoryGrantId", GRANT_ID),
+            ("tinyhat.repositoryOwner", owner),
+            ("tinyhat.repositoryName", repo),
+        ):
+            subprocess.run(
+                ["git", "-C", str(path), "config", "--local", key, value],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "remote",
+                "add",
+                "origin",
+                f"https://github.com/{owner}/{repo}.git",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @staticmethod
+    def _delete_payload(path: Path) -> dict[str, object]:
+        repo = f"repo-{path.name}"
+        return {
+            "action": "delete_local",
+            "identifier": f"itsfaridkia/hats/{path.name}",
+            "repository": {
+                "owner": "tinyhat-ai",
+                "name": repo,
+                "url": f"https://github.com/tinyhat-ai/{repo}.git",
+            },
+        }
+
+    async def test_delete_local_removes_only_the_verified_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_checkout = home / "hat-repositories" / "itsfaridkia" / "old-hat"
+            current_checkout = home / "hat-repositories" / "itsfaridkia" / "current-hat"
+            unrelated = home / "hat-repositories" / "itsfaridkia" / "unrelated"
+            self._create_checkout(old_checkout, "itsfaridkia/hats/old-hat")
+            self._create_checkout(current_checkout, "itsfaridkia/hats/current-hat")
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                old_result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/old-hat", self._delete_payload(old_checkout)
+                )
+                current_result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/current-hat",
+                    self._delete_payload(current_checkout),
+                )
+
+            self.assertTrue(old_result["removed"])
+            self.assertTrue(current_result["removed"])
+            self.assertFalse(old_checkout.exists())
+            self.assertFalse(current_checkout.exists())
+            self.assertTrue(unrelated.is_dir())
+
+    async def test_delete_local_is_idempotent_for_an_absent_checkout(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"HERMES_HOME": tmp}),
+        ):
+            missing = Path(tmp) / "hat-repositories" / "itsfaridkia" / "missing-hat"
+            result = await hat_repository._delete_local(
+                "itsfaridkia/hats/missing-hat", self._delete_payload(missing)
+            )
+
+        self.assertFalse(result["removed"])
+
+    async def test_cancelled_delete_holds_lock_until_worker_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            target = home / "hat-repositories" / "itsfaridkia" / "cancelled-hat"
+            worker_started = threading.Event()
+            release_worker = threading.Event()
+
+            def blocked_resume(*_args, **_kwargs):
+                worker_started.set()
+                if not release_worker.wait(timeout=5):
+                    raise AssertionError("test worker was not released")
+                return None
+
+            second_entered = asyncio.Event()
+
+            async def enter_same_lock() -> None:
+                async with hat_repository._checkout_mutation_lock(target):
+                    second_entered.set()
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(
+                    hat_repository,
+                    "_resume_pending_deletion",
+                    side_effect=blocked_resume,
+                ),
+            ):
+                first = asyncio.create_task(
+                    hat_repository._delete_local(
+                        "itsfaridkia/hats/cancelled-hat",
+                        self._delete_payload(target),
+                    )
+                )
+                self.assertTrue(
+                    await asyncio.to_thread(worker_started.wait, 2),
+                    "the first mutation worker did not start",
+                )
+                first.cancel()
+                second = asyncio.create_task(enter_same_lock())
+                await asyncio.sleep(0.1)
+                self.assertFalse(second_entered.is_set())
+
+                release_worker.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await first
+                await asyncio.wait_for(second, timeout=2)
+
+            self.assertTrue(second_entered.is_set())
+
+    async def test_delete_local_rejects_checkout_with_mismatched_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(checkout, "itsfaridkia/hats/another-hat")
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "belongs to another Hat",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            self.assertTrue(checkout.is_dir())
+
+    async def test_delete_local_rejects_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            root = home / "hat-repositories" / "itsfaridkia"
+            unrelated = root / "unrelated"
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+            (root / "expected").symlink_to(unrelated, target_is_directory=True)
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "unsafe to delete",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(root / "expected")
+                )
+
+            self.assertTrue(unrelated.is_dir())
+
+    async def test_delete_local_rejects_untrusted_repository_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(
+                checkout,
+                "itsfaridkia/hats/expected",
+                owner="attacker",
+                repo="unrelated",
+            )
+            payload = self._delete_payload(checkout)
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "points at another repository",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", payload
+                )
+
+            self.assertTrue(checkout.is_dir())
+
+    async def test_delete_local_restores_swapped_checkout_without_deleting_it(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            parent = home / "hat-repositories" / "itsfaridkia"
+            checkout = parent / "expected"
+            unrelated = parent / "unrelated"
+            validated = parent / "validated"
+            self._create_checkout(checkout, "itsfaridkia/hats/expected")
+            self._create_checkout(unrelated, "itsfaridkia/hats/unrelated")
+            real_rename = os.rename
+            swapped = False
+
+            def swap_before_quarantine(
+                source: str,
+                destination: str,
+                *,
+                src_dir_fd: int | None = None,
+                dst_dir_fd: int | None = None,
+            ) -> None:
+                nonlocal swapped
+                if not swapped and source == "expected":
+                    swapped = True
+                    real_rename(
+                        source,
+                        "validated",
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
+                    )
+                    real_rename(
+                        "unrelated",
+                        source,
+                        src_dir_fd=src_dir_fd,
+                        dst_dir_fd=dst_dir_fd,
+                    )
+                real_rename(
+                    source,
+                    destination,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(hat_repository.os, "rename", swap_before_quarantine),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "changed during deletion",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            self.assertTrue(swapped)
+            self.assertTrue(checkout.is_dir())
+            self.assertTrue(validated.is_dir())
+
+    async def test_delete_local_resumes_after_git_config_is_already_removed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            self._create_checkout(checkout, "itsfaridkia/hats/expected")
+            (checkout / "private-notes.txt").write_text(
+                "private checkout content", encoding="utf-8"
+            )
+            real_unlink = os.unlink
+            git_metadata = os.stat(checkout / ".git")
+            removed_config_then_failed = False
+
+            def fail_one_unlink(
+                path: str,
+                *,
+                dir_fd: int | None = None,
+            ) -> None:
+                nonlocal removed_config_then_failed
+                if (
+                    not removed_config_then_failed
+                    and path == "config"
+                    and dir_fd is not None
+                    and hat_repository._same_file(
+                        git_metadata, os.fstat(dir_fd)
+                    )
+                ):
+                    real_unlink(path, dir_fd=dir_fd)
+                    removed_config_then_failed = True
+                    raise PermissionError(
+                        "simulated failure after removing git config"
+                    )
+                real_unlink(path, dir_fd=dir_fd)
+
+            with (
+                mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}),
+                mock.patch.object(hat_repository.os, "unlink", fail_one_unlink),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "could not be safely deleted",
+                ),
+            ):
+                await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            quarantine = checkout.with_name(f".tinyhat-delete-{checkout.name}")
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                journal_directory, journal_name, _relative = (
+                    hat_repository._deletion_journal_location(checkout.resolve())
+                )
+            self.assertTrue(removed_config_then_failed)
+            self.assertFalse(checkout.exists())
+            self.assertTrue(quarantine.is_dir())
+            self.assertTrue((journal_directory / journal_name).is_file())
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                result = await hat_repository._delete_local(
+                    "itsfaridkia/hats/expected", self._delete_payload(checkout)
+                )
+
+            self.assertTrue(result["removed"])
+            self.assertFalse(checkout.exists())
+            self.assertFalse(quarantine.exists())
+            self.assertFalse((journal_directory / journal_name).exists())
+
+    async def test_delete_local_rejects_a_moved_journaled_quarantine(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            handle = "itsfaridkia/hats/expected"
+            checkout = home / "hat-repositories" / "itsfaridkia" / "expected"
+            moved = checkout.with_name("moved-private-checkout")
+            self._create_checkout(checkout, handle)
+            payload = self._delete_payload(checkout)
+
+            with mock.patch.dict(os.environ, {"HERMES_HOME": str(home)}):
+                target = hat_repository._deletion_checkout_path(handle)
+                metadata = target.stat()
+                hat_repository._write_deletion_journal(
+                    target,
+                    metadata=metadata,
+                    handle=handle,
+                    expected_owner="tinyhat-ai",
+                    expected_repo="repo-expected",
+                    expected_url=(
+                        "https://github.com/tinyhat-ai/repo-expected.git"
+                    ),
+                    phase="quarantined",
+                )
+                quarantine = target.with_name(
+                    hat_repository._pending_quarantine_name(target)
+                )
+                target.rename(quarantine)
+                quarantine.rename(moved)
+
+                with self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "cannot be proven complete",
+                ):
+                    await hat_repository._delete_local(handle, payload)
+
+                journal_directory, journal_name, _relative = (
+                    hat_repository._deletion_journal_location(target)
+                )
+
+            self.assertTrue(moved.is_dir())
+            self.assertTrue((journal_directory / journal_name).is_file())
+
     def test_checkout_mutation_lock_serializes_processes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -198,8 +574,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 encoding="utf-8",
             )
             safe_helper.write_text(
-                "#!/bin/sh\n"
-                "printf 'username=safe\\npassword=safe\\n\\n'\n",
+                "#!/bin/sh\nprintf 'username=safe\\npassword=safe\\n\\n'\n",
                 encoding="utf-8",
             )
             broad_helper.chmod(0o755)
@@ -231,9 +606,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 "GCM_INTERACTIVE": "never",
             }
             credential_input = (
-                "protocol=https\n"
-                "host=github.com\n"
-                "path=tinyhat-ai/example-hat.git\n\n"
+                "protocol=https\nhost=github.com\npath=tinyhat-ai/example-hat.git\n\n"
             )
             with (
                 mock.patch.dict(os.environ, git_env, clear=True),
@@ -387,6 +760,201 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    def test_clone_retries_renamed_repository_propagation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            attempts = 0
+
+            def fake_run_git(args, **_kwargs):
+                nonlocal attempts
+                attempts += 1
+                clone_target = Path(args[-1])
+                if attempts < 3:
+                    raise hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    )
+                (clone_target / ".git").mkdir()
+                return mock.Mock(returncode=0, stdout="")
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0, 0.0),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(hat_repository.time, "sleep") as sleep,
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            self.assertEqual(attempts, 3)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertEqual(sleep.call_count, 2)
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
+
+    def test_clone_exhaustion_leaves_no_partial_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0,),
+                ),
+                mock.patch.object(
+                    hat_repository,
+                    "_run_git",
+                    side_effect=hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    ),
+                ),
+                mock.patch.object(hat_repository.time, "sleep"),
+                self.assertRaises(hat_repository.HatRepositoryError),
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            self.assertFalse(target.exists())
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
+
+    def test_clone_cleanup_failure_stops_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            run_git = mock.Mock(
+                side_effect=hat_repository.HatRepositoryError(
+                    "Git could not complete the repository operation."
+                )
+            )
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0,),
+                ),
+                mock.patch.object(hat_repository, "_run_git", run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=OSError("simulated cleanup failure"),
+                ),
+                mock.patch.object(hat_repository.time, "sleep") as sleep,
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "stopped for Computer repair",
+                ),
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            run_git.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(len(list(target.parent.glob(".tinyhat-clone-*"))), 1)
+
+    def test_next_clone_call_reconciles_failed_cleanup_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            git_attempts = 0
+            real_rmtree = shutil.rmtree
+
+            def fake_run_git(args, **_kwargs):
+                nonlocal git_attempts
+                git_attempts += 1
+                clone_target = Path(args[-1])
+                if git_attempts == 1:
+                    (clone_target / ".git").mkdir()
+                    (clone_target / "private-test-data.txt").write_text(
+                        "private fixture",
+                        encoding="utf-8",
+                    )
+                    raise hat_repository.HatRepositoryError(
+                        "Git could not complete the repository operation."
+                    )
+                (clone_target / ".git").mkdir()
+                return mock.Mock(returncode=0, stdout="")
+
+            cleanup_attempts = 0
+
+            def fail_first_cleanup(path):
+                nonlocal cleanup_attempts
+                cleanup_attempts += 1
+                if cleanup_attempts == 1:
+                    raise OSError("simulated cleanup failure")
+                real_rmtree(path)
+
+            clone_kwargs = {
+                "target": target,
+                "url": "https://github.com/tinyhat-ai/renamed-hat.git",
+                "branch": "main",
+                "owner": "tinyhat-ai",
+                "repo": "renamed-hat",
+                "helper": "!bounded-helper",
+            }
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=fail_first_cleanup,
+                ),
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "stopped for Computer repair",
+                ),
+            ):
+                hat_repository._clone_repository(**clone_kwargs)
+
+            stranded = list(target.parent.glob(".tinyhat-clone-*"))
+            self.assertEqual(len(stranded), 1)
+            self.assertTrue((stranded[0] / "private-test-data.txt").is_file())
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (),
+                ),
+                mock.patch.object(hat_repository, "_run_git", side_effect=fake_run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=fail_first_cleanup,
+                ),
+            ):
+                hat_repository._clone_repository(**clone_kwargs)
+
+            self.assertEqual(git_attempts, 2)
+            self.assertTrue((target / ".git").is_dir())
+            self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
+
     async def test_status_is_local_only_and_does_not_prepare_access(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,
@@ -524,12 +1092,7 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             remote = root / "remote.git"
             seed = root / "seed"
             home = root / "home"
-            target = (
-                home
-                / "hat-repositories"
-                / "itsfaridkia"
-                / "example-hat"
-            )
+            target = home / "hat-repositories" / "itsfaridkia" / "example-hat"
             subprocess.run(
                 ["git", "init", "--bare", "-q", "--initial-branch=main", str(remote)],
                 check=True,
@@ -542,7 +1105,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
-            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+            for key, value in (
+                ("user.name", "Test"),
+                ("user.email", "test@example.com"),
+            ):
                 subprocess.run(
                     ["git", "-C", str(seed), "config", key, value],
                     check=True,
@@ -690,7 +1256,10 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
                 capture_output=True,
                 text=True,
             )
-            for key, value in (("user.name", "Test"), ("user.email", "test@example.com")):
+            for key, value in (
+                ("user.name", "Test"),
+                ("user.email", "test@example.com"),
+            ):
                 subprocess.run(
                     ["git", "-C", str(target), "config", key, value],
                     check=True,

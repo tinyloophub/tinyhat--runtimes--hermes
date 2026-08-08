@@ -14,9 +14,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable, TypeVar
 from urllib.parse import quote, urlsplit
 
 from hermes_runtime.platform_context import StandalonePlatformContext
@@ -46,6 +47,9 @@ _CONFIG_BRANCH = "tinyhat.repositoryBranch"
 _CONFIG_PENDING_HEAD = "tinyhat.pendingSyncHead"
 _CONFIG_PENDING_BASE = "tinyhat.pendingSyncBase"
 _CONFIG_PENDING_BRANCH = "tinyhat.pendingSyncBranch"
+_DELETION_JOURNAL_SCHEMA = "tinyhat_hat_deletion_journal_v1"
+_CLONE_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 15.0)
+_ThreadResult = TypeVar("_ThreadResult")
 
 
 class HatRepositoryError(RuntimeError):
@@ -105,13 +109,58 @@ def _release_checkout_lock(descriptor: int) -> None:
         os.close(descriptor)
 
 
+async def _drain_thread_worker(
+    worker: asyncio.Task[_ThreadResult],
+) -> _ThreadResult:
+    """Wait through repeated caller cancellation until one worker is finished."""
+
+    while True:
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker.done():
+                return worker.result()
+
+
+async def _await_thread_completion(
+    function: Callable[..., _ThreadResult],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> _ThreadResult:
+    """Propagate cancellation only after the underlying thread has stopped."""
+
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await _drain_thread_worker(worker)
+        except BaseException:
+            # Cancellation remains the caller-visible outcome, but retrieving a
+            # worker failure prevents an unobserved Task exception.
+            pass
+        raise
+
+
 @asynccontextmanager
 async def _checkout_mutation_lock(target: Path) -> AsyncIterator[None]:
-    descriptor = await asyncio.to_thread(_acquire_checkout_lock, target)
+    worker = asyncio.create_task(asyncio.to_thread(_acquire_checkout_lock, target))
+    try:
+        descriptor = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        descriptor: int | None = None
+        try:
+            descriptor = await _drain_thread_worker(worker)
+        except BaseException:
+            pass
+        if descriptor is not None:
+            _release_checkout_lock(descriptor)
+        raise
     try:
         yield
     finally:
-        await asyncio.to_thread(_release_checkout_lock, descriptor)
+        _release_checkout_lock(descriptor)
 
 
 def _canonical_handle(value: Any) -> tuple[str, str, str]:
@@ -156,6 +205,40 @@ def _repository_payload(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     return owner, name, branch, url
 
 
+def _deletion_repository_payload(payload: dict[str, Any]) -> tuple[str, str, str]:
+    """Return the control-plane identity required for destructive cleanup."""
+
+    repository = payload.get("repository")
+    if not isinstance(repository, dict) or set(repository) != {
+        "owner",
+        "name",
+        "url",
+    }:
+        raise HatRepositoryError(
+            "Trusted repository metadata is required to delete a Hat checkout."
+        )
+    owner = str(repository.get("owner") or "").strip()
+    name = str(repository.get("name") or "").strip()
+    url = str(repository.get("url") or "").strip()
+    if (
+        _PROVIDER_PART_RE.fullmatch(owner) is None
+        or _PROVIDER_PART_RE.fullmatch(name) is None
+    ):
+        raise HatRepositoryError("The platform returned invalid repository metadata.")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.casefold() != f"/{owner}/{name}.git".casefold()
+    ):
+        raise HatRepositoryError("The platform returned an unsafe repository URL.")
+    return owner, name, url
+
+
 def _grant_id(payload: dict[str, Any]) -> str:
     value = str(payload.get("grant_id") or "").strip()
     if _GRANT_ID_RE.fullmatch(value) is None:
@@ -169,6 +252,18 @@ def _checkout_path(handle: str) -> Path:
     target = (root / namespace / key).resolve()
     if target != root and root not in target.parents:
         raise HatRepositoryError("The Hat checkout path is unsafe.")
+    return target
+
+
+def _deletion_checkout_path(handle: str) -> Path:
+    """Return the lexical checkout path so symlink components stay detectable."""
+
+    _, namespace, key = _canonical_handle(handle)
+    root = _repository_root().expanduser().resolve()
+    namespace_path = root / namespace
+    target = namespace_path / key
+    if namespace_path.is_symlink() or target.is_symlink():
+        raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
     return target
 
 
@@ -427,6 +522,72 @@ def _pending_sync(path: Path) -> tuple[str, str, str] | None:
     return str(head), str(base), str(branch)
 
 
+def _clone_repository(
+    *,
+    target: Path,
+    url: str,
+    branch: str,
+    owner: str,
+    repo: str,
+    helper: str,
+) -> None:
+    """Clone once GitHub's renamed-repository access has propagated."""
+
+    staging_name = hashlib.sha256(str(target).encode("utf-8")).hexdigest()[:24]
+    temporary = target.parent / f".tinyhat-clone-{staging_name}"
+
+    def remove_failed_clone(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise HatRepositoryError(
+                "A failed Hat clone could not be cleaned up. The repository "
+                "operation stopped for Computer repair."
+            ) from exc
+        if path.exists():
+            raise HatRepositoryError(
+                "A failed Hat clone could not be cleaned up. The repository "
+                "operation stopped for Computer repair."
+            )
+
+    # The staging path is deterministic for this checkout and every caller holds
+    # its cross-process mutation lock.  Reconcile a clone left by an earlier
+    # invocation before starting new network work so private data cannot become
+    # unreachable under a random temporary name.
+    if temporary.exists() or temporary.is_symlink():
+        remove_failed_clone(temporary)
+
+    delays: tuple[float | None, ...] = (*_CLONE_RETRY_DELAYS_SECONDS, None)
+    for delay in delays:
+        temporary.mkdir(mode=0o700)
+        try:
+            _run_git(
+                ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
+                extra_config=[
+                    ("credential.useHttpPath", "true"),
+                    ("credential.helper", ""),
+                    (_credential_key(owner, repo), ""),
+                    (_credential_key(owner, repo), helper),
+                ],
+            )
+            temporary.replace(target)
+            return
+        except HatRepositoryError as clone_error:
+            try:
+                remove_failed_clone(temporary)
+            except HatRepositoryError as cleanup_error:
+                raise cleanup_error from clone_error
+            if delay is None:
+                raise
+            time.sleep(delay)
+        except Exception as clone_error:
+            try:
+                remove_failed_clone(temporary)
+            except HatRepositoryError as cleanup_error:
+                raise cleanup_error from clone_error
+            raise
+
+
 def _clone_or_refresh(
     *,
     target: Path,
@@ -445,24 +606,15 @@ def _clone_or_refresh(
     )
     created = False
     if not target.exists():
-        temporary = Path(
-            tempfile.mkdtemp(prefix=".tinyhat-clone-", dir=str(target.parent))
+        _clone_repository(
+            target=target,
+            url=url,
+            branch=branch,
+            owner=owner,
+            repo=repo,
+            helper=helper,
         )
-        try:
-            _run_git(
-                ["clone", "--branch", branch, "--single-branch", url, str(temporary)],
-                extra_config=[
-                    ("credential.useHttpPath", "true"),
-                    ("credential.helper", ""),
-                    (_credential_key(owner, repo), ""),
-                    (_credential_key(owner, repo), helper),
-                ],
-            )
-            temporary.replace(target)
-            created = True
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
+        created = True
     if not (target / ".git").is_dir():
         raise HatRepositoryError("The Hat checkout path is not a Git repository.")
     remote = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()
@@ -560,7 +712,7 @@ async def _checkout(
     owner, repo, branch, url = _repository_payload(prepared)
     target = _checkout_path(handle)
     async with _checkout_mutation_lock(target):
-        created = await asyncio.to_thread(
+        created = await _await_thread_completion(
             _clone_or_refresh,
             target=target,
             url=url,
@@ -571,7 +723,7 @@ async def _checkout(
             repo=repo,
         )
         head = (
-            await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+            await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
         ).stdout.strip()
     return {
         "schema": SCHEMA,
@@ -591,9 +743,9 @@ async def _status(identifier: str) -> dict[str, Any]:
     # that the user previously reset.
     target = _existing_checkout(identifier)
     handle, _, owner, repo = _local_grant_metadata(target)
-    changed = await asyncio.to_thread(_status_paths, target)
+    changed = await _await_thread_completion(_status_paths, target)
     head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+        await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip()
     return {
         "schema": SCHEMA,
@@ -630,7 +782,7 @@ async def _resume_pending_sync(
     repo: str,
     branch: str,
 ) -> dict[str, Any] | None:
-    pending = await asyncio.to_thread(_pending_sync, target)
+    pending = await _await_thread_completion(_pending_sync, target)
     if pending is None:
         return None
     pending_head, pending_base, pending_branch = pending
@@ -638,13 +790,13 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The pending Hat sync belongs to another branch. Review the checkout."
         )
-    current_head = await asyncio.to_thread(
+    current_head = await _await_thread_completion(
         _run_git,
         ["rev-parse", "HEAD"],
         cwd=target,
         check=False,
     )
-    current_parent = await asyncio.to_thread(
+    current_parent = await _await_thread_completion(
         _run_git,
         ["rev-parse", "HEAD^"],
         cwd=target,
@@ -659,7 +811,7 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The local Hat checkout changed after a pending sync. Review it before retrying."
         )
-    fetched = await asyncio.to_thread(
+    fetched = await _await_thread_completion(
         _run_git,
         ["fetch", "--prune", "origin"],
         cwd=target,
@@ -669,7 +821,7 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The pending Hat sync could not reach the remote. Retry when access is available."
         )
-    remote = await asyncio.to_thread(
+    remote = await _await_thread_completion(
         _run_git,
         ["rev-parse", f"origin/{branch}"],
         cwd=target,
@@ -681,7 +833,7 @@ async def _resume_pending_sync(
             "The pending Hat sync could not read the remote branch."
         )
     if remote_head == pending_base:
-        pushed = await asyncio.to_thread(
+        pushed = await _await_thread_completion(
             _run_git,
             ["push", "origin", f"HEAD:refs/heads/{branch}"],
             cwd=target,
@@ -695,14 +847,14 @@ async def _resume_pending_sync(
         raise HatRepositoryError(
             "The remote Hat changed while a sync was pending. Review both versions."
         )
-    changed = await asyncio.to_thread(
+    changed = await _await_thread_completion(
         _run_git,
         ["diff", "--name-only", "-z", pending_base, pending_head, "--"],
         cwd=target,
     )
     synced_paths = [item for item in changed.stdout.split("\0") if item]
     await _record_synced_head(context, grant_id=grant_id, head=pending_head)
-    await asyncio.to_thread(_clear_pending_sync, target)
+    await _await_thread_completion(_clear_pending_sync, target)
     return {
         "schema": SCHEMA,
         "action": "sync",
@@ -760,11 +912,11 @@ async def _sync_locked(
     if not (target / ".git").is_dir():
         raise HatRepositoryError("Check out this Hat repository before syncing it.")
     remote = (
-        await asyncio.to_thread(_run_git, ["remote", "get-url", "origin"], cwd=target)
+        await _await_thread_completion(_run_git, ["remote", "get-url", "origin"], cwd=target)
     ).stdout.strip()
     if remote != url:
         raise HatRepositoryError("The local Hat checkout points at another repository.")
-    await asyncio.to_thread(
+    await _await_thread_completion(
         _configure_checkout,
         target,
         handle=handle,
@@ -780,7 +932,9 @@ async def _sync_locked(
         raise HatRepositoryError("Sync paths must be unique.")
     clean_message = str(message or "").strip()
     if not clean_message or len(clean_message) > 200 or "\n" in clean_message:
-        raise HatRepositoryError("The Git commit message must be one line under 200 characters.")
+        raise HatRepositoryError(
+            "The Git commit message must be one line under 200 characters."
+        )
 
     resumed = await _resume_pending_sync(
         context,
@@ -794,22 +948,20 @@ async def _sync_locked(
     if resumed is not None:
         return resumed
 
-    await asyncio.to_thread(_run_git, ["fetch", "--prune", "origin"], cwd=target)
+    await _await_thread_completion(_run_git, ["fetch", "--prune", "origin"], cwd=target)
     local_head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
+        await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target)
     ).stdout.strip()
     remote_head = (
-        await asyncio.to_thread(
-            _run_git, ["rev-parse", f"origin/{branch}"], cwd=target
-        )
+        await _await_thread_completion(_run_git, ["rev-parse", f"origin/{branch}"], cwd=target)
     ).stdout.strip()
     if local_head != remote_head:
         raise HatRepositoryError(
             "The remote Hat changed after checkout. Refresh it and review the changes "
             "before creating a commit."
         )
-    await asyncio.to_thread(_run_git, ["add", "--", *paths], cwd=target)
-    staged = await asyncio.to_thread(
+    await _await_thread_completion(_run_git, ["add", "--", *paths], cwd=target)
+    staged = await _await_thread_completion(
         _run_git,
         ["diff", "--cached", "--name-only", "-z"],
         cwd=target,
@@ -817,8 +969,12 @@ async def _sync_locked(
     staged_paths = [item for item in staged.stdout.split("\0") if item]
     unexpected = sorted(set(staged_paths) - set(paths))
     if unexpected:
-        await asyncio.to_thread(_run_git, ["reset", "--quiet", "HEAD", "--", *paths], cwd=target)
-        raise HatRepositoryError("Git staged an unexpected path; the commit was cancelled.")
+        await _await_thread_completion(
+            _run_git, ["reset", "--quiet", "HEAD", "--", *paths], cwd=target
+        )
+        raise HatRepositoryError(
+            "Git staged an unexpected path; the commit was cancelled."
+        )
     if not staged_paths:
         return {
             "schema": SCHEMA,
@@ -831,45 +987,53 @@ async def _sync_locked(
             "pushed": False,
             "synced_paths": [],
         }
-    await asyncio.to_thread(_run_git, ["commit", "-m", clean_message], cwd=target)
+    await _await_thread_completion(_run_git, ["commit", "-m", clean_message], cwd=target)
     head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD"], cwd=target)
-    ).stdout.strip().casefold()
+        (await _await_thread_completion(_run_git, ["rev-parse", "HEAD"], cwd=target))
+        .stdout.strip()
+        .casefold()
+    )
     parent_head = (
-        await asyncio.to_thread(_run_git, ["rev-parse", "HEAD^"], cwd=target)
-    ).stdout.strip().casefold()
+        (await _await_thread_completion(_run_git, ["rev-parse", "HEAD^"], cwd=target))
+        .stdout.strip()
+        .casefold()
+    )
     if _SHA_RE.fullmatch(head) is None or parent_head != local_head:
         raise HatRepositoryError(
             "Git returned an invalid commit relationship before push."
         )
-    await asyncio.to_thread(
+    await _await_thread_completion(
         _set_pending_sync,
         target,
         head=head,
         base=local_head,
         branch=branch,
     )
-    pushed = await asyncio.to_thread(
+    pushed = await _await_thread_completion(
         _run_git,
         ["push", "origin", f"HEAD:refs/heads/{branch}"],
         cwd=target,
         check=False,
     )
     if pushed.returncode != 0:
-        fetched = await asyncio.to_thread(
+        fetched = await _await_thread_completion(
             _run_git,
             ["fetch", "--prune", "origin"],
             cwd=target,
             check=False,
         )
-        remote_after = await asyncio.to_thread(
+        remote_after = await _await_thread_completion(
             _run_git,
             ["rev-parse", f"origin/{branch}"],
             cwd=target,
             check=False,
         )
         remote_after_sha = remote_after.stdout.strip().casefold()
-        if fetched.returncode == 0 and remote_after.returncode == 0 and remote_after_sha == head:
+        if (
+            fetched.returncode == 0
+            and remote_after.returncode == 0
+            and remote_after_sha == head
+        ):
             # The server accepted the commit but the client lost the success
             # response. Continue to platform verification instead of creating
             # a duplicate commit on retry.
@@ -879,13 +1043,13 @@ async def _sync_locked(
             and remote_after.returncode == 0
             and remote_after_sha == local_head
         ):
-            current_head = await asyncio.to_thread(
+            current_head = await _await_thread_completion(
                 _run_git,
                 ["rev-parse", "HEAD"],
                 cwd=target,
                 check=False,
             )
-            current_parent = await asyncio.to_thread(
+            current_parent = await _await_thread_completion(
                 _run_git,
                 ["rev-parse", "HEAD^"],
                 cwd=target,
@@ -897,14 +1061,14 @@ async def _sync_locked(
                 and current_head.stdout.strip().casefold() == head
                 and current_parent.stdout.strip().casefold() == local_head
             ):
-                restored = await asyncio.to_thread(
+                restored = await _await_thread_completion(
                     _run_git,
                     ["reset", "--mixed", local_head],
                     cwd=target,
                     check=False,
                 )
                 if restored.returncode == 0:
-                    await asyncio.to_thread(_clear_pending_sync, target)
+                    await _await_thread_completion(_clear_pending_sync, target)
                     raise HatRepositoryError(
                         "Git could not push the Hat commit. The selected changes "
                         "remain in the worktree so the sync can be retried."
@@ -919,7 +1083,7 @@ async def _sync_locked(
                 "Review the checkout before retrying."
             )
     await _record_synced_head(context, grant_id=grant_id, head=head)
-    await asyncio.to_thread(_clear_pending_sync, target)
+    await _await_thread_completion(_clear_pending_sync, target)
     return {
         "schema": SCHEMA,
         "action": "sync",
@@ -942,7 +1106,7 @@ async def _reset(
     target = _existing_checkout(identifier)
     async with _checkout_mutation_lock(target):
         handle, grant_id, owner, repo = _local_grant_metadata(target)
-        await asyncio.to_thread(
+        await _await_thread_completion(
             _disable_checkout_credentials,
             target,
             owner=owner,
@@ -961,6 +1125,523 @@ async def _reset(
         "residual_access_expires_at": result.get("residual_access_expires_at"),
         "local_clone_retained": target.exists(),
         "credential_helper_removed": True,
+    }
+
+
+def _same_file(first: os.stat_result, second: os.stat_result) -> bool:
+    return first.st_dev == second.st_dev and first.st_ino == second.st_ino
+
+
+def _restore_quarantined_checkout(
+    parent_descriptor: int, *, quarantine_name: str, target_name: str
+) -> None:
+    """Best-effort restore after a path swap; never overwrite a new target."""
+
+    try:
+        os.stat(target_name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        os.rename(
+            quarantine_name,
+            target_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+
+
+def _pending_quarantine_name(target: Path) -> str:
+    """Return the deterministic recovery name for one canonical checkout."""
+
+    return f".tinyhat-delete-{target.name}"
+
+
+def _deletion_journal_location(target: Path) -> tuple[Path, str, str]:
+    """Return the protected journal directory, file name, and target identity."""
+
+    root = _repository_root().expanduser().resolve()
+    try:
+        relative = target.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise HatRepositoryError("The Hat deletion journal path is unsafe.") from exc
+    journal_directory = root / ".deletions"
+    journal_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if (
+        journal_directory.is_symlink()
+        or journal_directory.resolve() != journal_directory
+    ):
+        raise HatRepositoryError("The Hat deletion journal directory is unsafe.")
+    metadata = journal_directory.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise HatRepositoryError("The Hat deletion journal directory is unsafe.")
+    os.chmod(journal_directory, 0o700)
+    name = hashlib.sha256(relative.encode("utf-8")).hexdigest() + ".json"
+    return journal_directory, name, relative
+
+
+def _read_deletion_journal(target: Path) -> dict[str, Any] | None:
+    directory, name, _relative = _deletion_journal_location(target)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(directory / name, flags)
+    except FileNotFoundError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_size > 4096
+        ):
+            raise HatRepositoryError("The Hat deletion journal is unsafe.")
+        raw = bytearray()
+        while True:
+            chunk = os.read(descriptor, 4096 - len(raw) + 1)
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > 4096:
+                raise HatRepositoryError("The Hat deletion journal is unsafe.")
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HatRepositoryError("The Hat deletion journal is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    return payload
+
+
+def _write_deletion_journal(
+    target: Path,
+    *,
+    metadata: os.stat_result,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+    phase: str,
+) -> None:
+    """Atomically persist the verified inode before destructive traversal."""
+
+    directory, name, relative = _deletion_journal_location(target)
+    payload = {
+        "schema": _DELETION_JOURNAL_SCHEMA,
+        "relative_path": relative,
+        "handle": handle,
+        "owner": expected_owner,
+        "repo": expected_repo,
+        "url": expected_url,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "phase": phase,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    temporary_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{name}.", suffix=".tmp", dir=directory
+    )
+    try:
+        os.fchmod(temporary_descriptor, 0o600)
+        remaining = memoryview(encoded)
+        while remaining:
+            written = os.write(temporary_descriptor, remaining)
+            if written <= 0:
+                raise OSError("The deletion journal write did not make progress.")
+            remaining = remaining[written:]
+        os.fsync(temporary_descriptor)
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+        os.replace(temporary_path, directory / name)
+        directory_descriptor = os.open(
+            directory,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _clear_deletion_journal(target: Path) -> None:
+    directory, name, _relative = _deletion_journal_location(target)
+    try:
+        os.unlink(directory / name)
+    except FileNotFoundError:
+        return
+
+
+def _validated_deletion_journal(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> dict[str, Any] | None:
+    journal = _read_deletion_journal(target)
+    if journal is None:
+        return None
+    _directory, _name, relative = _deletion_journal_location(target)
+    expected = {
+        "schema": _DELETION_JOURNAL_SCHEMA,
+        "relative_path": relative,
+        "handle": handle,
+        "owner": expected_owner,
+        "repo": expected_repo,
+        "url": expected_url,
+    }
+    if set(journal) != {*expected, "device", "inode", "phase"} or any(
+        journal.get(key) != value for key, value in expected.items()
+    ):
+        raise HatRepositoryError(
+            "The pending Hat deletion belongs to another repository."
+        )
+    if not all(
+        type(journal.get(key)) is int and journal[key] >= 0
+        for key in ("device", "inode")
+    ):
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    if journal.get("phase") not in {"validated", "quarantined", "removed"}:
+        raise HatRepositoryError("The Hat deletion journal is invalid.")
+    return journal
+
+
+def _resume_pending_deletion(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> bool | None:
+    """Resume only the inode already authenticated in the trusted journal."""
+
+    journal = _validated_deletion_journal(
+        target,
+        handle=handle,
+        expected_owner=expected_owner,
+        expected_repo=expected_repo,
+        expected_url=expected_url,
+    )
+    if journal is None:
+        return None
+
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_CLOEXEC", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_descriptor = os.open(target.parent, parent_flags)
+    except FileNotFoundError as exc:
+        raise HatRepositoryError(
+            "The pending local Hat checkout deletion is unsafe to resume."
+        ) from exc
+    quarantine_name = _pending_quarantine_name(target)
+    try:
+        try:
+            target_metadata = os.stat(
+                target.name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            target_metadata = None
+        try:
+            quarantined = os.stat(
+                quarantine_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            quarantined = None
+        expected_identity = (journal["device"], journal["inode"])
+        if target_metadata is not None and quarantined is not None:
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion is unsafe to resume."
+            )
+        if target_metadata is None and quarantined is None:
+            if journal["phase"] == "removed":
+                _clear_deletion_journal(target)
+                return True
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion cannot be proven complete."
+            )
+        if journal["phase"] == "removed":
+            raise HatRepositoryError(
+                "The completed Hat deletion journal still has local data."
+            )
+        pending = quarantined if quarantined is not None else target_metadata
+        assert pending is not None
+        if (
+            not stat.S_ISDIR(pending.st_mode)
+            or pending.st_uid != os.geteuid()
+            or (pending.st_dev, pending.st_ino) != expected_identity
+        ):
+            raise HatRepositoryError(
+                "The pending local Hat checkout deletion is unsafe to resume."
+            )
+        if quarantined is None:
+            os.rename(
+                target.name,
+                quarantine_name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+        _write_deletion_journal(
+            target,
+            metadata=pending,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="quarantined",
+        )
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+        checkout_descriptor = os.open(
+            quarantine_name, directory_flags, dir_fd=parent_descriptor
+        )
+        try:
+            opened = os.fstat(checkout_descriptor)
+            if (opened.st_dev, opened.st_ino) != expected_identity:
+                raise HatRepositoryError(
+                    "The pending local Hat checkout deletion is unsafe to resume."
+                )
+            _remove_directory_contents(checkout_descriptor)
+        finally:
+            os.close(checkout_descriptor)
+        os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _write_deletion_journal(
+            target,
+            metadata=pending,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="removed",
+        )
+        _clear_deletion_journal(target)
+        return True
+    except OSError as exc:
+        raise HatRepositoryError(
+            "The pending local Hat checkout deletion could not be safely resumed."
+        ) from exc
+    finally:
+        os.close(parent_descriptor)
+
+
+def _remove_directory_contents(descriptor: int) -> None:
+    """Remove one opened directory tree without following path swaps or symlinks."""
+
+    for entry in os.listdir(descriptor):
+        metadata = os.stat(entry, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            child = os.open(entry, flags, dir_fd=descriptor)
+            try:
+                if not _same_file(metadata, os.fstat(child)):
+                    raise HatRepositoryError(
+                        "The local Hat checkout changed during deletion."
+                    )
+                _remove_directory_contents(child)
+            finally:
+                os.close(child)
+            os.rmdir(entry, dir_fd=descriptor)
+        else:
+            os.unlink(entry, dir_fd=descriptor)
+
+
+def _delete_verified_checkout(
+    target: Path,
+    *,
+    handle: str,
+    expected_owner: str,
+    expected_repo: str,
+    expected_url: str,
+) -> None:
+    """Validate, atomically quarantine, then fd-delete one exact checkout."""
+
+    parent_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    parent_flags |= getattr(os, "O_CLOEXEC", 0)
+    parent_flags |= getattr(os, "O_NOFOLLOW", 0)
+    parent_descriptor = os.open(target.parent, parent_flags)
+    quarantine_name = ""
+    try:
+        parent_metadata = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(parent_metadata.st_mode)
+            or parent_metadata.st_uid != os.geteuid()
+        ):
+            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
+        metadata = os.stat(
+            target.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        git_directory = target / ".git"
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or git_directory.is_symlink()
+            or not git_directory.is_dir()
+        ):
+            raise HatRepositoryError("The local Hat checkout is unsafe to delete.")
+        local_handle, _grant_id_value, owner, repo = _local_grant_metadata(target)
+        remote = _run_git(["remote", "get-url", "origin"], cwd=target).stdout.strip()
+        if local_handle != handle:
+            raise HatRepositoryError("The local Hat checkout belongs to another Hat.")
+        if owner != expected_owner or repo != expected_repo or remote != expected_url:
+            raise HatRepositoryError(
+                "The local Hat checkout points at another repository."
+            )
+        _disable_checkout_credentials(target, owner=owner, repo=repo)
+
+        after_validation = os.stat(
+            target.name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not _same_file(metadata, after_validation):
+            raise HatRepositoryError("The local Hat checkout changed during deletion.")
+
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="validated",
+        )
+        quarantine_name = _pending_quarantine_name(target)
+        os.rename(
+            target.name,
+            quarantine_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        quarantined = os.stat(
+            quarantine_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if not _same_file(metadata, quarantined):
+            _restore_quarantined_checkout(
+                parent_descriptor,
+                quarantine_name=quarantine_name,
+                target_name=target.name,
+            )
+            _clear_deletion_journal(target)
+            raise HatRepositoryError("The local Hat checkout changed during deletion.")
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="quarantined",
+        )
+
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+        checkout_descriptor = os.open(
+            quarantine_name, directory_flags, dir_fd=parent_descriptor
+        )
+        try:
+            if not _same_file(metadata, os.fstat(checkout_descriptor)):
+                _restore_quarantined_checkout(
+                    parent_descriptor,
+                    quarantine_name=quarantine_name,
+                    target_name=target.name,
+                )
+                _clear_deletion_journal(target)
+                raise HatRepositoryError(
+                    "The local Hat checkout changed during deletion."
+                )
+            _remove_directory_contents(checkout_descriptor)
+        finally:
+            os.close(checkout_descriptor)
+        os.rmdir(quarantine_name, dir_fd=parent_descriptor)
+        _write_deletion_journal(
+            target,
+            metadata=metadata,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+            phase="removed",
+        )
+        _clear_deletion_journal(target)
+    except HatRepositoryError:
+        raise
+    except OSError as exc:
+        raise HatRepositoryError(
+            "The local Hat checkout could not be safely deleted."
+        ) from exc
+    finally:
+        os.close(parent_descriptor)
+
+
+async def _delete_local(identifier: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Delete only the verified checkout for one canonical Hat handle."""
+
+    handle, _, _ = _canonical_handle(identifier)
+    expected_owner, expected_repo, expected_url = _deletion_repository_payload(payload)
+    target = _deletion_checkout_path(handle)
+    async with _checkout_mutation_lock(target):
+        resumed = await _await_thread_completion(
+            _resume_pending_deletion,
+            target,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+        )
+        if resumed is not None:
+            return {
+                "schema": SCHEMA,
+                "action": "delete_local",
+                "hat_handle": handle,
+                "path": str(target),
+                "removed": resumed,
+            }
+        quarantine = target.with_name(_pending_quarantine_name(target))
+        if quarantine.exists():
+            raise HatRepositoryError(
+                "An untrusted pending Hat deletion requires manual inspection."
+            )
+        if not target.exists():
+            return {
+                "schema": SCHEMA,
+                "action": "delete_local",
+                "hat_handle": handle,
+                "path": str(target),
+                "removed": False,
+            }
+        await _await_thread_completion(
+            _delete_verified_checkout,
+            target,
+            handle=handle,
+            expected_owner=expected_owner,
+            expected_repo=expected_repo,
+            expected_url=expected_url,
+        )
+        if target.exists():
+            raise HatRepositoryError("The local Hat checkout could not be deleted.")
+    return {
+        "schema": SCHEMA,
+        "action": "delete_local",
+        "hat_handle": handle,
+        "path": str(target),
+        "removed": True,
     }
 
 
@@ -984,12 +1665,16 @@ async def run(
         )
     if action == "reset":
         return await _reset(context, identifier)
+    if action == "delete_local":
+        return await _delete_local(identifier, payload)
     raise HatRepositoryError("Unsupported Hat repository action.")
 
 
 def safe_error_payload(exc: Exception) -> dict[str, Any]:
-    message = str(exc) if isinstance(exc, HatRepositoryError) else (
-        "The Hat repository operation failed without changing repository access."
+    message = (
+        str(exc)
+        if isinstance(exc, HatRepositoryError)
+        else ("The Hat repository operation failed without changing repository access.")
     )
     return {
         "schema": SCHEMA,

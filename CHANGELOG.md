@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Delete confirmed Hat repository checkouts only when the control-plane owner,
+  repository name, and HTTPS remote match the local checkout. Atomic quarantine
+  plus file-descriptor-bound traversal prevents a path swap from deleting an
+  unrelated directory, while an inode-bound private journal safely resumes an
+  interrupted deletion even after Git metadata has already been removed.
+  Cancellation waits for an in-flight checkout worker before releasing its
+  cross-process lock, so a second mutation cannot overlap the first.
+- Retry a bounded fresh clone while GitHub propagates a renamed private Hat
+  repository to its selected runtime App installation. A target-bound staging
+  path is reconciled under the checkout lock before any later attempt, so a
+  cleanup failure stops for Computer repair without losing track of private
+  data or reporting a misleading success.
+
 ## 0.0.51 - 2026-08-07
 
 - Add Computer-local Git checkouts for Tinyhat-managed Hat repositories. Git
