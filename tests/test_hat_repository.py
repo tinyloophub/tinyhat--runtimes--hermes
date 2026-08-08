@@ -780,6 +780,47 @@ class HatRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(target.exists())
             self.assertFalse(list(target.parent.glob(".tinyhat-clone-*")))
 
+    def test_clone_cleanup_failure_stops_before_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "itsfaridkia" / "renamed-hat"
+            target.parent.mkdir(parents=True)
+            run_git = mock.Mock(
+                side_effect=hat_repository.HatRepositoryError(
+                    "Git could not complete the repository operation."
+                )
+            )
+
+            with (
+                mock.patch.object(
+                    hat_repository,
+                    "_CLONE_RETRY_DELAYS_SECONDS",
+                    (0.0,),
+                ),
+                mock.patch.object(hat_repository, "_run_git", run_git),
+                mock.patch.object(
+                    hat_repository.shutil,
+                    "rmtree",
+                    side_effect=OSError("simulated cleanup failure"),
+                ),
+                mock.patch.object(hat_repository.time, "sleep") as sleep,
+                self.assertRaisesRegex(
+                    hat_repository.HatRepositoryError,
+                    "stopped for Computer repair",
+                ),
+            ):
+                hat_repository._clone_repository(
+                    target=target,
+                    url="https://github.com/tinyhat-ai/renamed-hat.git",
+                    branch="main",
+                    owner="tinyhat-ai",
+                    repo="renamed-hat",
+                    helper="!bounded-helper",
+                )
+
+            run_git.assert_called_once()
+            sleep.assert_not_called()
+            self.assertEqual(len(list(target.parent.glob(".tinyhat-clone-*"))), 1)
+
     async def test_status_is_local_only_and_does_not_prepare_access(self) -> None:
         with (
             tempfile.TemporaryDirectory() as tmp,

@@ -8,8 +8,9 @@
   unrelated directory, while an inode-bound private journal safely resumes an
   interrupted deletion even after Git metadata has already been removed.
 - Retry a bounded fresh clone while GitHub propagates a renamed private Hat
-  repository to its selected runtime App installation. Failed attempts leave no
-  partial checkout or credential behind.
+  repository to its selected runtime App installation. A retry starts only
+  after the prior temporary clone is proven removed; cleanup failure stops the
+  workflow for Computer repair instead of reporting a misleading success.
 
 ## 0.0.51 - 2026-08-07
 

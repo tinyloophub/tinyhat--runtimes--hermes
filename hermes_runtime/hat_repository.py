@@ -487,6 +487,20 @@ def _clone_repository(
 ) -> None:
     """Clone once GitHub's renamed-repository access has propagated."""
 
+    def remove_failed_clone(path: Path) -> None:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise HatRepositoryError(
+                "A failed Hat clone could not be cleaned up. The repository "
+                "operation stopped for Computer repair."
+            ) from exc
+        if path.exists():
+            raise HatRepositoryError(
+                "A failed Hat clone could not be cleaned up. The repository "
+                "operation stopped for Computer repair."
+            )
+
     delays: tuple[float | None, ...] = (*_CLONE_RETRY_DELAYS_SECONDS, None)
     for delay in delays:
         temporary = Path(
@@ -504,13 +518,19 @@ def _clone_repository(
             )
             temporary.replace(target)
             return
-        except HatRepositoryError:
-            shutil.rmtree(temporary, ignore_errors=True)
+        except HatRepositoryError as clone_error:
+            try:
+                remove_failed_clone(temporary)
+            except HatRepositoryError as cleanup_error:
+                raise cleanup_error from clone_error
             if delay is None:
                 raise
             time.sleep(delay)
-        except Exception:
-            shutil.rmtree(temporary, ignore_errors=True)
+        except Exception as clone_error:
+            try:
+                remove_failed_clone(temporary)
+            except HatRepositoryError as cleanup_error:
+                raise cleanup_error from clone_error
             raise
 
 
