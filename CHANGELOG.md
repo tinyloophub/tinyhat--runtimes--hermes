@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add one narrow `complete_hat_credential_transfer` command. The platform sends
+  it only to the Computer registered as a Hat's credential host; the runtime
+  delegates to the installed Tinyhat plugin and accepts only a value-blind
+  result allowlist. Encryption, creator signing, platform submission, and
+  consumer verification remain plugin/platform responsibilities.
+
 ## 0.0.52 - 2026-08-08
 
 - Delete confirmed Hat repository checkouts only when the control-plane owner,
