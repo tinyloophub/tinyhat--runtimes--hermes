@@ -28,6 +28,9 @@ COMMAND_MODULES = {
     "import_legacy_tinyhat_secrets": "hermes_runtime.commands.import_legacy_tinyhat_secrets",
     "remove_private_secret": "hermes_runtime.commands.remove_private_secret",
     "configure_hat_credentials": "hermes_runtime.commands.configure_hat_credentials",
+    "resume_hat_installation": (
+        "hermes_runtime.commands.resume_hat_installation"
+    ),
     "complete_hat_credential_transfer": (
         "hermes_runtime.commands.complete_hat_credential_transfer"
     ),
