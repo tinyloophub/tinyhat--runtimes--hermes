@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.53 - 2026-08-11
+
 - Add one narrow `complete_hat_credential_transfer` command. The platform sends
   it only to the Computer registered as a Hat's credential host; the runtime
   delegates to the installed Tinyhat plugin and accepts only a value-blind
