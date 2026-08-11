@@ -6,6 +6,7 @@ import asyncio
 import json
 import tempfile
 import threading
+import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -153,6 +154,42 @@ class ResumeHatInstallationCommandTests(unittest.TestCase):
                     "message": "private diagnostic",
                 }
             )
+
+    def test_import_failures_do_not_expose_plugin_diagnostics(self) -> None:
+        marker = "SECRET_LIKE_PLUGIN_IMPORT_MARKER"
+
+        for failing_module in ("__init__.py", "hats.py"):
+            with self.subTest(failing_module=failing_module):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = _plugin(
+                        Path(temp_dir) / "plugins" / "tinyhat",
+                        {"status": "none", "installation_started": False},
+                    )
+                    (root / failing_module).write_text(
+                        f"raise RuntimeError({marker!r})\n",
+                        encoding="utf-8",
+                    )
+                    with patch.object(
+                        resume_hat_installation,
+                        "plugin_dir",
+                        return_value=root,
+                    ):
+                        with self.assertRaises(RuntimeError) as raised:
+                            asyncio.run(resume_hat_installation.run(None, {}))
+
+                diagnostic = "".join(
+                    traceback.format_exception(
+                        type(raised.exception),
+                        raised.exception,
+                        raised.exception.__traceback__,
+                    )
+                )
+                self.assertEqual(
+                    str(raised.exception),
+                    "The installed Tinyhat plugin could not resume installation.",
+                )
+                self.assertNotIn(marker, diagnostic)
+                self.assertNotIn(str(root), diagnostic)
 
     def test_secret_shaped_plugin_output_fails_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "unsafe result"):

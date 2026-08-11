@@ -20,6 +20,9 @@ from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_di
 SCHEMA = "tinyhat_hermes_resume_hat_installation_v1"
 _PACKAGE_NAME = "_tinyhat_runtime_resume_plugin"
 _MAX_PLUGIN_RESULT_CHARS = 128 * 1024
+_PLUGIN_EXECUTION_ERROR = (
+    "The installed Tinyhat plugin could not resume installation."
+)
 _ALLOWED_PLUGIN_KEYS = frozenset(
     {
         "installation_id",
@@ -151,29 +154,25 @@ def _resume_from_installed_plugin() -> dict[str, Any]:
         raise RuntimeError("The installed Tinyhat plugin is unavailable.")
 
     _remove_loaded_package()
-    spec = importlib.util.spec_from_file_location(
-        _PACKAGE_NAME,
-        init_path,
-        submodule_search_locations=[str(root)],
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("The installed Tinyhat plugin could not be loaded.")
-    package = importlib.util.module_from_spec(spec)
-    sys.modules[_PACKAGE_NAME] = package
     try:
-        spec.loader.exec_module(package)
-        hats_module = importlib.import_module(f"{_PACKAGE_NAME}.hats")
-        resume = getattr(hats_module, "hats", None)
-        if not callable(resume):
-            raise RuntimeError(
-                "The installed Tinyhat plugin does not support Hat installation."
-            )
         try:
+            spec = importlib.util.spec_from_file_location(
+                _PACKAGE_NAME,
+                init_path,
+                submodule_search_locations=[str(root)],
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(_PLUGIN_EXECUTION_ERROR)
+            package = importlib.util.module_from_spec(spec)
+            sys.modules[_PACKAGE_NAME] = package
+            spec.loader.exec_module(package)
+            hats_module = importlib.import_module(f"{_PACKAGE_NAME}.hats")
+            resume = getattr(hats_module, "hats", None)
+            if not callable(resume):
+                raise RuntimeError(_PLUGIN_EXECUTION_ERROR)
             result = resume({"action": "resume_installation"})
         except Exception:
-            raise RuntimeError(
-                "The installed Tinyhat plugin could not resume installation."
-            ) from None
+            raise RuntimeError(_PLUGIN_EXECUTION_ERROR) from None
         return _normalize_plugin_result(result)
     finally:
         _remove_loaded_package()
