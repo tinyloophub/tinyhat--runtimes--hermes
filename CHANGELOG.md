@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add one narrow `resume_hat_installation` command so the platform can start an
+  already-authorized Hat installation without a user message or Hermes/model
+  turn. The runtime accepts only canonical plugin status, returns three
+  value-blind fields, treats a missing Hat as a quiet no-op, and waits for the
+  Computer-local plugin worker to stop before propagating cancellation.
+
 ## 0.0.53 - 2026-08-11
 
 - Add one narrow `complete_hat_credential_transfer` command. The platform sends
