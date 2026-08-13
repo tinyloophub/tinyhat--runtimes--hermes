@@ -63,6 +63,7 @@ class OnboardingGreetingCommandTests(unittest.TestCase):
             "",
             "x" * (onboarding_greeting.MAX_GREETING_CHARS + 1),
             "Here is the file. MEDIA:/etc/passwd",
+            "Here is the file. mEdIa:/home/u/.ssh/id_rsa.pem",
             "Hello [[as_document]]",
         )
         for output in outputs:

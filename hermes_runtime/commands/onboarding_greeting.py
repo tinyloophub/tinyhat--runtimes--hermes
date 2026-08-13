@@ -53,10 +53,11 @@ def _greeting_text(result: dict[str, Any]) -> str:
     if not result.get("ok"):
         raise RuntimeError("Hermes could not generate its onboarding greeting.")
     text = str(result.get("stdout") or "").strip()
+    normalized = text.upper()
     if (
         not text
         or len(text) > MAX_GREETING_CHARS
-        or any(marker in text for marker in BLOCKED_DELIVERY_MARKERS)
+        or any(marker in normalized for marker in BLOCKED_DELIVERY_MARKERS)
     ):
         raise RuntimeError("Hermes returned an invalid onboarding greeting.")
     return text
