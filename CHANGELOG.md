@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.55 - 2026-08-13
+
 - Add `onboarding_greeting`, a fail-closed local Hermes turn that preloads the
   Tinyhat greeting skill, delivers the bounded result through the configured
   Telegram home channel, and returns only delivery status and character count
