@@ -22,6 +22,7 @@ COMMAND_MODULES = {
     "install_tinyhat_plugin": "hermes_runtime.commands.install_tinyhat_plugin",
     "update_tinyhat_plugin": "hermes_runtime.commands.update_tinyhat_plugin",
     "configure_telegram": "hermes_runtime.commands.configure_telegram",
+    "onboarding_greeting": "hermes_runtime.commands.onboarding_greeting",
     "apply_config": "hermes_runtime.commands.apply_config",
     "import_openclaw_state": "hermes_runtime.commands.import_openclaw_state",
     "activate_codex_auth_models": "hermes_runtime.commands.activate_codex_auth_models",
