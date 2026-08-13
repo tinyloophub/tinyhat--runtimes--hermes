@@ -49,6 +49,10 @@ class OnboardingGreetingCommandTests(unittest.TestCase):
         prompt = generation_args[generation_args.index("--oneshot") + 1]
         self.assertIn('"display_name": "The Forecaster"', prompt)
         self.assertIn("Do not call yourself Hermes", prompt)
+        self.assertEqual(
+            run_process.await_args_list[0].kwargs["env"],
+            {"TINYHAT_ONBOARDING_GREETING_TURN": "1"},
+        )
         delivery_args = run_process.await_args_list[1].args[0]
         self.assertEqual(delivery_args[1:5], ["send", "--to", "telegram", "--json"])
         self.assertEqual(delivery_args[-1], "Hi, I'm ready to work with you.")

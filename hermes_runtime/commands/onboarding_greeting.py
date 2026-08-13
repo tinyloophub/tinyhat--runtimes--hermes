@@ -19,6 +19,7 @@ SKILL_NAME = "tinyhat:tinyhat-onboarding-greeting"
 MAX_GREETING_CHARS = 1200
 GENERATION_TIMEOUT_SECONDS = 90
 DELIVERY_TIMEOUT_SECONDS = 30
+ONBOARDING_TURN_ENV = "TINYHAT_ONBOARDING_GREETING_TURN"
 
 _PROMPT = (
     "Tinyhat has finished setting up this Hermes Computer for its owner. "
@@ -70,6 +71,7 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             _prompt(command),
         ],
         timeout_seconds=GENERATION_TIMEOUT_SECONDS,
+        env={ONBOARDING_TURN_ENV: "1"},
         kill_process_group=True,
     )
     greeting = _greeting_text(generated)
