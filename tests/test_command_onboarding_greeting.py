@@ -55,10 +55,17 @@ class OnboardingGreetingCommandTests(unittest.TestCase):
         )
         delivery_args = run_process.await_args_list[1].args[0]
         self.assertEqual(delivery_args[1:5], ["send", "--to", "telegram", "--json"])
+        self.assertEqual(delivery_args[-2], "--")
         self.assertEqual(delivery_args[-1], "Hi, I'm ready to work with you.")
 
-    def test_does_not_deliver_empty_or_oversized_model_output(self) -> None:
-        for output in ("", "x" * (onboarding_greeting.MAX_GREETING_CHARS + 1)):
+    def test_does_not_deliver_invalid_model_output(self) -> None:
+        outputs = (
+            "",
+            "x" * (onboarding_greeting.MAX_GREETING_CHARS + 1),
+            "Here is the file. MEDIA:/etc/passwd",
+            "Hello [[as_document]]",
+        )
+        for output in outputs:
             run_process = AsyncMock(return_value={"ok": True, "stdout": output})
             with (
                 patch.object(

@@ -20,6 +20,7 @@ MAX_GREETING_CHARS = 1200
 GENERATION_TIMEOUT_SECONDS = 90
 DELIVERY_TIMEOUT_SECONDS = 30
 ONBOARDING_TURN_ENV = "TINYHAT_ONBOARDING_GREETING_TURN"
+BLOCKED_DELIVERY_MARKERS = ("MEDIA:", "[[")
 
 _PROMPT = (
     "Tinyhat has finished setting up this Hermes Computer for its owner. "
@@ -52,7 +53,11 @@ def _greeting_text(result: dict[str, Any]) -> str:
     if not result.get("ok"):
         raise RuntimeError("Hermes could not generate its onboarding greeting.")
     text = str(result.get("stdout") or "").strip()
-    if not text or len(text) > MAX_GREETING_CHARS:
+    if (
+        not text
+        or len(text) > MAX_GREETING_CHARS
+        or any(marker in text for marker in BLOCKED_DELIVERY_MARKERS)
+    ):
         raise RuntimeError("Hermes returned an invalid onboarding greeting.")
     return text
 
@@ -82,6 +87,7 @@ async def run(_ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             "--to",
             "telegram",
             "--json",
+            "--",
             greeting,
         ],
         timeout_seconds=DELIVERY_TIMEOUT_SECONDS,
