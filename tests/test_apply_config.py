@@ -44,6 +44,45 @@ class FakePlatform:
         return self.payload
 
 
+def test_setup_notice_names_ready_tools_without_credential_language() -> None:
+    notice = apply_config._secret_available_notice(
+        [
+            "AGENTPHONE_API_KEY",
+            "AGENTPHONE_PHONE_NUMBER",
+            "TINYHAT_MAILBOX_ADDRESS",
+            "TINYHAT_MAILBOX_PASSWORD",
+            "OPENROUTER_API_KEY",
+        ]
+    )
+
+    assert notice == (
+        "Your tools for phone calls and text messages, email, and AI models are "
+        "ready. I'm restarting once to finish setup. I'll be back in a moment "
+        "and ready to help."
+    )
+    assert "secret" not in notice.lower()
+    assert "api key" not in notice.lower()
+
+
+def test_setup_notice_uses_two_tool_names_when_all_are_known() -> None:
+    notice = apply_config._secret_available_notice(
+        ["AGENTPHONE_API_KEY", "TINYHAT_MAILBOX_PASSWORD"]
+    )
+
+    assert notice.startswith(
+        "Your tools for phone calls and text messages and email are ready."
+    )
+
+
+def test_setup_notice_stays_generic_when_any_tool_is_unknown() -> None:
+    notice = apply_config._secret_available_notice(
+        ["EXA_API_KEY", "VOICE_TOOLS_OPENAI_KEY"]
+    )
+
+    assert notice.startswith("Your new tools are ready.")
+    assert "web research" not in notice
+
+
 def test_load_env_files_into_process_loads_selected_keys_only() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env_file = Path(tmp) / ".env"
@@ -137,11 +176,6 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
             "\n".join(
                 [
                     'TELEGRAM_HOME_CHANNEL="123"',
-                    "",
-                    "# tinyhat runtime secrets start",
-                    'EXA_API_KEY="old-secret"',
-                    'SECOND_SECRET="old-two"',
-                    "# tinyhat runtime secrets end",
                 ]
             )
             + "\n",
@@ -207,10 +241,10 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert "_HERMES_FORCE_EXA_API_KEY" not in project_env_text
     assert len(events) == 2
     assert events[0][0] == "notice"
-    assert events[0][1].startswith("2 secrets are saved.")
-    assert "restarting my Telegram gateway now" in events[0][1]
-    assert "available to Hermes" in events[0][1]
-    assert "before your next message" in events[0][1]
+    assert events[0][1] == (
+        "Your new tools are ready. I'm restarting once to finish setup. "
+        "I'll be back in a moment and ready to help."
+    )
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "exa-secret")
     assert result["schema"] == "tinyhat_hermes_apply_config_v1"
@@ -330,8 +364,10 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert "OLD_SECRET" not in env_text
     assert "_HERMES_FORCE_OLD_SECRET" not in env_text
     assert events[0][0] == "notice"
-    assert "restarting my Telegram gateway" in events[0][1]
-    assert "before your next message" in events[0][1]
+    assert events[0][1] == (
+        "I updated your tools. I'm restarting once to finish the change. "
+        "I'll be back in a moment and ready to help."
+    )
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
@@ -350,6 +386,88 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert result["gateway_restart_notice"]["description"] == "sent"
     assert result["gateway"]["healthy"] is True
     assert result["restart_requested"] is True
+
+
+def test_apply_config_uses_update_copy_for_later_tool_addition() -> None:
+    events: list[str] = []
+    platform = FakePlatform(
+        {
+            "revision": 10,
+            "secrets": {
+                "EXA_API_KEY": "existing-secret",
+                "SLACK_BOT_TOKEN": "new-secret",
+            },
+        }
+    )
+
+    async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+        return {"healthy": True, "started": True}
+
+    def fake_telegram_send(text: str, **_kwargs: Any) -> dict[str, Any]:
+        events.append(text)
+        return {"ok": True, "http_status": 200, "description": "sent"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp) / "home"
+        project_dir = Path(tmp) / "project"
+        project_dir.mkdir(parents=True)
+        home_env = home / ".hermes" / ".env"
+        home_env.parent.mkdir(parents=True)
+        home_env.write_text(
+            "\n".join(
+                [
+                    "# tinyhat runtime secrets start",
+                    'EXA_API_KEY="existing-secret"',
+                    "# tinyhat runtime secrets end",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        old_env = os.environ.copy()
+        os.environ.clear()
+        os.environ.update(
+            {"HOME": str(home), "HERMES_PROJECT_DIR": str(project_dir)}
+        )
+        try:
+            with (
+                patch(
+                    "hermes_runtime.commands.apply_config.find_hermes_binary",
+                    return_value=Path("/usr/local/bin/hermes"),
+                ),
+                patch(
+                    "hermes_runtime.commands.apply_config._run_gateway",
+                    side_effect=fake_run_gateway,
+                ),
+                patch(
+                    "hermes_runtime.commands.apply_config._telegram_send",
+                    side_effect=fake_telegram_send,
+                ),
+            ):
+                result = asyncio.run(
+                    apply_config.run(
+                        SimpleNamespace(
+                            platform=platform,
+                            computer_id="123",
+                            platform_auth="gcloud",
+                        ),
+                        {"kind": "apply_config", "spec": {}},
+                    )
+                )
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert events == [
+        "I updated your tools. I'm restarting once to finish the change. "
+        "I'll be back in a moment and ready to help."
+    ]
+    assert "finish setup" not in events[0]
+    assert result["secret_available_notice"]["ok"] is None
+    assert result["secret_available_notice"]["sent"] is False
+    assert result["gateway_restart_notice"]["ok"] is True
+    assert result["gateway_restart_notice"]["sent"] is True
+    assert result["gateway_restart_notice"]["description"] == "sent"
 
 
 def test_apply_config_rejects_invalid_runtime_secret_names() -> None:

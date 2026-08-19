@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.57 - 2026-08-19
+
+- Make first setup reassuring: name the phone, email, model, and other known
+  tools that are ready without exposing credential names or counts, then
+  describe the one-time restart as the final setup step. Later tool changes use
+  the same short, calm restart language.
+
 ## 0.0.56 - 2026-08-19
 
 - Install pinned `jmapc` `0.3.0` in the Hermes environment during Computer

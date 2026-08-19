@@ -35,6 +35,15 @@ from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthroug
 SCHEMA = "tinyhat_hermes_apply_config_v1"
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+_TOOL_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("phone calls and text messages", ("AGENTPHONE_",)),
+    ("email", ("TINYHAT_MAILBOX_",)),
+    ("AI models", ("OPENROUTER_", "OPENAI_", "CODEX_")),
+    ("web research", ("EXA_",)),
+    ("Google Workspace", ("GOOGLE_",)),
+    ("Slack", ("SLACK_",)),
+)
+
 
 def _clean_secret_map(payload: dict[str, Any]) -> dict[str, str]:
     secrets = payload.get("secrets")
@@ -101,16 +110,38 @@ def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[s
     }
 
 
+def _tool_label(secret_name: str) -> str | None:
+    normalized = str(secret_name or "").strip().upper()
+    for label, prefixes in _TOOL_LABELS:
+        if normalized.startswith(prefixes):
+            return label
+    return None
+
+
+def _configured_tool_labels(secret_names: list[str]) -> list[str]:
+    matched = {_tool_label(name) for name in secret_names}
+    return [label for label, _prefixes in _TOOL_LABELS if label in matched]
+
+
+def _human_list(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
 def _secret_available_notice(secret_names: list[str]) -> str:
-    if len(secret_names) == 1:
-        subject = f"`{secret_names[0]}` is saved"
-    elif secret_names:
-        subject = f"{len(secret_names)} secrets are saved"
-    else:
-        subject = "Your secret settings are saved"
+    tools = _configured_tool_labels(secret_names)
+    all_tools_named = all(_tool_label(name) is not None for name in secret_names)
+    ready = (
+        f"Your tools for {_human_list(tools)} are ready."
+        if tools and all_tools_named
+        else "Your new tools are ready."
+    )
     return (
-        f"{subject}. I'm restarting my Telegram gateway now to make the "
-        "updated secret available to Hermes before your next message."
+        f"{ready} I'm restarting once to finish setup. "
+        "I'll be back in a moment and ready to help."
     )
 
 
@@ -128,24 +159,18 @@ async def _send_secret_available_notice(secret_names: list[str]) -> dict[str, An
         }
 
 
-def _secret_restart_notice(removed_keys: list[str]) -> str:
-    if len(removed_keys) == 1:
-        subject = f"`{removed_keys[0]}` was removed"
-    elif removed_keys:
-        subject = f"{len(removed_keys)} secrets were removed"
-    else:
-        subject = "Your secret settings changed"
+def _secret_restart_notice() -> str:
     return (
-        f"{subject}. I'm restarting my Telegram gateway now so removed secrets "
-        "are no longer loaded by Hermes before your next message."
+        "I updated your tools. I'm restarting once to finish the change. "
+        "I'll be back in a moment and ready to help."
     )
 
 
-async def _send_secret_restart_notice(removed_keys: list[str]) -> dict[str, Any]:
+async def _send_secret_restart_notice() -> dict[str, Any]:
     try:
         return await asyncio.to_thread(
             _telegram_send,
-            _secret_restart_notice(removed_keys),
+            _secret_restart_notice(),
         )
     except Exception as exc:  # noqa: BLE001 - env apply/restart must still run.
         return {
@@ -184,6 +209,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             for key in item.get("removed_keys", [])
         }
     )
+    previous_keys = {
+        str(key)
+        for item in env_files
+        for key in item.get("previous_keys", [])
+    }
     for key in removed_keys:
         os.environ.pop(key, None)
     env_paths = [Path(str(item["path"])) for item in env_files]
@@ -194,14 +224,16 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     )
 
     restart_required = bool(secret_names or removed_keys)
+    is_first_tool_setup = False
     if restart_required:
         hermes_bin = find_hermes_binary()
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
-        if removed_keys:
-            notice = await _send_secret_restart_notice(removed_keys)
-        else:
+        is_first_tool_setup = bool(secret_names) and not previous_keys
+        if is_first_tool_setup:
             notice = await _send_secret_available_notice(secret_names)
+        else:
+            notice = await _send_secret_restart_notice()
         gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
@@ -226,11 +258,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "env_reload": env_reload,
         "terminal_env_passthrough": terminal_env_passthrough,
         "secret_available_notice": _notice_result(
-            sent=restart_required and not bool(removed_keys),
+            sent=restart_required and is_first_tool_setup,
             notice=notice,
         ),
         "gateway_restart_notice": _notice_result(
-            sent=restart_required and bool(removed_keys),
+            sent=restart_required and not is_first_tool_setup,
             notice=notice,
         ),
         "gateway": gateway,
