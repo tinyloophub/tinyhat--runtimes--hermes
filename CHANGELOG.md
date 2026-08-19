@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.56 - 2026-08-19
+
+- Install pinned `jmapc` `0.3.0` in the Hermes environment during Computer
+  creation, expose it to Agent terminals through `tinyhat-jmap-python`, and
+  verify that launcher with a real import/version smoke. Agent assignment
+  remains fast, and mailbox use does not route through Tinyloop.
+
 ## 0.0.55 - 2026-08-13
 
 - Add `onboarding_greeting`, a fail-closed local Hermes turn that preloads the

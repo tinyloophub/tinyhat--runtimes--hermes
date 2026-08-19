@@ -17,6 +17,7 @@ HERMES_UPSTREAM_COMMIT = "646761c7831ff4c4cd0d6ac711ed791d487fb665"
 # Optional upstream dependencies that Tinyhat promises on a fresh Computer.
 DDGS_VERSION = "9.14.4"
 EDGE_TTS_VERSION = "7.2.7"
+JMAP_CLIENT_VERSION = "0.3.0"
 PLAYWRIGHT_VERSION = "1.58.2"
 
 # Google Workspace CLI is installed from its official, statically linked musl

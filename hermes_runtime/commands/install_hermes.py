@@ -18,9 +18,12 @@ What it does:
 
     After Hermes is present, the command verifies the Hermes venv can import
     the Telegram gateway adapter, voice-transcription dependencies, pinned
-    ``ddgs`` web search, and pinned Edge TTS. If not, it installs the missing
-    packages into the same Hermes project venv. It also installs and verifies
-    the pinned Google Workspace CLI, then proves Hermes will register its
+    ``ddgs`` web search, pinned Edge TTS, and the pinned ``jmapc`` email
+    client. If not, it installs the missing packages into the same Hermes
+    project venv. It exposes that venv as ``tinyhat-jmap-python`` on the
+    Computer-wide path and verifies a real ``jmapc`` import through the
+    launcher. It also installs and verifies the pinned Google Workspace
+    CLI, then proves Hermes will register its
     browser tools and that the browser CLI can open, snapshot, and close a
     deterministic local page without depending on external DNS or network
     availability.
@@ -62,8 +65,10 @@ Side effects:
     ``ripgrep``, ``xclip``, and ``wl-clipboard`` when running as root on
     Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
-    ``messaging``/``voice`` extras into the Hermes venv and download the selected
-    local STT model weights. Prefetch failures are reported but do not
+    ``messaging``/``voice`` extras and pinned ``jmapc`` into the Hermes venv,
+    install ``tinyhat-jmap-python`` in ``/usr/local/bin``, and download the
+    selected local STT model weights. Prefetch failures are
+    reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
     After a failed browser probe, may install Chrome for Testing through
     ``agent-browser`` plus pinned Playwright Chromium on Linux x86, or distro
@@ -103,6 +108,7 @@ from hermes_runtime.day_one_capabilities import (
     HERMES_UPSTREAM_COMMIT,
     IMAGE_GENERATION_MODEL,
     IMAGE_GENERATION_PROVIDER,
+    JMAP_CLIENT_VERSION,
     PLAYWRIGHT_VERSION,
     TELEGRAM_RICH_DRAFTS,
     TELEGRAM_RICH_MESSAGES,
@@ -158,9 +164,10 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
             (
                 "import importlib.metadata\n"
                 "import importlib.util\n"
-                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts')\n"
+                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts','jmapc')\n"
                 "missing=[name for name in modules if importlib.util.find_spec(name) is None]\n"
-                f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}'}}\n"
+                f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}',"
+                f"'jmapc':'{JMAP_CLIENT_VERSION}'}}\n"
                 "wrong=[]\n"
                 "for package, version in expected.items():\n"
                 "    try:\n"
@@ -214,6 +221,103 @@ def _pip_supports_python_option(pip_bin: str) -> bool:
     return "--python" in f"{result.stdout}\n{result.stderr}"
 
 
+def _jmap_python_install_path() -> Path:
+    explicit = (os.getenv("TINYHAT_JMAP_PYTHON_INSTALL_PATH") or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path("/usr/local/bin/tinyhat-jmap-python")
+
+
+async def _probe_jmap_python_launcher() -> dict[str, Any]:
+    launcher = _jmap_python_install_path()
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        return {
+            "ok": False,
+            "binary": str(launcher),
+            "version": None,
+            "smoke_status": "failed",
+            "message": "The Computer-wide JMAP Python launcher was not found.",
+        }
+    try:
+        probe = await run_process(
+            [
+                str(launcher),
+                "-c",
+                (
+                    "import importlib.metadata\n"
+                    "import jmapc\n"
+                    "print('jmapc ' + importlib.metadata.version('jmapc'))\n"
+                ),
+            ],
+            timeout_seconds=30,
+        )
+    except OSError as exc:
+        probe = {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"launcher could not start: {type(exc).__name__}",
+        }
+    first_line = str(probe.get("stdout") or "").strip().splitlines()
+    version_line = first_line[0].strip() if first_line else ""
+    expected = f"jmapc {JMAP_CLIENT_VERSION}"
+    ok = bool(probe.get("ok")) and version_line == expected
+    return {
+        "ok": ok,
+        "binary": str(launcher),
+        "version": version_line.removeprefix("jmapc ").strip() or None,
+        "expected_version": JMAP_CLIENT_VERSION,
+        "smoke_status": "passed" if ok else "failed",
+        "probe": probe,
+        "message": (
+            "The Computer-wide JMAP Python launcher is ready."
+            if ok
+            else f"Expected '{expected}', received '{version_line or 'no output'}'."
+        ),
+    }
+
+
+async def _ensure_jmap_python_launcher(project_dir: Path) -> dict[str, Any]:
+    before = await _probe_jmap_python_launcher()
+    if before.get("ok"):
+        return {
+            "ok": True,
+            "changed": False,
+            "before": before,
+            "after": before,
+            "install": None,
+        }
+
+    launcher = _jmap_python_install_path()
+    python_bin = project_dir / "venv" / "bin" / "python"
+    script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"exec {shlex.quote(str(python_bin))} \"$@\"\n"
+    )
+    install = await run_shell(
+        (
+            "set -euo pipefail\n"
+            'tmp_dir="$(mktemp -d)"\n'
+            'trap \'rm -rf "$tmp_dir"\' EXIT\n'
+            'tmp_launcher="$tmp_dir/tinyhat-jmap-python"\n'
+            f"printf %s {shlex.quote(script)} > \"$tmp_launcher\"\n"
+            'chmod 0755 "$tmp_launcher"\n'
+            f"install -d {shlex.quote(str(launcher.parent))}\n"
+            f"install -m 0755 \"$tmp_launcher\" {shlex.quote(str(launcher))}"
+        ),
+        timeout_seconds=30,
+    )
+    after = await _probe_jmap_python_launcher()
+    return {
+        "ok": bool(install.get("ok")) and bool(after.get("ok")),
+        "changed": bool(install.get("ok")) and bool(after.get("ok")),
+        "before": before,
+        "after": after,
+        "install": install,
+    }
+
+
 async def _ensure_messaging_dependencies() -> dict[str, Any]:
     project_dir = _find_hermes_project_dir()
     if project_dir is None:
@@ -224,43 +328,49 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
         }
 
     before = await _probe_messaging_dependencies(project_dir)
-    if before.get("ok"):
-        return {
-            "ok": True,
-            "changed": False,
-            "project_dir": str(project_dir),
-            "before": before,
-            "after": before,
-            "install": None,
-        }
-
     prerequisites: dict[str, Any] | None = None
-    if shutil.which("pip") is None and shutil.which("pip3") is None:
-        prerequisites = await maybe_install_debian_prerequisites()
-
     python_bin = project_dir / "venv" / "bin" / "python"
-    package_spec = f"{project_dir}[messaging,voice]"
-    install = await run_shell(
-        (
-            f"cd {shlex.quote(str(project_dir))}\n"
-            f"{_pip_command_for_python(python_bin)} install -e "
-            f"{shlex.quote(package_spec)}\n"
-            f"{_pip_command_for_python(python_bin)} install "
-            f"{shlex.quote(f'ddgs=={DDGS_VERSION}')} "
-            f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')}"
-        ),
-        timeout_seconds=900,
-        env={"PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+    install: dict[str, Any] | None = None
+    after = before
+    dependencies_changed = False
+    if not before.get("ok"):
+        if shutil.which("pip") is None and shutil.which("pip3") is None:
+            prerequisites = await maybe_install_debian_prerequisites()
+
+        package_spec = f"{project_dir}[messaging,voice]"
+        install = await run_shell(
+            (
+                f"cd {shlex.quote(str(project_dir))}\n"
+                f"{_pip_command_for_python(python_bin)} install -e "
+                f"{shlex.quote(package_spec)} "
+                f"{shlex.quote(f'ddgs=={DDGS_VERSION}')} "
+                f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')} "
+                f"{shlex.quote(f'jmapc=={JMAP_CLIENT_VERSION}')}"
+            ),
+            timeout_seconds=900,
+            env={"PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+        )
+        after = await _probe_messaging_dependencies(project_dir)
+        dependencies_changed = bool(install.get("ok")) and bool(after.get("ok"))
+
+    jmap_client = (
+        await _ensure_jmap_python_launcher(project_dir)
+        if after.get("ok")
+        else {
+            "ok": False,
+            "changed": False,
+            "message": "JMAP dependencies are not ready.",
+        }
     )
-    after = await _probe_messaging_dependencies(project_dir)
     return {
-        "ok": bool(after.get("ok")),
-        "changed": bool(install.get("ok")) and bool(after.get("ok")),
+        "ok": bool(after.get("ok")) and bool(jmap_client.get("ok")),
+        "changed": dependencies_changed or bool(jmap_client.get("changed")),
         "project_dir": str(project_dir),
         "before": before,
         "after": after,
         "install": install,
         "prerequisites": prerequisites,
+        "jmap_client": jmap_client,
     }
 
 
@@ -801,6 +911,32 @@ def _day_one_capability_report(
                 "authentication": "available_when_connected",
                 "smoke_status": (
                     "passed" if google_workspace_cli.get("ok") else "failed"
+                ),
+            },
+            "jmap_client": {
+                "state": (
+                    "ready"
+                    if dependencies.get("ok")
+                    and isinstance(dependencies.get("jmap_client"), dict)
+                    and dependencies["jmap_client"].get("ok")
+                    else "failed"
+                ),
+                "provider": "jmapc",
+                "version": JMAP_CLIENT_VERSION,
+                "dependency_ready": bool(dependencies.get("ok")),
+                "binary": (
+                    dependencies.get("jmap_client", {}).get("after", {}).get("binary")
+                    if isinstance(dependencies.get("jmap_client"), dict)
+                    and isinstance(dependencies["jmap_client"].get("after"), dict)
+                    else None
+                ),
+                "smoke_status": (
+                    dependencies.get("jmap_client", {})
+                    .get("after", {})
+                    .get("smoke_status", "not_run")
+                    if isinstance(dependencies.get("jmap_client"), dict)
+                    and isinstance(dependencies["jmap_client"].get("after"), dict)
+                    else "not_run"
                 ),
             },
             "image_generation": {
