@@ -155,15 +155,13 @@ DEFAULT_TELEGRAM_FALLBACK_IPS = "149.154.166.110,149.154.167.220"
 
 def local_stt_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL")
-        or DEFAULT_LOCAL_STT_MODEL
+        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL") or DEFAULT_LOCAL_STT_MODEL
     ).strip() or DEFAULT_LOCAL_STT_MODEL
 
 
 def openrouter_stt_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_MODEL")
-        or DEFAULT_OPENROUTER_STT_MODEL
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_MODEL") or DEFAULT_OPENROUTER_STT_MODEL
     ).strip() or DEFAULT_OPENROUTER_STT_MODEL
 
 
@@ -208,15 +206,13 @@ def openrouter_stt_command() -> str:
 
 def vision_provider() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_VISION_PROVIDER")
-        or DEFAULT_VISION_PROVIDER
+        os.getenv("TINYHAT_HERMES_VISION_PROVIDER") or DEFAULT_VISION_PROVIDER
     ).strip() or DEFAULT_VISION_PROVIDER
 
 
 def vision_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_VISION_MODEL")
-        or DEFAULT_VISION_MODEL
+        os.getenv("TINYHAT_HERMES_VISION_MODEL") or DEFAULT_VISION_MODEL
     ).strip() or DEFAULT_VISION_MODEL
 
 
@@ -317,11 +313,7 @@ def _config_has_telegram_fallback_ips(config_file: Path | None = None) -> bool:
     parents: list[tuple[int, str]] = []
     for index, line in enumerate(lines):
         stripped = line.lstrip(" ")
-        if (
-            not stripped
-            or stripped.startswith(("#", "-"))
-            or ":" not in stripped
-        ):
+        if not stripped or stripped.startswith(("#", "-")) or ":" not in stripped:
             continue
         indent = len(line) - len(stripped)
         while parents and indent <= parents[-1][0]:
@@ -344,12 +336,7 @@ def _config_has_telegram_fallback_ips(config_file: Path | None = None) -> bool:
                 if child_indent <= indent:
                     break
                 if child_stripped.startswith("-"):
-                    item = (
-                        child_stripped[1:]
-                        .split(" #", 1)[0]
-                        .strip()
-                        .strip("'\"")
-                    )
+                    item = child_stripped[1:].split(" #", 1)[0].strip().strip("'\"")
                     if item:
                         return True
             return False
@@ -365,10 +352,14 @@ def _resolve_telegram_network_fallback(
     process_value = (os.getenv(TELEGRAM_FALLBACK_IPS_ENV_KEY) or "").strip()
     if process_value:
         return process_value, "process_env"
-    file_value = read_env_values(
-        paths,
-        names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
-    ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+    file_value = (
+        read_env_values(
+            paths,
+            names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
+        )
+        .get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "")
+        .strip()
+    )
     if file_value:
         return file_value, "env_file"
     if _config_has_telegram_fallback_ips():
@@ -393,7 +384,9 @@ def ensure_telegram_network_fallback_env(
         read_env_values(
             candidates[:1],
             names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
-        ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+        )
+        .get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "")
+        .strip()
         if candidates
         else ""
     )
@@ -512,7 +505,9 @@ def _codex_auth_quick_commands_block() -> str:
     return "\n".join(lines)
 
 
-def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[str, Any]:
+def _install_codex_auth_quick_commands(
+    config_file: Path | None = None,
+) -> dict[str, Any]:
     config_file = config_file or _hermes_config_file()
     config_file.parent.mkdir(parents=True, exist_ok=True)
     text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
@@ -530,7 +525,8 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
             (
                 index
                 for index, line in enumerate(lines)
-                if line.strip() == "quick_commands:" and not line.startswith((" ", "\t"))
+                if line.strip() == "quick_commands:"
+                and not line.startswith((" ", "\t"))
             ),
             None,
         )
@@ -899,7 +895,7 @@ def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> lis
     lines, disabled_index = _normalize_plugin_list_key(lines, disabled_index)
     disabled_end = _block_end(lines, disabled_index, indent=2)
     next_lines = lines[: disabled_index + 1]
-    for line in lines[disabled_index + 1: disabled_end]:
+    for line in lines[disabled_index + 1 : disabled_end]:
         if line.strip() == f"- {CODEX_PLUGIN_NAME}":
             continue
         next_lines.append(line)
@@ -930,7 +926,7 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
         end=plugins_end,
     )
     if enabled_index is None:
-        lines[plugins_index + 1: plugins_index + 1] = [
+        lines[plugins_index + 1 : plugins_index + 1] = [
             "  enabled:",
             f"    - {CODEX_PLUGIN_NAME}",
         ]
@@ -938,10 +934,10 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
 
     lines, enabled_index = _normalize_plugin_list_key(lines, enabled_index)
     enabled_end = _block_end(lines, enabled_index, indent=2)
-    for line in lines[enabled_index + 1: enabled_end]:
+    for line in lines[enabled_index + 1 : enabled_end]:
         if line.strip() == f"- {CODEX_PLUGIN_NAME}":
             return lines
-    lines[enabled_index + 1: enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
+    lines[enabled_index + 1 : enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
     return lines
 
 
@@ -1120,7 +1116,9 @@ def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list
     return next_lines
 
 
-def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> list[str]:
+def _telegram_menu_block(
+    *, max_commands: int, existing_priority: list[str]
+) -> list[str]:
     priority = list(TELEGRAM_MANAGED_MENU_COMMANDS)
     for command in existing_priority:
         if command not in priority:
@@ -1137,7 +1135,9 @@ def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> 
 
 
 def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], int]:
-    lines, managed_max_commands, managed_priority = _remove_tinyhat_telegram_menu_block(lines)
+    lines, managed_max_commands, managed_priority = _remove_tinyhat_telegram_menu_block(
+        lines
+    )
     fallback_max_commands = managed_max_commands or TELEGRAM_MENU_MAX_COMMANDS
 
     platforms_index = _find_key(lines, "platforms", indent=0)
@@ -1222,12 +1222,60 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
     max_commands = existing_max_commands or fallback_max_commands
     combined_priority = [*managed_priority, *existing_priority]
     lines = _remove_command_menu_keys(lines, command_menu_index)
-    command_menu_index = _find_key(lines, "command_menu", indent=6) or command_menu_index
-    lines[command_menu_index + 1:command_menu_index + 1] = _telegram_menu_block(
+    command_menu_index = (
+        _find_key(lines, "command_menu", indent=6) or command_menu_index
+    )
+    lines[command_menu_index + 1 : command_menu_index + 1] = _telegram_menu_block(
         max_commands=max_commands,
         existing_priority=combined_priority,
     )
     return lines, max_commands
+
+
+def _ensure_tinyhat_restart_notification_config(lines: list[str]) -> list[str]:
+    """Let Tinyhat own the user-facing notice for managed gateway restarts."""
+    platforms_index = _find_key(lines, "platforms", indent=0)
+    if platforms_index is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(
+            [
+                "platforms:",
+                "  telegram:",
+                "    gateway_restart_notification: false",
+            ]
+        )
+        return lines
+
+    platforms_end = _block_end(lines, platforms_index, indent=0)
+    telegram_index = _find_key(
+        lines,
+        "telegram",
+        indent=2,
+        start=platforms_index + 1,
+        end=platforms_end,
+    )
+    if telegram_index is None:
+        lines[platforms_end:platforms_end] = [
+            "  telegram:",
+            "    gateway_restart_notification: false",
+        ]
+        return lines
+
+    telegram_end = _block_end(lines, telegram_index, indent=2)
+    notification_index = _find_key(
+        lines,
+        "gateway_restart_notification",
+        indent=4,
+        start=telegram_index + 1,
+        end=telegram_end,
+    )
+    managed_line = "    gateway_restart_notification: false"
+    if notification_index is None:
+        lines[telegram_end:telegram_end] = [managed_line]
+    else:
+        lines[notification_index] = managed_line
+    return lines
 
 
 def _install_telegram_command_menu_priority(
@@ -1237,6 +1285,7 @@ def _install_telegram_command_menu_priority(
     config_file.parent.mkdir(parents=True, exist_ok=True)
     text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
     next_lines, max_commands = _ensure_telegram_command_menu_config(text.splitlines())
+    next_lines = _ensure_tinyhat_restart_notification_config(next_lines)
     config_file.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
     try:
         config_file.chmod(0o600)
@@ -1247,6 +1296,7 @@ def _install_telegram_command_menu_priority(
         "installed": True,
         "mechanism": "hermes_config",
         "path": "platforms.telegram.extra.command_menu",
+        "gateway_restart_notification": False,
         "priority_mode": TELEGRAM_MENU_PRIORITY_MODE,
         "max_commands": max_commands,
         "commands": list(TELEGRAM_MANAGED_MENU_COMMANDS),
@@ -1303,11 +1353,11 @@ async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str,
     return await _run_config_set_commands(hermes_bin, commands)
 
 
-def _vision_fallback_patch(*, active_provider: str, active_model: str) -> dict[str, Any]:
+def _vision_fallback_patch(
+    *, active_provider: str, active_model: str
+) -> dict[str, Any]:
     openrouter_model = (
-        active_model
-        if active_provider == DEFAULT_VISION_PROVIDER
-        else vision_model()
+        active_model if active_provider == DEFAULT_VISION_PROVIDER else vision_model()
     )
     fallback_models = openrouter_vision_fallback_model_list(
         exclude_model=openrouter_model
@@ -2001,8 +2051,7 @@ async def _start_gateway_foreground(
         if (
             isinstance(runtime_generation, dict)
             and runtime_generation.get("pid") == process.pid
-            and runtime_generation.get("argv")
-            == TINYHAT_FOREGROUND_GATEWAY_ARGV
+            and runtime_generation.get("argv") == TINYHAT_FOREGROUND_GATEWAY_ARGV
         ):
             generation = {
                 "schema": FOREGROUND_GATEWAY_STATE_SCHEMA,
@@ -2041,9 +2090,8 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
         timeout_seconds=45,
     )
     install: dict[str, Any] | None = None
-    if (
-        not _gateway_status_is_healthy(status)
-        and _gateway_service_is_missing(start, status)
+    if not _gateway_status_is_healthy(status) and _gateway_service_is_missing(
+        start, status
     ):
         install = await run_process(
             [str(hermes_bin), "gateway", "install"],
@@ -2116,9 +2164,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     telegram_network = ensure_telegram_network_fallback_env(env_candidates)
     if not telegram_network["ok"]:
         raise RuntimeError("Could not prepare Hermes Telegram network fallback.")
-    fallback_ips, fallback_source = _resolve_telegram_network_fallback(
-        env_candidates
-    )
+    fallback_ips, fallback_source = _resolve_telegram_network_fallback(env_candidates)
     env_values = {
         "TELEGRAM_BOT_TOKEN": token,
         "TELEGRAM_ALLOWED_USERS": str(
@@ -2137,10 +2183,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     }
     if fallback_source != "config" and fallback_ips:
         env_values[TELEGRAM_FALLBACK_IPS_ENV_KEY] = fallback_ips
-    env_files = [
-        _upsert_env_file(env_path, env_values)
-        for env_path in env_candidates
-    ]
+    env_files = [_upsert_env_file(env_path, env_values) for env_path in env_candidates]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
         "plugin_commands": _install_codex_auth_plugin_commands(),

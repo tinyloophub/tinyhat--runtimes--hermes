@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep Tinyhat-managed Telegram restarts calm by suppressing Hermes's generic
+  shutdown warning; Tinyhat already sends the relevant setup or tool-update
+  notice before the restart.
+
 ## 0.0.57 - 2026-08-19
 
 - Make first setup reassuring: name the phone, email, model, and other known
