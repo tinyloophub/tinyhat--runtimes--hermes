@@ -4,10 +4,10 @@
 
 ## 0.0.56 - 2026-08-19
 
-- Install and verify pinned `jmapc` `0.3.0` in the Hermes environment during
-  Computer creation. Agent assignment remains fast, and Agents with mailbox
-  credentials can use a local JMAP client directly without routing mail
-  through Tinyloop.
+- Install pinned `jmapc` `0.3.0` in the Hermes environment during Computer
+  creation, expose it to Agent terminals through `tinyhat-jmap-python`, and
+  verify that launcher with a real import/version smoke. Agent assignment
+  remains fast, and mailbox use does not route through Tinyloop.
 
 ## 0.0.55 - 2026-08-13
 

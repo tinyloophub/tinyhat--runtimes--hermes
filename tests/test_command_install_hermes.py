@@ -187,6 +187,10 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
                 fake_run_process,
             ),
             patch("hermes_runtime.commands.install_hermes.run_shell", fake_run_shell),
+            patch(
+                "hermes_runtime.commands.install_hermes._ensure_jmap_python_launcher",
+                return_value={"ok": True, "changed": True},
+            ),
         ):
             result = asyncio.run(install_hermes._ensure_messaging_dependencies())
 
@@ -197,9 +201,9 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     script, env = shell_calls[0]
     assert f"cd {project_dir}" in script
     package_spec = shlex.quote(f"{project_dir}[messaging,voice]")
-    assert f"{python_bin} -m pip install -e {package_spec}" in script
     assert (
-        f"{python_bin} -m pip install ddgs==9.14.4 edge-tts==7.2.7 jmapc==0.3.0"
+        f"{python_bin} -m pip install -e {package_spec} "
+        "ddgs==9.14.4 edge-tts==7.2.7 jmapc==0.3.0"
         in script
     )
     assert "--python" not in script
@@ -208,7 +212,16 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
 
 def test_day_one_report_includes_ready_jmap_client() -> None:
     report = install_hermes._day_one_capability_report(
-        dependencies={"ok": True},
+        dependencies={
+            "ok": True,
+            "jmap_client": {
+                "ok": True,
+                "after": {
+                    "binary": "/usr/local/bin/tinyhat-jmap-python",
+                    "smoke_status": "passed",
+                },
+            },
+        },
         config={"ok": True},
         browser_smoke={"ok": True, "registered": True, "smoke_status": "passed"},
         google_workspace_cli={"ok": True, "after": {"binary": "/usr/local/bin/gws"}},
@@ -219,8 +232,125 @@ def test_day_one_report_includes_ready_jmap_client() -> None:
         "provider": "jmapc",
         "version": "0.3.0",
         "dependency_ready": True,
+        "binary": "/usr/local/bin/tinyhat-jmap-python",
         "smoke_status": "passed",
     }
+
+
+def test_jmap_launcher_uses_hermes_venv_and_runs_import_smoke() -> None:
+    process_calls: list[list[str]] = []
+
+    async def fake_run_shell(
+        script: str,
+        *,
+        timeout_seconds: int,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        del timeout_seconds, env
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        assert f"exec {python_bin}" in script
+        return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del timeout_seconds
+        process_calls.append(args)
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "jmapc 0.3.0\n",
+            "stderr": "",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "hermes-agent"
+        python_bin = project_dir / "venv" / "bin" / "python"
+        python_bin.parent.mkdir(parents=True)
+        python_bin.write_text("", encoding="utf-8")
+        launcher = Path(tmp) / "bin" / "tinyhat-jmap-python"
+        launcher.parent.mkdir(parents=True)
+        with (
+            patch.dict(
+                os.environ,
+                {"TINYHAT_JMAP_PYTHON_INSTALL_PATH": str(launcher)},
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_shell",
+                fake_run_shell,
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_process",
+                fake_run_process,
+            ),
+        ):
+            result = asyncio.run(
+                install_hermes._ensure_jmap_python_launcher(project_dir)
+            )
+
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["after"]["smoke_status"] == "passed"
+    assert process_calls == [
+        [
+            str(launcher),
+            "-c",
+            (
+                "import importlib.metadata\n"
+                "import jmapc\n"
+                "print('jmapc ' + importlib.metadata.version('jmapc'))\n"
+            ),
+        ]
+    ]
+
+
+def test_jmap_launcher_noops_after_successful_terminal_smoke() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del args, timeout_seconds
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "jmapc 0.3.0\n",
+            "stderr": "",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "hermes-agent"
+        python_bin = project_dir / "venv" / "bin" / "python"
+        python_bin.parent.mkdir(parents=True)
+        python_bin.write_text("", encoding="utf-8")
+        launcher = Path(tmp) / "bin" / "tinyhat-jmap-python"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        with (
+            patch.dict(
+                os.environ,
+                {"TINYHAT_JMAP_PYTHON_INSTALL_PATH": str(launcher)},
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_process",
+                fake_run_process,
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_shell",
+            ) as run_shell_mock,
+        ):
+            result = asyncio.run(
+                install_hermes._ensure_jmap_python_launcher(project_dir)
+            )
+
+    assert result["ok"] is True
+    assert result["changed"] is False
+    assert result["after"]["smoke_status"] == "passed"
+    run_shell_mock.assert_not_called()
 
 
 def test_google_workspace_cli_selects_pinned_linux_assets() -> None:
