@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.56 - 2026-08-19
+
+- Install and verify pinned `jmapc` `0.3.0` in the Hermes environment during
+  Computer creation. Agent assignment remains fast, and Agents with mailbox
+  credentials can use a local JMAP client directly without routing mail
+  through Tinyloop.
+
 ## 0.0.55 - 2026-08-13
 
 - Add `onboarding_greeting`, a fail-closed local Hermes turn that preloads the

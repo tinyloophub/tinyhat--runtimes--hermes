@@ -18,9 +18,10 @@ What it does:
 
     After Hermes is present, the command verifies the Hermes venv can import
     the Telegram gateway adapter, voice-transcription dependencies, pinned
-    ``ddgs`` web search, and pinned Edge TTS. If not, it installs the missing
-    packages into the same Hermes project venv. It also installs and verifies
-    the pinned Google Workspace CLI, then proves Hermes will register its
+    ``ddgs`` web search, pinned Edge TTS, and the pinned ``jmapc`` email
+    client. If not, it installs the missing packages into the same Hermes
+    project venv. It also installs and verifies the pinned Google Workspace
+    CLI, then proves Hermes will register its
     browser tools and that the browser CLI can open, snapshot, and close a
     deterministic local page without depending on external DNS or network
     availability.
@@ -62,8 +63,9 @@ Side effects:
     ``ripgrep``, ``xclip``, and ``wl-clipboard`` when running as root on
     Debian/Ubuntu.
     Runs the public Hermes installer if Hermes is missing. May install Hermes'
-    ``messaging``/``voice`` extras into the Hermes venv and download the selected
-    local STT model weights. Prefetch failures are reported but do not
+    ``messaging``/``voice`` extras and pinned ``jmapc`` into the Hermes venv,
+    and download the selected local STT model weights. Prefetch failures are
+    reported but do not
     fail provisioning because OpenRouter is the active day-one STT provider.
     After a failed browser probe, may install Chrome for Testing through
     ``agent-browser`` plus pinned Playwright Chromium on Linux x86, or distro
@@ -103,6 +105,7 @@ from hermes_runtime.day_one_capabilities import (
     HERMES_UPSTREAM_COMMIT,
     IMAGE_GENERATION_MODEL,
     IMAGE_GENERATION_PROVIDER,
+    JMAP_CLIENT_VERSION,
     PLAYWRIGHT_VERSION,
     TELEGRAM_RICH_DRAFTS,
     TELEGRAM_RICH_MESSAGES,
@@ -158,9 +161,10 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
             (
                 "import importlib.metadata\n"
                 "import importlib.util\n"
-                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts')\n"
+                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts','jmapc')\n"
                 "missing=[name for name in modules if importlib.util.find_spec(name) is None]\n"
-                f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}'}}\n"
+                f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}',"
+                f"'jmapc':'{JMAP_CLIENT_VERSION}'}}\n"
                 "wrong=[]\n"
                 "for package, version in expected.items():\n"
                 "    try:\n"
@@ -247,7 +251,8 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
             f"{shlex.quote(package_spec)}\n"
             f"{_pip_command_for_python(python_bin)} install "
             f"{shlex.quote(f'ddgs=={DDGS_VERSION}')} "
-            f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')}"
+            f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')} "
+            f"{shlex.quote(f'jmapc=={JMAP_CLIENT_VERSION}')}"
         ),
         timeout_seconds=900,
         env={"PIP_DISABLE_PIP_VERSION_CHECK": "1"},
@@ -802,6 +807,13 @@ def _day_one_capability_report(
                 "smoke_status": (
                     "passed" if google_workspace_cli.get("ok") else "failed"
                 ),
+            },
+            "jmap_client": {
+                "state": "ready" if dependencies.get("ok") else "failed",
+                "provider": "jmapc",
+                "version": JMAP_CLIENT_VERSION,
+                "dependency_ready": bool(dependencies.get("ok")),
+                "smoke_status": "passed" if dependencies.get("ok") else "failed",
             },
             "image_generation": {
                 "state": "configured_waiting_for_assignment_credential",

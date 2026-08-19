@@ -198,9 +198,29 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     assert f"cd {project_dir}" in script
     package_spec = shlex.quote(f"{project_dir}[messaging,voice]")
     assert f"{python_bin} -m pip install -e {package_spec}" in script
-    assert f"{python_bin} -m pip install ddgs==9.14.4 edge-tts==7.2.7" in script
+    assert (
+        f"{python_bin} -m pip install ddgs==9.14.4 edge-tts==7.2.7 jmapc==0.3.0"
+        in script
+    )
     assert "--python" not in script
     assert env == {"PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+
+
+def test_day_one_report_includes_ready_jmap_client() -> None:
+    report = install_hermes._day_one_capability_report(
+        dependencies={"ok": True},
+        config={"ok": True},
+        browser_smoke={"ok": True, "registered": True, "smoke_status": "passed"},
+        google_workspace_cli={"ok": True, "after": {"binary": "/usr/local/bin/gws"}},
+    )
+
+    assert report["capabilities"]["jmap_client"] == {
+        "state": "ready",
+        "provider": "jmapc",
+        "version": "0.3.0",
+        "dependency_ready": True,
+        "smoke_status": "passed",
+    }
 
 
 def test_google_workspace_cli_selects_pinned_linux_assets() -> None:
