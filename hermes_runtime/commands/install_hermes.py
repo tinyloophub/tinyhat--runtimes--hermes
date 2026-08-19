@@ -238,18 +238,26 @@ async def _probe_jmap_python_launcher() -> dict[str, Any]:
             "smoke_status": "failed",
             "message": "The Computer-wide JMAP Python launcher was not found.",
         }
-    probe = await run_process(
-        [
-            str(launcher),
-            "-c",
-            (
-                "import importlib.metadata\n"
-                "import jmapc\n"
-                "print('jmapc ' + importlib.metadata.version('jmapc'))\n"
-            ),
-        ],
-        timeout_seconds=30,
-    )
+    try:
+        probe = await run_process(
+            [
+                str(launcher),
+                "-c",
+                (
+                    "import importlib.metadata\n"
+                    "import jmapc\n"
+                    "print('jmapc ' + importlib.metadata.version('jmapc'))\n"
+                ),
+            ],
+            timeout_seconds=30,
+        )
+    except OSError as exc:
+        probe = {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"launcher could not start: {type(exc).__name__}",
+        }
     first_line = str(probe.get("stdout") or "").strip().splitlines()
     version_line = first_line[0].strip() if first_line else ""
     expected = f"jmapc {JMAP_CLIENT_VERSION}"
@@ -290,9 +298,13 @@ async def _ensure_jmap_python_launcher(project_dir: Path) -> dict[str, Any]:
     install = await run_shell(
         (
             "set -euo pipefail\n"
+            'tmp_dir="$(mktemp -d)"\n'
+            'trap \'rm -rf "$tmp_dir"\' EXIT\n'
+            'tmp_launcher="$tmp_dir/tinyhat-jmap-python"\n'
+            f"printf %s {shlex.quote(script)} > \"$tmp_launcher\"\n"
+            'chmod 0755 "$tmp_launcher"\n'
             f"install -d {shlex.quote(str(launcher.parent))}\n"
-            f"printf %s {shlex.quote(script)} > {shlex.quote(str(launcher))}\n"
-            f"chmod 0755 {shlex.quote(str(launcher))}"
+            f"install -m 0755 \"$tmp_launcher\" {shlex.quote(str(launcher))}"
         ),
         timeout_seconds=30,
     )

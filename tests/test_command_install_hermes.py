@@ -250,6 +250,10 @@ def test_jmap_launcher_uses_hermes_venv_and_runs_import_smoke() -> None:
         launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         launcher.chmod(0o755)
         assert f"exec {python_bin}" in script
+        assert 'tmp_dir="$(mktemp -d)"' in script
+        assert 'tmp_launcher="$tmp_dir/tinyhat-jmap-python"' in script
+        assert f'install -m 0755 "$tmp_launcher" {launcher}' in script
+        assert f"> {launcher}" not in script
         return {"ok": True, "returncode": 0, "stdout": "", "stderr": ""}
 
     async def fake_run_process(
@@ -305,6 +309,99 @@ def test_jmap_launcher_uses_hermes_venv_and_runs_import_smoke() -> None:
             ),
         ]
     ]
+
+
+def test_jmap_probe_reports_corrupt_executable_as_failed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        launcher = Path(tmp) / "tinyhat-jmap-python"
+        launcher.write_text("#!/definitely/missing/python\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        with patch.dict(
+            os.environ,
+            {"TINYHAT_JMAP_PYTHON_INSTALL_PATH": str(launcher)},
+        ):
+            result = asyncio.run(install_hermes._probe_jmap_python_launcher())
+
+    assert result["ok"] is False
+    assert result["smoke_status"] == "failed"
+    assert result["probe"]["ok"] is False
+    assert "launcher could not start" in result["probe"]["stderr"]
+
+
+def test_jmap_probe_rejects_success_without_expected_version() -> None:
+    async def fake_run_process(
+        args: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        del args, timeout_seconds
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "jmapc 0.2.6\n",
+            "stderr": "",
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        launcher = Path(tmp) / "tinyhat-jmap-python"
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        with (
+            patch.dict(
+                os.environ,
+                {"TINYHAT_JMAP_PYTHON_INSTALL_PATH": str(launcher)},
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes.run_process",
+                fake_run_process,
+            ),
+        ):
+            result = asyncio.run(install_hermes._probe_jmap_python_launcher())
+
+    assert result["ok"] is False
+    assert result["smoke_status"] == "failed"
+    assert result["version"] == "0.2.6"
+
+
+def test_messaging_dependencies_require_jmap_launcher_smoke() -> None:
+    launcher_calls: list[Path] = []
+
+    async def fake_dependencies(_project_dir: Path) -> dict[str, object]:
+        return {"ok": True, "returncode": 0, "stdout": "ok", "stderr": ""}
+
+    async def fake_launcher(project_dir: Path) -> dict[str, object]:
+        launcher_calls.append(project_dir)
+        return {
+            "ok": False,
+            "changed": False,
+            "after": {"smoke_status": "failed"},
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "hermes-agent"
+        python_bin = project_dir / "venv" / "bin" / "python"
+        python_bin.parent.mkdir(parents=True)
+        python_bin.write_text("", encoding="utf-8")
+        (project_dir / "pyproject.toml").write_text(
+            "[project]\nname='hermes-agent'\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_PROJECT_DIR": str(project_dir)}),
+            patch(
+                "hermes_runtime.commands.install_hermes._probe_messaging_dependencies",
+                fake_dependencies,
+            ),
+            patch(
+                "hermes_runtime.commands.install_hermes._ensure_jmap_python_launcher",
+                fake_launcher,
+            ),
+        ):
+            result = asyncio.run(install_hermes._ensure_messaging_dependencies())
+
+    assert launcher_calls == [project_dir]
+    assert result["ok"] is False
+    assert result["jmap_client"]["after"]["smoke_status"] == "failed"
 
 
 def test_jmap_launcher_noops_after_successful_terminal_smoke() -> None:
