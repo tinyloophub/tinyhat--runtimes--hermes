@@ -444,7 +444,7 @@ def test_apply_config_uses_update_copy_for_later_tool_addition() -> None:
                     side_effect=fake_telegram_send,
                 ),
             ):
-                asyncio.run(
+                result = asyncio.run(
                     apply_config.run(
                         SimpleNamespace(
                             platform=platform,
@@ -463,6 +463,11 @@ def test_apply_config_uses_update_copy_for_later_tool_addition() -> None:
         "I'll be back in a moment and ready to help."
     ]
     assert "finish setup" not in events[0]
+    assert result["secret_available_notice"]["ok"] is None
+    assert result["secret_available_notice"]["sent"] is False
+    assert result["gateway_restart_notice"]["ok"] is True
+    assert result["gateway_restart_notice"]["sent"] is True
+    assert result["gateway_restart_notice"]["description"] == "sent"
 
 
 def test_apply_config_rejects_invalid_runtime_secret_names() -> None:

@@ -224,6 +224,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     )
 
     restart_required = bool(secret_names or removed_keys)
+    is_first_tool_setup = False
     if restart_required:
         hermes_bin = find_hermes_binary()
         if hermes_bin is None:
@@ -257,11 +258,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "env_reload": env_reload,
         "terminal_env_passthrough": terminal_env_passthrough,
         "secret_available_notice": _notice_result(
-            sent=restart_required and not bool(removed_keys),
+            sent=restart_required and is_first_tool_setup,
             notice=notice,
         ),
         "gateway_restart_notice": _notice_result(
-            sent=restart_required and bool(removed_keys),
+            sent=restart_required and not is_first_tool_setup,
             notice=notice,
         ),
         "gateway": gateway,
