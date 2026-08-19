@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Keep Tinyhat-managed Telegram restarts calm by suppressing Hermes's generic
-  shutdown warning; Tinyhat already sends the relevant setup or tool-update
-  notice before the restart.
+- Keep the one managed Telegram restart immediately after setup calm. The
+  setup gateway loads a temporary opt-out for that restart, then the runtime
+  restores the operator's normal Hermes notification policy before any later
+  user restart, recovery, or startup.
 
 ## 0.0.57 - 2026-08-19
 

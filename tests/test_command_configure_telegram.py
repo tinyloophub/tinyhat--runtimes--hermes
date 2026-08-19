@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -775,7 +776,6 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
         "installed": True,
         "mechanism": "hermes_config",
         "path": "platforms.telegram.extra.command_menu",
-        "gateway_restart_notification": False,
         "priority_mode": "prepend",
         "max_commands": 60,
         "commands": [
@@ -788,6 +788,12 @@ def test_configure_telegram_writes_env_and_starts_gateway() -> None:
     }
     assert result["gateway"]["healthy"] is True
     assert result["gateway"]["mode"] == "service"
+    assert result["managed_setup_restart"] == {
+        "suppressed_for_next_restart": True,
+        "config_restored": True,
+        "future_restart_policy_preserved": True,
+        "reason": "tinyhat_managed_setup_restart",
+    }
     assert result["menu_button"]["configured"] is True
     assert result["menu_button"]["text"] == "configure"
 
@@ -1632,8 +1638,7 @@ def test_install_telegram_command_menu_priority_uses_hermes_config_shape() -> No
     assert retry_text == text
     assert "model:\n  provider: auto" in text
     assert "platforms:\n  telegram:\n    extra:\n      command_menu:" in text
-    assert "    gateway_restart_notification: false\n" in text
-    assert result["gateway_restart_notification"] is False
+    assert "gateway_restart_notification" not in text
     assert "max_commands: 75" in text
     assert "priority_mode: prepend" in text
     assert text.count("priority:") == 1
@@ -1686,12 +1691,10 @@ def test_install_telegram_command_menu_priority_adds_missing_path() -> None:
     assert "    extra:" in text
     assert "      command_menu:" in text
     assert "        priority_mode: prepend" in text
-    assert "    gateway_restart_notification: false\n" in text
+    assert "gateway_restart_notification" not in text
 
 
-def test_install_telegram_command_menu_priority_disables_generic_restart_notice() -> (
-    None
-):
+def test_install_telegram_command_menu_priority_preserves_restart_notice() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "config.yaml"
         config.write_text(
@@ -1709,7 +1712,91 @@ def test_install_telegram_command_menu_priority_disables_generic_restart_notice(
         text = config.read_text(encoding="utf-8")
 
     assert text.count("gateway_restart_notification:") == 1
-    assert "    gateway_restart_notification: false\n" in text
+    assert "    gateway_restart_notification: true\n" in text
+
+
+def test_managed_setup_restart_suppression_is_temporary() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        original = (
+            "platforms:\n"
+            "  telegram:\n"
+            "    gateway_restart_notification: true\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority:\n"
+            "          - model\n"
+        )
+        config.write_text(original, encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            during_start = config.read_text(encoding="utf-8")
+            assert (
+                "gateway_restart_notification: false # tinyhat managed setup restart"
+            ) in during_start
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        assert config.read_text(encoding="utf-8") == original
+
+    assert gateway["healthy"] is True
+    assert result == {
+        "suppressed_for_next_restart": True,
+        "config_restored": True,
+        "future_restart_policy_preserved": True,
+        "reason": "tinyhat_managed_setup_restart",
+    }
+
+
+def test_managed_setup_restart_preserves_operator_opt_out() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        original = "platforms:\n  telegram:\n    gateway_restart_notification: false\n"
+        config.write_text(original, encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            assert config.read_text(encoding="utf-8") == original
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        assert config.read_text(encoding="utf-8") == original
+
+    assert result == {
+        "suppressed_for_next_restart": False,
+        "config_restored": None,
+        "future_restart_policy_preserved": True,
+        "reason": "operator_already_disabled_restart_notices",
+    }
 
 
 def _status(stdout: str, *, ok: bool = True) -> dict[str, object]:

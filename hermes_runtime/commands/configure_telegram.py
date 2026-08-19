@@ -74,6 +74,7 @@ Side effects:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import os
 import subprocess
@@ -1232,20 +1233,39 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
     return lines, max_commands
 
 
-def _ensure_tinyhat_restart_notification_config(lines: list[str]) -> list[str]:
-    """Let Tinyhat own the user-facing notice for managed gateway restarts."""
+_MANAGED_SETUP_RESTART_COMMENT = "# tinyhat managed setup restart"
+
+
+@dataclass(frozen=True)
+class _ManagedSetupRestartNotificationState:
+    path: Path
+    existed: bool
+    original_text: str
+    managed_text: str
+    previous_line: str | None
+    managed_line: str | None
+    applied: bool
+
+
+def _ensure_managed_setup_restart_notification_config(
+    lines: list[str],
+) -> tuple[list[str], str | None, str | None, bool]:
+    """Stage one quiet setup restart without changing later restart policy."""
     platforms_index = _find_key(lines, "platforms", indent=0)
     if platforms_index is None:
         if lines and lines[-1].strip():
             lines.append("")
+        managed_line = (
+            f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+        )
         lines.extend(
             [
                 "platforms:",
                 "  telegram:",
-                "    gateway_restart_notification: false",
+                managed_line,
             ]
         )
-        return lines
+        return lines, None, managed_line, True
 
     platforms_end = _block_end(lines, platforms_index, indent=0)
     telegram_index = _find_key(
@@ -1256,11 +1276,14 @@ def _ensure_tinyhat_restart_notification_config(lines: list[str]) -> list[str]:
         end=platforms_end,
     )
     if telegram_index is None:
+        managed_line = (
+            f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+        )
         lines[platforms_end:platforms_end] = [
             "  telegram:",
-            "    gateway_restart_notification: false",
+            managed_line,
         ]
-        return lines
+        return lines, None, managed_line, True
 
     telegram_end = _block_end(lines, telegram_index, indent=2)
     notification_index = _find_key(
@@ -1270,12 +1293,106 @@ def _ensure_tinyhat_restart_notification_config(lines: list[str]) -> list[str]:
         start=telegram_index + 1,
         end=telegram_end,
     )
-    managed_line = "    gateway_restart_notification: false"
+    managed_line = (
+        f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+    )
     if notification_index is None:
         lines[telegram_end:telegram_end] = [managed_line]
-    else:
-        lines[notification_index] = managed_line
-    return lines
+        return lines, None, managed_line, True
+
+    previous_line = lines[notification_index]
+    raw_value = previous_line.split(":", 1)[1].split("#", 1)[0].strip().lower()
+    if raw_value in {"false", "0", "no", "off"}:
+        return lines, previous_line, None, False
+    lines[notification_index] = managed_line
+    return lines, previous_line, managed_line, True
+
+
+def _stage_managed_setup_restart_notification(
+    config_file: Path | None = None,
+) -> _ManagedSetupRestartNotificationState:
+    """Make the gateway started during setup quiet for its next restart only."""
+    config_file = config_file or _hermes_config_file()
+    existed = config_file.exists()
+    original_text = config_file.read_text(encoding="utf-8") if existed else ""
+    next_lines, previous_line, managed_line, applied = (
+        _ensure_managed_setup_restart_notification_config(original_text.splitlines())
+    )
+    managed_text = "\n".join(next_lines).rstrip() + "\n"
+    if applied:
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(managed_text, encoding="utf-8")
+        try:
+            config_file.chmod(0o600)
+        except OSError:
+            pass
+    return _ManagedSetupRestartNotificationState(
+        path=config_file,
+        existed=existed,
+        original_text=original_text,
+        managed_text=managed_text,
+        previous_line=previous_line,
+        managed_line=managed_line,
+        applied=applied,
+    )
+
+
+def _restore_managed_setup_restart_notification(
+    state: _ManagedSetupRestartNotificationState,
+) -> dict[str, Any]:
+    """Restore the operator's setting after the setup gateway has loaded it."""
+    if not state.applied:
+        return {
+            "suppressed_for_next_restart": False,
+            "config_restored": None,
+            "future_restart_policy_preserved": True,
+            "reason": "operator_already_disabled_restart_notices",
+        }
+    try:
+        current_text = state.path.read_text(encoding="utf-8")
+        if current_text == state.managed_text:
+            if state.existed:
+                state.path.write_text(state.original_text, encoding="utf-8")
+            else:
+                state.path.unlink(missing_ok=True)
+        else:
+            current_lines = current_text.splitlines()
+            marker_index = next(
+                (
+                    index
+                    for index, line in enumerate(current_lines)
+                    if _MANAGED_SETUP_RESTART_COMMENT in line
+                ),
+                None,
+            )
+            if marker_index is None:
+                return {
+                    "suppressed_for_next_restart": True,
+                    "config_restored": False,
+                    "future_restart_policy_preserved": False,
+                    "reason": "managed_marker_changed_during_gateway_start",
+                }
+            if state.previous_line is None:
+                current_lines.pop(marker_index)
+            else:
+                current_lines[marker_index] = state.previous_line
+            state.path.write_text(
+                "\n".join(current_lines).rstrip() + "\n",
+                encoding="utf-8",
+            )
+        return {
+            "suppressed_for_next_restart": True,
+            "config_restored": True,
+            "future_restart_policy_preserved": True,
+            "reason": "tinyhat_managed_setup_restart",
+        }
+    except OSError as exc:
+        return {
+            "suppressed_for_next_restart": True,
+            "config_restored": False,
+            "future_restart_policy_preserved": False,
+            "reason": f"config_restore_failed:{exc.__class__.__name__}",
+        }
 
 
 def _install_telegram_command_menu_priority(
@@ -1285,7 +1402,6 @@ def _install_telegram_command_menu_priority(
     config_file.parent.mkdir(parents=True, exist_ok=True)
     text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
     next_lines, max_commands = _ensure_telegram_command_menu_config(text.splitlines())
-    next_lines = _ensure_tinyhat_restart_notification_config(next_lines)
     config_file.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
     try:
         config_file.chmod(0o600)
@@ -1296,7 +1412,6 @@ def _install_telegram_command_menu_priority(
         "installed": True,
         "mechanism": "hermes_config",
         "path": "platforms.telegram.extra.command_menu",
-        "gateway_restart_notification": False,
         "priority_mode": TELEGRAM_MENU_PRIORITY_MODE,
         "max_commands": max_commands,
         "commands": list(TELEGRAM_MANAGED_MENU_COMMANDS),
@@ -2139,6 +2254,18 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
     }
 
 
+async def _run_gateway_for_managed_setup(
+    hermes_bin: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Start setup with one quiet restart, then restore normal notifications."""
+    notification_state = _stage_managed_setup_restart_notification()
+    try:
+        gateway = await _run_gateway(hermes_bin)
+    finally:
+        notification = _restore_managed_setup_restart_notification(notification_state)
+    return gateway, notification
+
+
 def _compact_hermes_status(status: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema": status.get("schema"),
@@ -2208,7 +2335,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             f"{webhook.get('description') or webhook.get('http_status')}"
         )
 
-    gateway = await _run_gateway(hermes_bin)
+    gateway, managed_setup_restart = await _run_gateway_for_managed_setup(hermes_bin)
     if not gateway.get("healthy"):
         raise RuntimeError("Hermes gateway did not report a healthy status.")
 
@@ -2232,5 +2359,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "menu_button": menu_button,
         "webhook": webhook,
         "gateway": gateway,
+        "managed_setup_restart": managed_setup_restart,
         "hermes": _compact_hermes_status(hermes_status),
     }
