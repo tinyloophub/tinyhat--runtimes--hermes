@@ -1240,11 +1240,12 @@ _MANAGED_SETUP_RESTART_COMMENT = "# tinyhat managed setup restart"
 class _ManagedSetupRestartNotificationState:
     path: Path
     existed: bool
-    original_text: str
+    restore_text: str
     managed_text: str
     previous_line: str | None
     managed_line: str | None
     applied: bool
+    recovered_stranded_marker: bool
 
 
 def _ensure_managed_setup_restart_notification_config(
@@ -1301,7 +1302,15 @@ def _ensure_managed_setup_restart_notification_config(
         return lines, None, managed_line, True
 
     previous_line = lines[notification_index]
-    raw_value = previous_line.split(":", 1)[1].split("#", 1)[0].strip().lower()
+    if _MANAGED_SETUP_RESTART_COMMENT in previous_line:
+        # A prior setup was interrupted after staging but before restoration.
+        # Re-stage the managed line so this run removes it and returns Hermes
+        # to its default notification policy.
+        lines[notification_index] = managed_line
+        return lines, None, managed_line, True
+    raw_value = (
+        previous_line.split(":", 1)[1].split("#", 1)[0].strip().strip("'\"").lower()
+    )
     if raw_value in {"false", "0", "no", "off"}:
         return lines, previous_line, None, False
     lines[notification_index] = managed_line
@@ -1315,8 +1324,20 @@ def _stage_managed_setup_restart_notification(
     config_file = config_file or _hermes_config_file()
     existed = config_file.exists()
     original_text = config_file.read_text(encoding="utf-8") if existed else ""
+    original_lines = original_text.splitlines()
+    recovered_stranded_marker = any(
+        _MANAGED_SETUP_RESTART_COMMENT in line for line in original_lines
+    )
+    restore_text = original_text
+    if recovered_stranded_marker:
+        restored_lines = [
+            line
+            for line in original_lines
+            if _MANAGED_SETUP_RESTART_COMMENT not in line
+        ]
+        restore_text = "\n".join(restored_lines).rstrip() + "\n"
     next_lines, previous_line, managed_line, applied = (
-        _ensure_managed_setup_restart_notification_config(original_text.splitlines())
+        _ensure_managed_setup_restart_notification_config(original_lines)
     )
     managed_text = "\n".join(next_lines).rstrip() + "\n"
     if applied:
@@ -1329,11 +1350,12 @@ def _stage_managed_setup_restart_notification(
     return _ManagedSetupRestartNotificationState(
         path=config_file,
         existed=existed,
-        original_text=original_text,
+        restore_text=restore_text,
         managed_text=managed_text,
         previous_line=previous_line,
         managed_line=managed_line,
         applied=applied,
+        recovered_stranded_marker=recovered_stranded_marker,
     )
 
 
@@ -1352,7 +1374,7 @@ def _restore_managed_setup_restart_notification(
         current_text = state.path.read_text(encoding="utf-8")
         if current_text == state.managed_text:
             if state.existed:
-                state.path.write_text(state.original_text, encoding="utf-8")
+                state.path.write_text(state.restore_text, encoding="utf-8")
             else:
                 state.path.unlink(missing_ok=True)
         else:
@@ -1384,7 +1406,11 @@ def _restore_managed_setup_restart_notification(
             "suppressed_for_next_restart": True,
             "config_restored": True,
             "future_restart_policy_preserved": True,
-            "reason": "tinyhat_managed_setup_restart",
+            "reason": (
+                "recovered_interrupted_setup_marker"
+                if state.recovered_stranded_marker
+                else "tinyhat_managed_setup_restart"
+            ),
         }
     except OSError as exc:
         return {

@@ -1799,6 +1799,241 @@ def test_managed_setup_restart_preserves_operator_opt_out() -> None:
     }
 
 
+def test_managed_setup_restart_preserves_quoted_operator_opt_out() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        original = (
+            'platforms:\n  telegram:\n    gateway_restart_notification: "false"\n'
+        )
+        config.write_text(original, encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            assert config.read_text(encoding="utf-8") == original
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        assert config.read_text(encoding="utf-8") == original
+
+    assert result["suppressed_for_next_restart"] is False
+    assert result["reason"] == "operator_already_disabled_restart_notices"
+
+
+def test_managed_setup_restart_recovers_marker_stranded_by_interruption() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        stranded = (
+            "platforms:\n"
+            "  telegram:\n"
+            "    gateway_restart_notification: false "
+            "# tinyhat managed setup restart\n"
+        )
+        config.write_text(stranded, encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            assert config.read_text(encoding="utf-8") == stranded
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        restored = config.read_text(encoding="utf-8")
+
+    assert configure_telegram._MANAGED_SETUP_RESTART_COMMENT not in restored
+    assert "gateway_restart_notification" not in restored
+    assert result == {
+        "suppressed_for_next_restart": True,
+        "config_restored": True,
+        "future_restart_policy_preserved": True,
+        "reason": "recovered_interrupted_setup_marker",
+    }
+
+
+def test_managed_setup_restart_removes_temporary_new_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            assert (
+                configure_telegram._MANAGED_SETUP_RESTART_COMMENT
+                in config.read_text(encoding="utf-8")
+            )
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        assert not config.exists()
+
+    assert result["config_restored"] is True
+    assert result["future_restart_policy_preserved"] is True
+
+
+def test_managed_setup_restart_restores_operator_line_after_concurrent_edit() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        original = "platforms:\n  telegram:\n    gateway_restart_notification: true\n"
+        config.write_text(original, encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            current = config.read_text(encoding="utf-8")
+            config.write_text(current + "model:\n  provider: auto\n", encoding="utf-8")
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        restored = config.read_text(encoding="utf-8")
+
+    assert "gateway_restart_notification: true" in restored
+    assert configure_telegram._MANAGED_SETUP_RESTART_COMMENT not in restored
+    assert "model:\n  provider: auto\n" in restored
+    assert result["config_restored"] is True
+
+
+def test_managed_setup_restart_removes_added_line_after_concurrent_edit() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        config.write_text("platforms:\n  telegram:\n", encoding="utf-8")
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            current = config.read_text(encoding="utf-8")
+            config.write_text(current + "model:\n  provider: auto\n", encoding="utf-8")
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+        restored = config.read_text(encoding="utf-8")
+
+    assert "gateway_restart_notification" not in restored
+    assert "model:\n  provider: auto\n" in restored
+    assert result["config_restored"] is True
+
+
+def test_managed_setup_restart_reports_concurrent_marker_removal() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        config.write_text(
+            "platforms:\n  telegram:\n    gateway_restart_notification: true\n",
+            encoding="utf-8",
+        )
+
+        async def fake_run_gateway(_hermes_bin: Path) -> dict[str, Any]:
+            config.write_text(
+                "platforms:\n  telegram:\n    gateway_restart_notification: true\n",
+                encoding="utf-8",
+            )
+            return {"healthy": True, "started": True}
+
+        with (
+            patch(
+                "hermes_runtime.commands.configure_telegram._hermes_config_file",
+                return_value=config,
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._run_gateway",
+                side_effect=fake_run_gateway,
+            ),
+        ):
+            _gateway, result = asyncio.run(
+                configure_telegram._run_gateway_for_managed_setup(
+                    Path("/usr/local/bin/hermes")
+                )
+            )
+
+    assert result == {
+        "suppressed_for_next_restart": True,
+        "config_restored": False,
+        "future_restart_policy_preserved": False,
+        "reason": "managed_marker_changed_during_gateway_start",
+    }
+
+
+def test_managed_setup_restart_reports_restore_io_failure() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "config.yaml"
+        state = configure_telegram._stage_managed_setup_restart_notification(config)
+
+        with patch.object(Path, "read_text", side_effect=PermissionError):
+            result = configure_telegram._restore_managed_setup_restart_notification(
+                state
+            )
+
+    assert result == {
+        "suppressed_for_next_restart": True,
+        "config_restored": False,
+        "future_restart_policy_preserved": False,
+        "reason": "config_restore_failed:PermissionError",
+    }
+
+
 def _status(stdout: str, *, ok: bool = True) -> dict[str, object]:
     return {
         "args": ["/usr/local/bin/hermes", "gateway", "status"],

@@ -2,10 +2,10 @@
 
 ## Unreleased
 
-- Keep the one managed Telegram restart immediately after setup calm. The
-  setup gateway loads a temporary opt-out for that restart, then the runtime
-  restores the operator's normal Hermes notification policy before any later
-  user restart, recovery, or startup.
+- Keep the setup gateway's next Telegram restart calm, regardless of what
+  initiates that first restart. The setup gateway loads a temporary opt-out,
+  then the runtime immediately restores the on-disk operator policy for the
+  replacement gateway and recovers a marker stranded by interrupted setup.
 
 ## 0.0.57 - 2026-08-19
 
