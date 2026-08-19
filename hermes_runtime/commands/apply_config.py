@@ -110,13 +110,17 @@ def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[s
     }
 
 
+def _tool_label(secret_name: str) -> str | None:
+    normalized = str(secret_name or "").strip().upper()
+    for label, prefixes in _TOOL_LABELS:
+        if normalized.startswith(prefixes):
+            return label
+    return None
+
+
 def _configured_tool_labels(secret_names: list[str]) -> list[str]:
-    normalized = tuple(str(name or "").strip().upper() for name in secret_names)
-    return [
-        label
-        for label, prefixes in _TOOL_LABELS
-        if any(name.startswith(prefixes) for name in normalized)
-    ]
+    matched = {_tool_label(name) for name in secret_names}
+    return [label for label, _prefixes in _TOOL_LABELS if label in matched]
 
 
 def _human_list(items: list[str]) -> str:
@@ -129,9 +133,10 @@ def _human_list(items: list[str]) -> str:
 
 def _secret_available_notice(secret_names: list[str]) -> str:
     tools = _configured_tool_labels(secret_names)
+    all_tools_named = all(_tool_label(name) is not None for name in secret_names)
     ready = (
         f"Your tools for {_human_list(tools)} are ready."
-        if tools
+        if tools and all_tools_named
         else "Your new tools are ready."
     )
     return (
@@ -154,18 +159,18 @@ async def _send_secret_available_notice(secret_names: list[str]) -> dict[str, An
         }
 
 
-def _secret_restart_notice(_removed_keys: list[str]) -> str:
+def _secret_restart_notice() -> str:
     return (
         "I updated your tools. I'm restarting once to finish the change. "
         "I'll be back in a moment and ready to help."
     )
 
 
-async def _send_secret_restart_notice(removed_keys: list[str]) -> dict[str, Any]:
+async def _send_secret_restart_notice() -> dict[str, Any]:
     try:
         return await asyncio.to_thread(
             _telegram_send,
-            _secret_restart_notice(removed_keys),
+            _secret_restart_notice(),
         )
     except Exception as exc:  # noqa: BLE001 - env apply/restart must still run.
         return {
@@ -204,6 +209,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             for key in item.get("removed_keys", [])
         }
     )
+    previous_keys = {
+        str(key)
+        for item in env_files
+        for key in item.get("previous_keys", [])
+    }
     for key in removed_keys:
         os.environ.pop(key, None)
     env_paths = [Path(str(item["path"])) for item in env_files]
@@ -218,10 +228,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         hermes_bin = find_hermes_binary()
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
-        if removed_keys:
-            notice = await _send_secret_restart_notice(removed_keys)
-        else:
+        is_first_tool_setup = bool(secret_names) and not previous_keys
+        if is_first_tool_setup:
             notice = await _send_secret_available_notice(secret_names)
+        else:
+            notice = await _send_secret_restart_notice()
         gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
