@@ -35,6 +35,15 @@ from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthroug
 SCHEMA = "tinyhat_hermes_apply_config_v1"
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+_TOOL_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("phone calls and text messages", ("AGENTPHONE_",)),
+    ("email", ("TINYHAT_MAILBOX_",)),
+    ("AI models", ("OPENROUTER_", "OPENAI_", "CODEX_")),
+    ("web research", ("EXA_",)),
+    ("Google Workspace", ("GOOGLE_",)),
+    ("Slack", ("SLACK_",)),
+)
+
 
 def _clean_secret_map(payload: dict[str, Any]) -> dict[str, str]:
     secrets = payload.get("secrets")
@@ -101,16 +110,33 @@ def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[s
     }
 
 
+def _configured_tool_labels(secret_names: list[str]) -> list[str]:
+    normalized = tuple(str(name or "").strip().upper() for name in secret_names)
+    return [
+        label
+        for label, prefixes in _TOOL_LABELS
+        if any(name.startswith(prefixes) for name in normalized)
+    ]
+
+
+def _human_list(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
 def _secret_available_notice(secret_names: list[str]) -> str:
-    if len(secret_names) == 1:
-        subject = f"`{secret_names[0]}` is saved"
-    elif secret_names:
-        subject = f"{len(secret_names)} secrets are saved"
-    else:
-        subject = "Your secret settings are saved"
+    tools = _configured_tool_labels(secret_names)
+    ready = (
+        f"Your tools for {_human_list(tools)} are ready."
+        if tools
+        else "Your new tools are ready."
+    )
     return (
-        f"{subject}. I'm restarting my Telegram gateway now to make the "
-        "updated secret available to Hermes before your next message."
+        f"{ready} I'm restarting once to finish setup. "
+        "I'll be back in a moment and ready to help."
     )
 
 
@@ -128,16 +154,10 @@ async def _send_secret_available_notice(secret_names: list[str]) -> dict[str, An
         }
 
 
-def _secret_restart_notice(removed_keys: list[str]) -> str:
-    if len(removed_keys) == 1:
-        subject = f"`{removed_keys[0]}` was removed"
-    elif removed_keys:
-        subject = f"{len(removed_keys)} secrets were removed"
-    else:
-        subject = "Your secret settings changed"
+def _secret_restart_notice(_removed_keys: list[str]) -> str:
     return (
-        f"{subject}. I'm restarting my Telegram gateway now so removed secrets "
-        "are no longer loaded by Hermes before your next message."
+        "I updated your tools. I'm restarting once to finish the change. "
+        "I'll be back in a moment and ready to help."
     )
 
 

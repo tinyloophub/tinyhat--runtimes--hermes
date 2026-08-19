@@ -44,6 +44,26 @@ class FakePlatform:
         return self.payload
 
 
+def test_setup_notice_names_ready_tools_without_credential_language() -> None:
+    notice = apply_config._secret_available_notice(
+        [
+            "AGENTPHONE_API_KEY",
+            "AGENTPHONE_PHONE_NUMBER",
+            "TINYHAT_MAILBOX_ADDRESS",
+            "TINYHAT_MAILBOX_PASSWORD",
+            "OPENROUTER_API_KEY",
+        ]
+    )
+
+    assert notice == (
+        "Your tools for phone calls and text messages, email, and AI models are "
+        "ready. I'm restarting once to finish setup. I'll be back in a moment "
+        "and ready to help."
+    )
+    assert "secret" not in notice.lower()
+    assert "api key" not in notice.lower()
+
+
 def test_load_env_files_into_process_loads_selected_keys_only() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env_file = Path(tmp) / ".env"
@@ -207,10 +227,10 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert "_HERMES_FORCE_EXA_API_KEY" not in project_env_text
     assert len(events) == 2
     assert events[0][0] == "notice"
-    assert events[0][1].startswith("2 secrets are saved.")
-    assert "restarting my Telegram gateway now" in events[0][1]
-    assert "available to Hermes" in events[0][1]
-    assert "before your next message" in events[0][1]
+    assert events[0][1] == (
+        "Your tools for web research are ready. I'm restarting once to finish "
+        "setup. I'll be back in a moment and ready to help."
+    )
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "exa-secret")
     assert result["schema"] == "tinyhat_hermes_apply_config_v1"
@@ -330,8 +350,10 @@ def test_apply_config_restarts_gateway_only_when_secret_was_removed() -> None:
     assert "OLD_SECRET" not in env_text
     assert "_HERMES_FORCE_OLD_SECRET" not in env_text
     assert events[0][0] == "notice"
-    assert "restarting my Telegram gateway" in events[0][1]
-    assert "before your next message" in events[0][1]
+    assert events[0][1] == (
+        "I updated your tools. I'm restarting once to finish the change. "
+        "I'll be back in a moment and ready to help."
+    )
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "")
     assert result["removed_secret_names"] == ["OLD_SECRET"]
