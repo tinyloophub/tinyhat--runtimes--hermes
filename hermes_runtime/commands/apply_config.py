@@ -35,16 +35,6 @@ from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthroug
 SCHEMA = "tinyhat_hermes_apply_config_v1"
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-_TOOL_LABELS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("phone calls and text messages", ("AGENTPHONE_",)),
-    ("email", ("TINYHAT_MAILBOX_",)),
-    ("AI models", ("OPENROUTER_", "OPENAI_", "CODEX_")),
-    ("web research", ("EXA_",)),
-    ("Google Workspace", ("GOOGLE_",)),
-    ("Slack", ("SLACK_",)),
-)
-
-
 def _clean_secret_map(payload: dict[str, Any]) -> dict[str, str]:
     secrets = payload.get("secrets")
     if not isinstance(secrets, dict):
@@ -110,38 +100,13 @@ def _write_runtime_secret_env_file(path: Path, values: dict[str, str]) -> dict[s
     }
 
 
-def _tool_label(secret_name: str) -> str | None:
-    normalized = str(secret_name or "").strip().upper()
-    for label, prefixes in _TOOL_LABELS:
-        if normalized.startswith(prefixes):
-            return label
-    return None
-
-
-def _configured_tool_labels(secret_names: list[str]) -> list[str]:
-    matched = {_tool_label(name) for name in secret_names}
-    return [label for label, _prefixes in _TOOL_LABELS if label in matched]
-
-
-def _human_list(items: list[str]) -> str:
-    if len(items) == 1:
-        return items[0]
-    if len(items) == 2:
-        return f"{items[0]} and {items[1]}"
-    return f"{', '.join(items[:-1])}, and {items[-1]}"
-
-
 def _secret_available_notice(secret_names: list[str]) -> str:
-    tools = _configured_tool_labels(secret_names)
-    all_tools_named = all(_tool_label(name) is not None for name in secret_names)
-    ready = (
-        f"Your tools for {_human_list(tools)} are ready."
-        if tools and all_tools_named
-        else "Your new tools are ready."
-    )
+    # Keep the first owner-facing message about successful setup, not the
+    # implementation details that happened to be configured in this command.
+    del secret_names
     return (
-        f"{ready} I'm restarting once to finish setup. "
-        "I'll be back in a moment and ready to help."
+        "Everything is set up. I'm restarting once to finish. "
+        "I'll be back in a moment to introduce myself and get started."
     )
 
 
