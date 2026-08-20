@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep the first setup message focused on a successful setup and a brief
+  restart. It no longer lists phone and email as if they define the Agent; the
+  Agent introduces its broader purpose after the restart.
+
 - Keep the setup gateway's next Telegram restart calm, regardless of what
   initiates that first restart. The setup gateway loads a temporary opt-out,
   then the runtime immediately restores the on-disk operator policy for the

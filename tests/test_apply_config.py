@@ -44,7 +44,7 @@ class FakePlatform:
         return self.payload
 
 
-def test_setup_notice_names_ready_tools_without_credential_language() -> None:
+def test_setup_notice_stays_broad_and_calm() -> None:
     notice = apply_config._secret_available_notice(
         [
             "AGENTPHONE_API_KEY",
@@ -56,31 +56,24 @@ def test_setup_notice_names_ready_tools_without_credential_language() -> None:
     )
 
     assert notice == (
-        "Your tools for phone calls and text messages, email, and AI models are "
-        "ready. I'm restarting once to finish setup. I'll be back in a moment "
-        "and ready to help."
+        "Everything is set up. I'm restarting once to finish. "
+        "I'll be back in a moment to introduce myself and get started."
     )
     assert "secret" not in notice.lower()
     assert "api key" not in notice.lower()
+    assert "phone" not in notice.lower()
+    assert "text message" not in notice.lower()
+    assert "email" not in notice.lower()
 
 
-def test_setup_notice_uses_two_tool_names_when_all_are_known() -> None:
-    notice = apply_config._secret_available_notice(
+def test_setup_notice_does_not_change_with_configured_tools() -> None:
+    expected = apply_config._secret_available_notice([])
+    assert apply_config._secret_available_notice(
         ["AGENTPHONE_API_KEY", "TINYHAT_MAILBOX_PASSWORD"]
-    )
-
-    assert notice.startswith(
-        "Your tools for phone calls and text messages and email are ready."
-    )
-
-
-def test_setup_notice_stays_generic_when_any_tool_is_unknown() -> None:
-    notice = apply_config._secret_available_notice(
+    ) == expected
+    assert apply_config._secret_available_notice(
         ["EXA_API_KEY", "VOICE_TOOLS_OPENAI_KEY"]
-    )
-
-    assert notice.startswith("Your new tools are ready.")
-    assert "web research" not in notice
+    ) == expected
 
 
 def test_load_env_files_into_process_loads_selected_keys_only() -> None:
@@ -242,8 +235,8 @@ def test_apply_config_writes_reloads_notifies_and_restarts_gateway() -> None:
     assert len(events) == 2
     assert events[0][0] == "notice"
     assert events[0][1] == (
-        "Your new tools are ready. I'm restarting once to finish setup. "
-        "I'll be back in a moment and ready to help."
+        "Everything is set up. I'm restarting once to finish. "
+        "I'll be back in a moment to introduce myself and get started."
     )
     assert "confirm once" not in events[0][1]
     assert events[1] == ("gateway", "exa-secret")
