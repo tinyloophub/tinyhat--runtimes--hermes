@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.58 - 2026-08-19
+
 - Keep the first setup message focused on a successful setup and a brief
   restart. It no longer lists phone and email as if they define the Agent; the
   Agent introduces its broader purpose after the restart.
