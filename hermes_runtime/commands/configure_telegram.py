@@ -74,6 +74,7 @@ Side effects:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import os
 import subprocess
@@ -155,15 +156,13 @@ DEFAULT_TELEGRAM_FALLBACK_IPS = "149.154.166.110,149.154.167.220"
 
 def local_stt_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL")
-        or DEFAULT_LOCAL_STT_MODEL
+        os.getenv("TINYHAT_HERMES_LOCAL_STT_MODEL") or DEFAULT_LOCAL_STT_MODEL
     ).strip() or DEFAULT_LOCAL_STT_MODEL
 
 
 def openrouter_stt_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_MODEL")
-        or DEFAULT_OPENROUTER_STT_MODEL
+        os.getenv("TINYHAT_HERMES_OPENROUTER_STT_MODEL") or DEFAULT_OPENROUTER_STT_MODEL
     ).strip() or DEFAULT_OPENROUTER_STT_MODEL
 
 
@@ -208,15 +207,13 @@ def openrouter_stt_command() -> str:
 
 def vision_provider() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_VISION_PROVIDER")
-        or DEFAULT_VISION_PROVIDER
+        os.getenv("TINYHAT_HERMES_VISION_PROVIDER") or DEFAULT_VISION_PROVIDER
     ).strip() or DEFAULT_VISION_PROVIDER
 
 
 def vision_model() -> str:
     return (
-        os.getenv("TINYHAT_HERMES_VISION_MODEL")
-        or DEFAULT_VISION_MODEL
+        os.getenv("TINYHAT_HERMES_VISION_MODEL") or DEFAULT_VISION_MODEL
     ).strip() or DEFAULT_VISION_MODEL
 
 
@@ -317,11 +314,7 @@ def _config_has_telegram_fallback_ips(config_file: Path | None = None) -> bool:
     parents: list[tuple[int, str]] = []
     for index, line in enumerate(lines):
         stripped = line.lstrip(" ")
-        if (
-            not stripped
-            or stripped.startswith(("#", "-"))
-            or ":" not in stripped
-        ):
+        if not stripped or stripped.startswith(("#", "-")) or ":" not in stripped:
             continue
         indent = len(line) - len(stripped)
         while parents and indent <= parents[-1][0]:
@@ -344,12 +337,7 @@ def _config_has_telegram_fallback_ips(config_file: Path | None = None) -> bool:
                 if child_indent <= indent:
                     break
                 if child_stripped.startswith("-"):
-                    item = (
-                        child_stripped[1:]
-                        .split(" #", 1)[0]
-                        .strip()
-                        .strip("'\"")
-                    )
+                    item = child_stripped[1:].split(" #", 1)[0].strip().strip("'\"")
                     if item:
                         return True
             return False
@@ -365,10 +353,14 @@ def _resolve_telegram_network_fallback(
     process_value = (os.getenv(TELEGRAM_FALLBACK_IPS_ENV_KEY) or "").strip()
     if process_value:
         return process_value, "process_env"
-    file_value = read_env_values(
-        paths,
-        names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
-    ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+    file_value = (
+        read_env_values(
+            paths,
+            names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
+        )
+        .get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "")
+        .strip()
+    )
     if file_value:
         return file_value, "env_file"
     if _config_has_telegram_fallback_ips():
@@ -393,7 +385,9 @@ def ensure_telegram_network_fallback_env(
         read_env_values(
             candidates[:1],
             names=(TELEGRAM_FALLBACK_IPS_ENV_KEY,),
-        ).get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "").strip()
+        )
+        .get(TELEGRAM_FALLBACK_IPS_ENV_KEY, "")
+        .strip()
         if candidates
         else ""
     )
@@ -512,7 +506,9 @@ def _codex_auth_quick_commands_block() -> str:
     return "\n".join(lines)
 
 
-def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[str, Any]:
+def _install_codex_auth_quick_commands(
+    config_file: Path | None = None,
+) -> dict[str, Any]:
     config_file = config_file or _hermes_config_file()
     config_file.parent.mkdir(parents=True, exist_ok=True)
     text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
@@ -530,7 +526,8 @@ def _install_codex_auth_quick_commands(config_file: Path | None = None) -> dict[
             (
                 index
                 for index, line in enumerate(lines)
-                if line.strip() == "quick_commands:" and not line.startswith((" ", "\t"))
+                if line.strip() == "quick_commands:"
+                and not line.startswith((" ", "\t"))
             ),
             None,
         )
@@ -899,7 +896,7 @@ def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> lis
     lines, disabled_index = _normalize_plugin_list_key(lines, disabled_index)
     disabled_end = _block_end(lines, disabled_index, indent=2)
     next_lines = lines[: disabled_index + 1]
-    for line in lines[disabled_index + 1: disabled_end]:
+    for line in lines[disabled_index + 1 : disabled_end]:
         if line.strip() == f"- {CODEX_PLUGIN_NAME}":
             continue
         next_lines.append(line)
@@ -930,7 +927,7 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
         end=plugins_end,
     )
     if enabled_index is None:
-        lines[plugins_index + 1: plugins_index + 1] = [
+        lines[plugins_index + 1 : plugins_index + 1] = [
             "  enabled:",
             f"    - {CODEX_PLUGIN_NAME}",
         ]
@@ -938,10 +935,10 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
 
     lines, enabled_index = _normalize_plugin_list_key(lines, enabled_index)
     enabled_end = _block_end(lines, enabled_index, indent=2)
-    for line in lines[enabled_index + 1: enabled_end]:
+    for line in lines[enabled_index + 1 : enabled_end]:
         if line.strip() == f"- {CODEX_PLUGIN_NAME}":
             return lines
-    lines[enabled_index + 1: enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
+    lines[enabled_index + 1 : enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
     return lines
 
 
@@ -1120,7 +1117,9 @@ def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list
     return next_lines
 
 
-def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> list[str]:
+def _telegram_menu_block(
+    *, max_commands: int, existing_priority: list[str]
+) -> list[str]:
     priority = list(TELEGRAM_MANAGED_MENU_COMMANDS)
     for command in existing_priority:
         if command not in priority:
@@ -1137,7 +1136,9 @@ def _telegram_menu_block(*, max_commands: int, existing_priority: list[str]) -> 
 
 
 def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], int]:
-    lines, managed_max_commands, managed_priority = _remove_tinyhat_telegram_menu_block(lines)
+    lines, managed_max_commands, managed_priority = _remove_tinyhat_telegram_menu_block(
+        lines
+    )
     fallback_max_commands = managed_max_commands or TELEGRAM_MENU_MAX_COMMANDS
 
     platforms_index = _find_key(lines, "platforms", indent=0)
@@ -1222,12 +1223,202 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
     max_commands = existing_max_commands or fallback_max_commands
     combined_priority = [*managed_priority, *existing_priority]
     lines = _remove_command_menu_keys(lines, command_menu_index)
-    command_menu_index = _find_key(lines, "command_menu", indent=6) or command_menu_index
-    lines[command_menu_index + 1:command_menu_index + 1] = _telegram_menu_block(
+    command_menu_index = (
+        _find_key(lines, "command_menu", indent=6) or command_menu_index
+    )
+    lines[command_menu_index + 1 : command_menu_index + 1] = _telegram_menu_block(
         max_commands=max_commands,
         existing_priority=combined_priority,
     )
     return lines, max_commands
+
+
+_MANAGED_SETUP_RESTART_COMMENT = "# tinyhat managed setup restart"
+
+
+@dataclass(frozen=True)
+class _ManagedSetupRestartNotificationState:
+    path: Path
+    existed: bool
+    restore_text: str
+    managed_text: str
+    previous_line: str | None
+    managed_line: str | None
+    applied: bool
+    recovered_stranded_marker: bool
+
+
+def _ensure_managed_setup_restart_notification_config(
+    lines: list[str],
+) -> tuple[list[str], str | None, str | None, bool]:
+    """Stage one quiet setup restart without changing later restart policy."""
+    platforms_index = _find_key(lines, "platforms", indent=0)
+    if platforms_index is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        managed_line = (
+            f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+        )
+        lines.extend(
+            [
+                "platforms:",
+                "  telegram:",
+                managed_line,
+            ]
+        )
+        return lines, None, managed_line, True
+
+    platforms_end = _block_end(lines, platforms_index, indent=0)
+    telegram_index = _find_key(
+        lines,
+        "telegram",
+        indent=2,
+        start=platforms_index + 1,
+        end=platforms_end,
+    )
+    if telegram_index is None:
+        managed_line = (
+            f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+        )
+        lines[platforms_end:platforms_end] = [
+            "  telegram:",
+            managed_line,
+        ]
+        return lines, None, managed_line, True
+
+    telegram_end = _block_end(lines, telegram_index, indent=2)
+    notification_index = _find_key(
+        lines,
+        "gateway_restart_notification",
+        indent=4,
+        start=telegram_index + 1,
+        end=telegram_end,
+    )
+    managed_line = (
+        f"    gateway_restart_notification: false {_MANAGED_SETUP_RESTART_COMMENT}"
+    )
+    if notification_index is None:
+        lines[telegram_end:telegram_end] = [managed_line]
+        return lines, None, managed_line, True
+
+    previous_line = lines[notification_index]
+    if _MANAGED_SETUP_RESTART_COMMENT in previous_line:
+        # A prior setup was interrupted after staging but before restoration.
+        # Re-stage the managed line so this run removes it and returns Hermes
+        # to its default notification policy.
+        lines[notification_index] = managed_line
+        return lines, None, managed_line, True
+    raw_value = (
+        previous_line.split(":", 1)[1].split("#", 1)[0].strip().strip("'\"").lower()
+    )
+    if raw_value in {"false", "0", "no", "off"}:
+        return lines, previous_line, None, False
+    lines[notification_index] = managed_line
+    return lines, previous_line, managed_line, True
+
+
+def _stage_managed_setup_restart_notification(
+    config_file: Path | None = None,
+) -> _ManagedSetupRestartNotificationState:
+    """Make the gateway started during setup quiet for its next restart only."""
+    config_file = config_file or _hermes_config_file()
+    existed = config_file.exists()
+    original_text = config_file.read_text(encoding="utf-8") if existed else ""
+    original_lines = original_text.splitlines()
+    recovered_stranded_marker = any(
+        _MANAGED_SETUP_RESTART_COMMENT in line for line in original_lines
+    )
+    restore_text = original_text
+    if recovered_stranded_marker:
+        restored_lines = [
+            line
+            for line in original_lines
+            if _MANAGED_SETUP_RESTART_COMMENT not in line
+        ]
+        restore_text = "\n".join(restored_lines).rstrip() + "\n"
+    next_lines, previous_line, managed_line, applied = (
+        _ensure_managed_setup_restart_notification_config(original_lines)
+    )
+    managed_text = "\n".join(next_lines).rstrip() + "\n"
+    if applied:
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(managed_text, encoding="utf-8")
+        try:
+            config_file.chmod(0o600)
+        except OSError:
+            pass
+    return _ManagedSetupRestartNotificationState(
+        path=config_file,
+        existed=existed,
+        restore_text=restore_text,
+        managed_text=managed_text,
+        previous_line=previous_line,
+        managed_line=managed_line,
+        applied=applied,
+        recovered_stranded_marker=recovered_stranded_marker,
+    )
+
+
+def _restore_managed_setup_restart_notification(
+    state: _ManagedSetupRestartNotificationState,
+) -> dict[str, Any]:
+    """Restore the operator's setting after the setup gateway has loaded it."""
+    if not state.applied:
+        return {
+            "suppressed_for_next_restart": False,
+            "config_restored": None,
+            "future_restart_policy_preserved": True,
+            "reason": "operator_already_disabled_restart_notices",
+        }
+    try:
+        current_text = state.path.read_text(encoding="utf-8")
+        if current_text == state.managed_text:
+            if state.existed:
+                state.path.write_text(state.restore_text, encoding="utf-8")
+            else:
+                state.path.unlink(missing_ok=True)
+        else:
+            current_lines = current_text.splitlines()
+            marker_index = next(
+                (
+                    index
+                    for index, line in enumerate(current_lines)
+                    if _MANAGED_SETUP_RESTART_COMMENT in line
+                ),
+                None,
+            )
+            if marker_index is None:
+                return {
+                    "suppressed_for_next_restart": True,
+                    "config_restored": False,
+                    "future_restart_policy_preserved": False,
+                    "reason": "managed_marker_changed_during_gateway_start",
+                }
+            if state.previous_line is None:
+                current_lines.pop(marker_index)
+            else:
+                current_lines[marker_index] = state.previous_line
+            state.path.write_text(
+                "\n".join(current_lines).rstrip() + "\n",
+                encoding="utf-8",
+            )
+        return {
+            "suppressed_for_next_restart": True,
+            "config_restored": True,
+            "future_restart_policy_preserved": True,
+            "reason": (
+                "recovered_interrupted_setup_marker"
+                if state.recovered_stranded_marker
+                else "tinyhat_managed_setup_restart"
+            ),
+        }
+    except OSError as exc:
+        return {
+            "suppressed_for_next_restart": True,
+            "config_restored": False,
+            "future_restart_policy_preserved": False,
+            "reason": f"config_restore_failed:{exc.__class__.__name__}",
+        }
 
 
 def _install_telegram_command_menu_priority(
@@ -1303,11 +1494,11 @@ async def _configure_model(hermes_bin: Path, setup: dict[str, Any]) -> dict[str,
     return await _run_config_set_commands(hermes_bin, commands)
 
 
-def _vision_fallback_patch(*, active_provider: str, active_model: str) -> dict[str, Any]:
+def _vision_fallback_patch(
+    *, active_provider: str, active_model: str
+) -> dict[str, Any]:
     openrouter_model = (
-        active_model
-        if active_provider == DEFAULT_VISION_PROVIDER
-        else vision_model()
+        active_model if active_provider == DEFAULT_VISION_PROVIDER else vision_model()
     )
     fallback_models = openrouter_vision_fallback_model_list(
         exclude_model=openrouter_model
@@ -2001,8 +2192,7 @@ async def _start_gateway_foreground(
         if (
             isinstance(runtime_generation, dict)
             and runtime_generation.get("pid") == process.pid
-            and runtime_generation.get("argv")
-            == TINYHAT_FOREGROUND_GATEWAY_ARGV
+            and runtime_generation.get("argv") == TINYHAT_FOREGROUND_GATEWAY_ARGV
         ):
             generation = {
                 "schema": FOREGROUND_GATEWAY_STATE_SCHEMA,
@@ -2041,9 +2231,8 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
         timeout_seconds=45,
     )
     install: dict[str, Any] | None = None
-    if (
-        not _gateway_status_is_healthy(status)
-        and _gateway_service_is_missing(start, status)
+    if not _gateway_status_is_healthy(status) and _gateway_service_is_missing(
+        start, status
     ):
         install = await run_process(
             [str(hermes_bin), "gateway", "install"],
@@ -2091,6 +2280,18 @@ async def _run_gateway(hermes_bin: Path) -> dict[str, Any]:
     }
 
 
+async def _run_gateway_for_managed_setup(
+    hermes_bin: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Start setup with one quiet restart, then restore normal notifications."""
+    notification_state = _stage_managed_setup_restart_notification()
+    try:
+        gateway = await _run_gateway(hermes_bin)
+    finally:
+        notification = _restore_managed_setup_restart_notification(notification_state)
+    return gateway, notification
+
+
 def _compact_hermes_status(status: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema": status.get("schema"),
@@ -2116,9 +2317,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     telegram_network = ensure_telegram_network_fallback_env(env_candidates)
     if not telegram_network["ok"]:
         raise RuntimeError("Could not prepare Hermes Telegram network fallback.")
-    fallback_ips, fallback_source = _resolve_telegram_network_fallback(
-        env_candidates
-    )
+    fallback_ips, fallback_source = _resolve_telegram_network_fallback(env_candidates)
     env_values = {
         "TELEGRAM_BOT_TOKEN": token,
         "TELEGRAM_ALLOWED_USERS": str(
@@ -2137,10 +2336,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     }
     if fallback_source != "config" and fallback_ips:
         env_values[TELEGRAM_FALLBACK_IPS_ENV_KEY] = fallback_ips
-    env_files = [
-        _upsert_env_file(env_path, env_values)
-        for env_path in env_candidates
-    ]
+    env_files = [_upsert_env_file(env_path, env_values) for env_path in env_candidates]
     codex_auth = {
         "quick_commands": _install_codex_auth_quick_commands(),
         "plugin_commands": _install_codex_auth_plugin_commands(),
@@ -2165,7 +2361,7 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
             f"{webhook.get('description') or webhook.get('http_status')}"
         )
 
-    gateway = await _run_gateway(hermes_bin)
+    gateway, managed_setup_restart = await _run_gateway_for_managed_setup(hermes_bin)
     if not gateway.get("healthy"):
         raise RuntimeError("Hermes gateway did not report a healthy status.")
 
@@ -2189,5 +2385,6 @@ async def run(ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
         "menu_button": menu_button,
         "webhook": webhook,
         "gateway": gateway,
+        "managed_setup_restart": managed_setup_restart,
         "hermes": _compact_hermes_status(hermes_status),
     }

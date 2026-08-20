@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep the setup gateway's next Telegram restart calm, regardless of what
+  initiates that first restart. The setup gateway loads a temporary opt-out,
+  then the runtime immediately restores the on-disk operator policy for the
+  replacement gateway and recovers a marker stranded by interrupted setup.
+
 ## 0.0.57 - 2026-08-19
 
 - Make first setup reassuring: name the phone, email, model, and other known
