@@ -15,6 +15,7 @@ COMMAND_MODULES = {
     "recent_commands": "hermes_runtime.commands.recent_commands",
     "setup_snapshot": "hermes_runtime.commands.setup_snapshot",
     "install_hermes": "hermes_runtime.commands.install_hermes",
+    "install_google_chrome": "hermes_runtime.commands.install_google_chrome",
     "hermes_status": "hermes_runtime.commands.hermes_status",
     "multimodal_status": "hermes_runtime.commands.multimodal_status",
     "tinyhat_plugin_status": "hermes_runtime.commands.tinyhat_plugin_status",
