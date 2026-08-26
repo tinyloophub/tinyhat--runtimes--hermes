@@ -77,7 +77,9 @@ class PrivateAccessCommandTests(TestCase):
     def test_enrollment_uses_auth_key_file_then_deletes_it(self) -> None:
         calls: list[list[str]] = []
 
-        def runner(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        def runner(
+            args: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             calls.append(list(args))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
@@ -131,3 +133,89 @@ class PrivateAccessCommandTests(TestCase):
                 asyncio.run(
                     run_command(ctx, {"kind": "enroll_private_access", "spec": {}})
                 )
+
+    def test_startup_restores_userspace_daemon_without_reenrolling(self) -> None:
+        calls: list[list[str]] = []
+        starts: list[list[str]] = []
+        status_calls = 0
+
+        def runner(
+            args: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal status_calls
+            calls.append(list(args))
+            if args[:2] == ["tailscale", "status"]:
+                status_calls += 1
+                if status_calls == 1:
+                    return subprocess.CompletedProcess(
+                        args, 1, stdout="", stderr="not running"
+                    )
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    stdout=(
+                        '{"BackendState":"Running","Self":'
+                        '{"HostName":"tinyhat-computer-123",'
+                        '"Online":true,"TailscaleIPs":["100.101.102.103"]}}'
+                    ),
+                    stderr="",
+                )
+            if args[:3] == ["/usr/bin/systemctl", "enable", "--now"]:
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="", stderr="systemd unavailable"
+                )
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        def starter(args: list[str], **_kwargs: object) -> SimpleNamespace:
+            starts.append(list(args))
+            return SimpleNamespace(pid=123)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            status_path = base / "private-access" / "status.json"
+            status_path.parent.mkdir(parents=True)
+            status_path.write_text(
+                '{"provider":"tailscale","state":"ready",'
+                '"node_name":"tinyhat-computer-123"}\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {"TINYHAT_PRIVATE_ACCESS_STATUS_PATH": str(status_path)},
+                    clear=False,
+                ),
+                patch(
+                    "hermes_runtime.private_access.shutil.which",
+                    side_effect=lambda name: {
+                        "tailscale": "/usr/bin/tailscale",
+                        "tailscaled": "/usr/sbin/tailscaled",
+                        "systemctl": "/usr/bin/systemctl",
+                    }.get(name),
+                ),
+                patch.object(private_access, "TAILSCALE_STATE_DIR", base / "tailscale"),
+                patch.object(
+                    private_access,
+                    "TAILSCALE_SOCKET_PATH",
+                    base / "run" / "tailscaled.sock",
+                ),
+                patch.object(
+                    private_access,
+                    "TAILSCALE_LOG_PATH",
+                    base / "logs" / "tailscaled.log",
+                ),
+            ):
+                result = private_access.restore_private_access_on_startup(
+                    runner=runner,
+                    starter=starter,
+                    sleeper=lambda _seconds: None,
+                )
+
+        self.assertEqual(result["state"], "ready")
+        self.assertEqual(result["start_mode"], "userspace")
+        self.assertEqual(result["tailnet_ip"], "100.101.102.103")
+        self.assertGreaterEqual(status_calls, 3)
+        self.assertEqual(len(starts), 1)
+        self.assertIn("--tun=userspace-networking", starts[0])
+        self.assertFalse(any(args[:2] == ["tailscale", "up"] for args in calls))
+        self.assertFalse(any(args[:2] == ["tailscale", "logout"] for args in calls))

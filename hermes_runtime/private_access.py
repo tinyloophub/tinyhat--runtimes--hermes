@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -20,8 +21,13 @@ STATUS_PATH = Path("/var/lib/tinyhat-private-access/bootstrap-status.json")
 TAILSCALE_INSTALL_TIMEOUT_SECONDS = 180
 TAILSCALE_STATUS_TIMEOUT_SECONDS = 10
 TAILSCALE_UP_TIMEOUT_SECONDS = 120
+TAILSCALED_START_TIMEOUT_SECONDS = 15
+TAILSCALE_STATE_DIR = Path("/var/lib/tailscale")
+TAILSCALE_SOCKET_PATH = Path("/var/run/tailscale/tailscaled.sock")
+TAILSCALE_LOG_PATH = Path("/var/log/tinyhat-tailscaled.log")
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+Starter = Callable[..., subprocess.Popen[bytes]]
 _AUTH_KEY_RE = re.compile(r"tskey-[A-Za-z0-9_-]+")
 
 
@@ -56,6 +62,137 @@ def _run(
         text=True,
         timeout=timeout,
         check=False,
+    )
+
+
+def _read_bootstrap_status() -> dict[str, Any]:
+    try:
+        decoded = json.loads(_status_path().read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _tailscale_status_responds(*, runner: Runner) -> bool:
+    result = _run(
+        ["tailscale", "status", "--json"],
+        runner=runner,
+        timeout=TAILSCALE_STATUS_TIMEOUT_SECONDS,
+    )
+    return result.returncode == 0
+
+
+def ensure_private_access_daemon(
+    *,
+    runner: Runner = subprocess.run,
+    starter: Starter = subprocess.Popen,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Start tailscaled through systemd or a non-systemd userspace fallback."""
+
+    if shutil.which("tailscale") is None:
+        return {
+            "ready": False,
+            "diagnostic": "tailscale CLI is not installed",
+        }
+    if _tailscale_status_responds(runner=runner):
+        return {"ready": True, "start_mode": "already_running"}
+
+    systemctl_detail = ""
+    systemctl = shutil.which("systemctl")
+    if systemctl is not None:
+        started = _run(
+            [systemctl, "enable", "--now", "tailscaled"],
+            runner=runner,
+            timeout=60,
+        )
+        if started.returncode == 0:
+            for _attempt in range(TAILSCALED_START_TIMEOUT_SECONDS * 2):
+                if _tailscale_status_responds(runner=runner):
+                    return {"ready": True, "start_mode": "systemd"}
+                sleeper(0.5)
+        systemctl_detail = _safe_diagnostic(started.stderr or started.stdout)
+
+    tailscaled = shutil.which("tailscaled")
+    if tailscaled is None:
+        return {
+            "ready": False,
+            "diagnostic": systemctl_detail or "tailscaled is not installed",
+        }
+
+    TAILSCALE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    TAILSCALE_SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        TAILSCALE_SOCKET_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    TAILSCALE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with TAILSCALE_LOG_PATH.open("ab") as log:
+        starter(
+            [
+                tailscaled,
+                "--tun=userspace-networking",
+                f"--state={TAILSCALE_STATE_DIR / 'tailscaled.state'}",
+                f"--socket={TAILSCALE_SOCKET_PATH}",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    for _attempt in range(TAILSCALED_START_TIMEOUT_SECONDS * 2):
+        if _tailscale_status_responds(runner=runner):
+            return {"ready": True, "start_mode": "userspace"}
+        sleeper(0.5)
+    return {
+        "ready": False,
+        "diagnostic": systemctl_detail or "tailscaled did not become ready",
+    }
+
+
+def restore_private_access_on_startup(
+    *,
+    runner: Runner = subprocess.run,
+    starter: Starter = subprocess.Popen,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Restore an existing enrollment after a runtime or container restart."""
+
+    bootstrap = _read_bootstrap_status()
+    enrolled = bootstrap.get("enrolled") is True or (
+        bootstrap.get("provider") == "tailscale" and bootstrap.get("state") == "ready"
+    )
+    if not enrolled:
+        return {"state": "not_enrolled"}
+    daemon = ensure_private_access_daemon(
+        runner=runner,
+        starter=starter,
+        sleeper=sleeper,
+    )
+    if not daemon.get("ready"):
+        return _write_status(
+            {
+                **bootstrap,
+                "provider": "tailscale",
+                "enrolled": True,
+                "state": "unreachable",
+                "diagnostic": _safe_diagnostic(daemon.get("diagnostic")),
+            }
+        )
+    report = private_access_report(runner=runner)
+    for _attempt in range(TAILSCALED_START_TIMEOUT_SECONDS * 2):
+        if report.get("state") == "ready":
+            break
+        sleeper(0.5)
+        report = private_access_report(runner=runner)
+    return _write_status(
+        {
+            **bootstrap,
+            **report,
+            "provider": "tailscale",
+            "enrolled": True,
+            "start_mode": daemon.get("start_mode"),
+        }
     )
 
 
@@ -112,22 +249,16 @@ def enroll_from_payload(
                 }
             )
 
-    systemctl = shutil.which("systemctl")
-    if systemctl is not None:
-        started = _run(
-            [systemctl, "enable", "--now", "tailscaled"],
-            runner=runner,
-            timeout=60,
+    daemon = ensure_private_access_daemon(runner=runner)
+    if not daemon.get("ready"):
+        return _write_status(
+            {
+                "provider": "tailscale",
+                "state": "error",
+                "diagnostic": "tailscaled start failed: "
+                + _safe_diagnostic(daemon.get("diagnostic")),
+            }
         )
-        if started.returncode != 0:
-            return _write_status(
-                {
-                    "provider": "tailscale",
-                    "state": "error",
-                    "diagnostic": "tailscaled start failed: "
-                    + _safe_diagnostic(started.stderr or started.stdout),
-                }
-            )
 
     secret_dir = _status_path().parent / "secrets"
     secret_dir.mkdir(parents=True, exist_ok=True)
@@ -181,9 +312,11 @@ def enroll_from_payload(
     return _write_status(
         {
             "provider": "tailscale",
+            "enrolled": True,
             "state": "ready",
             "node_name": node_name,
             "ssh_enabled": ssh_enabled,
+            "start_mode": daemon.get("start_mode"),
             "diagnostic": "tailscale enrollment completed",
         }
     )
@@ -192,13 +325,7 @@ def enroll_from_payload(
 def private_access_report(*, runner: Runner = subprocess.run) -> dict[str, Any]:
     """Return non-secret Tailscale state for the platform command result."""
 
-    bootstrap: dict[str, Any] = {}
-    try:
-        decoded = json.loads(_status_path().read_text(encoding="utf-8"))
-        if isinstance(decoded, dict):
-            bootstrap = decoded
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
+    bootstrap = _read_bootstrap_status()
     base = {
         "provider": "tailscale",
         "node_name": bootstrap.get("node_name"),
