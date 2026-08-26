@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,21 @@ class InstallDesktopAppsCommandTests(TestCase):
                 chrome_bin = bin_dir / "google-chrome-stable"
                 thunar_bin = bin_dir / "thunar"
 
+                # Keep a preinstalled runner Chrome out of PATH so this test
+                # always exercises the fresh-Computer download path.
+                for utility in (
+                    "bash",
+                    "cat",
+                    "chmod",
+                    "head",
+                    "mktemp",
+                    "rm",
+                    "tr",
+                ):
+                    source = shutil.which(utility)
+                    self.assertIsNotNone(source, utility)
+                    (bin_dir / utility).symlink_to(str(source))
+
                 _write_executable(bin_dir / "uname", "#!/bin/sh\nprintf 'Linux\\n'\n")
                 _write_executable(bin_dir / "id", "#!/bin/sh\nprintf '0\\n'\n")
                 _write_executable(
@@ -172,7 +188,7 @@ fi
 """,
                 )
                 env = dict(os.environ)
-                env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+                env["PATH"] = str(bin_dir)
                 browser_launcher = base / "tinyhat-browser"
                 env["TINYHAT_BROWSER_LAUNCHER_PATH"] = str(browser_launcher)
 
