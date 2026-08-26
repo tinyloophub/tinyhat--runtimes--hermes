@@ -1,4 +1,4 @@
-"""Focused tests for the Google Chrome Stable runtime command and installer."""
+"""Focused tests for the desktop-app runtime command and installer."""
 
 from __future__ import annotations
 
@@ -23,63 +23,82 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(0o755)
 
 
-class InstallGoogleChromeCommandTests(TestCase):
+class InstallDesktopAppsCommandTests(TestCase):
     def test_command_uses_shared_installer_and_reports_change(self) -> None:
-        before = {"installed": False, "binary": None, "version": None}
+        missing = {"installed": False, "binary": None, "version": None}
+        before = {"chrome": missing, "thunar": missing}
         after = {
-            "installed": True,
-            "binary": "/usr/bin/google-chrome-stable",
-            "version": "Google Chrome 152.0.7977.64",
+            "chrome": {
+                "installed": True,
+                "binary": "/usr/bin/google-chrome-stable",
+                "version": "Google Chrome 152.0.7977.64",
+            },
+            "thunar": {
+                "installed": True,
+                "binary": "/usr/bin/thunar",
+                "version": "Thunar 4.18.4",
+            },
         }
         with (
             patch(
-                "hermes_runtime.commands.install_google_chrome._chrome_status",
+                "hermes_runtime.commands.install_desktop_apps._desktop_status",
                 AsyncMock(side_effect=[before, after]),
             ),
             patch(
-                "hermes_runtime.commands.install_google_chrome._supported",
+                "hermes_runtime.commands.install_desktop_apps._supported",
                 return_value=True,
             ),
             patch(
-                "hermes_runtime.commands.install_google_chrome.run_process",
+                "hermes_runtime.commands.install_desktop_apps.run_process",
                 AsyncMock(return_value={"ok": True, "returncode": 0}),
             ) as install,
         ):
             result = asyncio.run(
-                run_command(SimpleNamespace(), {"kind": "install_google_chrome"})
+                run_command(SimpleNamespace(), {"kind": "install_desktop_apps"})
             )
 
         install.assert_awaited_once()
         argv = install.await_args.args[0]
         self.assertEqual(argv[0], "bash")
-        self.assertTrue(argv[1].endswith("hermes_runtime/install_google_chrome.sh"))
+        self.assertTrue(argv[1].endswith("hermes_runtime/install_desktop_apps.sh"))
         self.assertTrue(result["ok"])
         self.assertTrue(result["changed"])
         self.assertTrue(result["installed_after"])
-        self.assertEqual(result["after"]["version"], "Google Chrome 152.0.7977.64")
+        self.assertEqual(
+            result["after"]["chrome"]["version"],
+            "Google Chrome 152.0.7977.64",
+        )
+        self.assertEqual(result["after"]["thunar"]["version"], "Thunar 4.18.4")
 
     def test_command_is_idempotent_when_chrome_is_present(self) -> None:
         status = {
-            "installed": True,
-            "binary": "/usr/bin/google-chrome-stable",
-            "version": "Google Chrome 152.0.7977.64",
+            "chrome": {
+                "installed": True,
+                "binary": "/usr/bin/google-chrome-stable",
+                "version": "Google Chrome 152.0.7977.64",
+            },
+            "thunar": {
+                "installed": True,
+                "binary": "/usr/bin/thunar",
+                "version": "Thunar 4.18.4",
+            },
         }
         with (
             patch(
-                "hermes_runtime.commands.install_google_chrome._chrome_status",
+                "hermes_runtime.commands.install_desktop_apps._desktop_status",
                 AsyncMock(side_effect=[status, status]),
             ),
             patch(
-                "hermes_runtime.commands.install_google_chrome._supported",
+                "hermes_runtime.commands.install_desktop_apps._supported",
                 return_value=True,
             ),
             patch(
-                "hermes_runtime.commands.install_google_chrome.run_process",
+                "hermes_runtime.commands.install_desktop_apps.run_process",
                 AsyncMock(),
             ) as install,
         ):
             result = asyncio.run(
-                run_command(SimpleNamespace(), {"kind": "install_google_chrome"})
+                run_command(SimpleNamespace(), {"kind": "install_desktop_apps"})
             )
 
         install.assert_not_awaited()
@@ -88,7 +107,7 @@ class InstallGoogleChromeCommandTests(TestCase):
         self.assertTrue(result["installed_before"])
 
     def test_shared_installer_uses_official_deb_for_supported_architectures(self) -> None:
-        installer = ROOT / "hermes_runtime" / "install_google_chrome.sh"
+        installer = ROOT / "hermes_runtime" / "install_desktop_apps.sh"
         for architecture in ("amd64", "arm64"):
             with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as tmp:
                 base = Path(tmp)
@@ -97,6 +116,7 @@ class InstallGoogleChromeCommandTests(TestCase):
                 curl_args = base / "curl-args.txt"
                 apt_args = base / "apt-args.txt"
                 chrome_bin = bin_dir / "google-chrome-stable"
+                thunar_bin = bin_dir / "thunar"
 
                 _write_executable(bin_dir / "uname", "#!/bin/sh\nprintf 'Linux\\n'\n")
                 _write_executable(bin_dir / "id", "#!/bin/sh\nprintf '0\\n'\n")
@@ -132,6 +152,11 @@ if [[ " $* " == *" install "* ]]; then
 printf 'Google Chrome 152.0.7977.64\\n'
 CHROME
   chmod +x {chrome_bin}
+  cat > {thunar_bin} <<'THUNAR'
+#!/usr/bin/env bash
+printf 'Thunar 4.18.4\\n'
+THUNAR
+  chmod +x {thunar_bin}
 fi
 """,
                 )
@@ -154,7 +179,9 @@ fi
                 apt_text = apt_args.read_text(encoding="utf-8")
                 self.assertIn("DPkg::Lock::Timeout=300 update", apt_text)
                 self.assertIn("install -y --no-install-recommends", apt_text)
-                self.assertIn("installed Google Chrome 152.0.7977.64", result.stdout)
+                self.assertIn("thunar", apt_text)
+                self.assertIn("Google Chrome ready: Google Chrome 152.0.7977.64", result.stdout)
+                self.assertIn("Thunar ready: Thunar 4.18.4", result.stdout)
 
 
 if __name__ == "__main__":

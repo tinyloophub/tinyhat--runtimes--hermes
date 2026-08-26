@@ -18,8 +18,8 @@
 #    installs Tinyhat's recommended Hermes machine packages up front: Git,
 #    curl, xz-utils, build-essential, ffmpeg, ripgrep, xclip, and
 #    wl-clipboard. It also installs the official Google Chrome Stable package
-#    on supported amd64 and arm64 Linux Computers. If it needs to download the
-#    runtime source, it also requires curl and tar.
+#    and Thunar file manager on supported amd64 and arm64 Linux Computers. If
+#    it needs to download the runtime source, it also requires curl and tar.
 # 5. Gets the runtime source either from --source-dir, when you already have a
 #    checkout, or by downloading the selected ref from
 #    tinyloophub/tinyhat--runtimes--hermes as a GitHub tarball.
@@ -155,9 +155,13 @@ Environment:
                             Skip apt installation of Tinyhat's recommended
                             Hermes machine packages. Intended only for unusual
                             local development hosts.
+  TINYHAT_SKIP_DESKTOP_APPS=1
+                            Skip Google Chrome Stable and Thunar provisioning.
+                            Intended only for unusual local development hosts.
   TINYHAT_SKIP_GOOGLE_CHROME=1
-                            Skip Google Chrome Stable provisioning. Intended
-                            only for unusual local development hosts.
+                            Skip only Google Chrome Stable while retaining
+                            Thunar provisioning. Intended only for unusual
+                            local development hosts.
   TINYHAT_APT_LOCK_TIMEOUT_SECONDS
                             Seconds apt should wait for another apt/dpkg
                             process before failing. Defaults to 300.
@@ -435,8 +439,8 @@ if [[ ! -f "$src/tinyhat_hermes_runtime_bootstrap.py" ]]; then
   echo "install.sh: tinyhat_hermes_runtime_bootstrap.py not found in $src" >&2
   exit 1
 fi
-if [[ ! -f "$src/hermes_runtime/install_google_chrome.sh" ]]; then
-  echo "install.sh: Google Chrome installer not found in $src" >&2
+if [[ ! -f "$src/hermes_runtime/install_desktop_apps.sh" ]]; then
+  echo "install.sh: desktop application installer not found in $src" >&2
   exit 1
 fi
 
@@ -450,7 +454,7 @@ fi
 
 echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
 install_codex_cli
-bash "$src/hermes_runtime/install_google_chrome.sh"
+bash "$src/hermes_runtime/install_desktop_apps.sh"
 install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
