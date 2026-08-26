@@ -24,6 +24,17 @@ def _write_executable(path: Path, text: str) -> None:
 
 
 class InstallDesktopAppsCommandTests(TestCase):
+    def test_installer_configures_resource_conscious_stable_browser(self) -> None:
+        installer = (
+            ROOT / "hermes_runtime" / "install_desktop_apps.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("google-chrome-stable_current_${architecture}.deb", installer)
+        self.assertIn("TINYHAT_CHROME_RENDERER_PROCESS_LIMIT:-4", installer)
+        self.assertIn("--disable-background-mode", installer)
+        self.assertIn("--renderer-process-limit=", installer)
+        self.assertNotIn("google-chrome-canary", installer)
+
     def test_command_uses_shared_installer_and_reports_change(self) -> None:
         missing = {"installed": False, "binary": None, "version": None}
         before = {"chrome": missing, "thunar": missing}
@@ -162,6 +173,8 @@ fi
                 )
                 env = dict(os.environ)
                 env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+                browser_launcher = base / "tinyhat-browser"
+                env["TINYHAT_BROWSER_LAUNCHER_PATH"] = str(browser_launcher)
 
                 result = subprocess.run(
                     ["bash", str(installer)],
@@ -182,6 +195,9 @@ fi
                 self.assertIn("thunar", apt_text)
                 self.assertIn("Google Chrome ready: Google Chrome 152.0.7977.64", result.stdout)
                 self.assertIn("Thunar ready: Thunar 4.18.4", result.stdout)
+                launcher_text = browser_launcher.read_text(encoding="utf-8")
+                self.assertIn("--disable-background-mode", launcher_text)
+                self.assertIn("--renderer-process-limit=", launcher_text)
 
 
 if __name__ == "__main__":

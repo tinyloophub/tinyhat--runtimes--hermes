@@ -15,6 +15,37 @@ find_google_chrome() {
     command -v google-chrome 2>/dev/null || true
 }
 
+install_browser_launcher() {
+  browser_launcher_path="${TINYHAT_BROWSER_LAUNCHER_PATH:-/usr/local/bin/tinyhat-browser}"
+  cat >"$browser_launcher_path" <<'BROWSER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep Chrome responsive on smaller Computers without disabling normal web
+# capabilities. Operators can raise or remove the renderer limit at launch.
+renderer_process_limit="${TINYHAT_CHROME_RENDERER_PROCESS_LIMIT:-4}"
+for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    exec "$candidate" \
+      --no-sandbox \
+      --disable-dev-shm-usage \
+      --disable-background-mode \
+      --disable-default-apps \
+      --no-first-run \
+      --no-default-browser-check \
+      --disk-cache-size=67108864 \
+      --media-cache-size=33554432 \
+      --renderer-process-limit="$renderer_process_limit" \
+      --user-data-dir=/root/.config/tinyhat-browser \
+      "$@"
+  fi
+done
+echo "No web browser is installed." >&2
+exit 1
+BROWSER
+  chmod 0755 "$browser_launcher_path"
+}
+
 if is_truthy "${TINYHAT_SKIP_DESKTOP_APPS:-0}"; then
   echo "install-desktop-apps: skipping because TINYHAT_SKIP_DESKTOP_APPS is set"
   exit 0
@@ -39,6 +70,7 @@ fi
 if [[ "$need_chrome" -eq 0 && "$need_thunar" -eq 0 ]]; then
   echo "install-desktop-apps: Google Chrome is already installed: $($chrome_bin --version 2>/dev/null || printf 'version unavailable')"
   echo "install-desktop-apps: Thunar is already installed: $($thunar_bin --version 2>/dev/null | head -n 1 || printf 'version unavailable')"
+  install_browser_launcher
   exit 0
 fi
 
@@ -111,6 +143,7 @@ if [[ -z "$thunar_bin" ]]; then
 fi
 
 if [[ -n "$chrome_bin" ]]; then
+  install_browser_launcher
   echo "install-desktop-apps: Google Chrome ready: $($chrome_bin --version 2>/dev/null || printf 'version unavailable')"
 fi
 echo "install-desktop-apps: Thunar ready: $($thunar_bin --version 2>/dev/null | head -n 1 || printf 'version unavailable')"
