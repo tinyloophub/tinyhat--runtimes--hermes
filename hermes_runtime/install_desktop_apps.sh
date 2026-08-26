@@ -68,7 +68,11 @@ if [[ -z "$thunar_bin" ]]; then
 fi
 
 if [[ "$need_chrome" -eq 0 && "$need_thunar" -eq 0 ]]; then
-  echo "install-desktop-apps: Google Chrome is already installed: $($chrome_bin --version 2>/dev/null || printf 'version unavailable')"
+  if [[ -n "$chrome_bin" ]]; then
+    echo "install-desktop-apps: Google Chrome is already installed: $($chrome_bin --version 2>/dev/null || printf 'version unavailable')"
+  else
+    echo "install-desktop-apps: Google Chrome installation skipped because TINYHAT_SKIP_GOOGLE_CHROME is set"
+  fi
   echo "install-desktop-apps: Thunar is already installed: $($thunar_bin --version 2>/dev/null | head -n 1 || printf 'version unavailable')"
   install_browser_launcher
   exit 0
@@ -80,7 +84,7 @@ if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 if [[ "$(id -u)" != "0" ]]; then
-  echo "install-desktop-apps: installation requires root" >&2
+  echo "install-desktop-apps: installation requires root; set TINYHAT_SKIP_DESKTOP_APPS=1 to skip it" >&2
   exit 1
 fi
 

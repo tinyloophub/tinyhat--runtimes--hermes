@@ -36,6 +36,46 @@ class InstallDesktopAppsCommandTests(TestCase):
         self.assertIn("--renderer-process-limit=", installer)
         self.assertNotIn("google-chrome-canary", installer)
 
+    def test_shared_installer_reports_intentional_chrome_skip_honestly(self) -> None:
+        installer = ROOT / "hermes_runtime" / "install_desktop_apps.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            for utility in ("bash", "cat", "chmod", "head", "tr"):
+                source = shutil.which(utility)
+                self.assertIsNotNone(source, utility)
+                (bin_dir / utility).symlink_to(str(source))
+            _write_executable(
+                bin_dir / "thunar",
+                "#!/usr/bin/env bash\nprintf 'Thunar 4.18.4\\n'\n",
+            )
+            env = dict(os.environ)
+            env["PATH"] = str(bin_dir)
+            env["TINYHAT_SKIP_GOOGLE_CHROME"] = "1"
+            env["TINYHAT_BROWSER_LAUNCHER_PATH"] = str(base / "tinyhat-browser")
+
+            result = subprocess.run(
+                ["bash", str(installer)],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+
+        self.assertIn("Google Chrome installation skipped", result.stdout)
+        self.assertNotIn("Google Chrome is already installed", result.stdout)
+
+    def test_shared_installer_explains_non_root_skip_option(self) -> None:
+        installer = (
+            ROOT / "hermes_runtime" / "install_desktop_apps.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "installation requires root; set TINYHAT_SKIP_DESKTOP_APPS=1 to skip it",
+            installer,
+        )
+
     def test_command_uses_shared_installer_and_reports_change(self) -> None:
         missing = {"installed": False, "binary": None, "version": None}
         before = {"chrome": missing, "thunar": missing}

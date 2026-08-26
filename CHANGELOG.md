@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Install official Google Chrome Stable and Thunar during Computer
+  provisioning, and expose the same idempotent `install_desktop_apps` runtime
+  command so Hat admin can repair older Computers. Chrome uses conservative
+  background, cache, and renderer defaults for responsive use on smaller
+  Computers without removing normal browsing capabilities.
+
 ## 0.0.58 - 2026-08-19
 
 - Keep the first setup message focused on a successful setup and a brief
