@@ -24,6 +24,16 @@ set -euo pipefail
 # Keep Chrome responsive on smaller Computers without disabling normal web
 # capabilities. Operators can raise or remove the renderer limit at launch.
 renderer_process_limit="${TINYHAT_CHROME_RENDERER_PROCESS_LIMIT:-4}"
+gpu_args=()
+# Chrome's GPU surface can stay at the pre-resize VNC dimensions after a
+# Guacamole client changes the remote display size. The X11 window then
+# maximizes correctly while Chrome paints only the old small rectangle.
+# Software rendering avoids that detached surface on headless Computers;
+# hardware-backed operators can opt back in explicitly.
+case "${TINYHAT_CHROME_DISABLE_GPU:-1}" in
+  0|false|FALSE|no|NO|off|OFF) ;;
+  *) gpu_args+=(--disable-gpu) ;;
+esac
 for candidate in google-chrome-stable google-chrome chromium chromium-browser; do
   if command -v "$candidate" >/dev/null 2>&1; then
     exec "$candidate" \
@@ -36,6 +46,7 @@ for candidate in google-chrome-stable google-chrome chromium chromium-browser; d
       --disk-cache-size=67108864 \
       --media-cache-size=33554432 \
       --renderer-process-limit="$renderer_process_limit" \
+      "${gpu_args[@]}" \
       --user-data-dir=/root/.config/tinyhat-browser \
       "$@"
   fi

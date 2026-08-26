@@ -6,7 +6,10 @@
   provisioning, and expose the same idempotent `install_desktop_apps` runtime
   command so Hat admin can repair older Computers. Chrome uses conservative
   background, cache, and renderer defaults for responsive use on smaller
-  Computers without removing normal browsing capabilities.
+  Computers without removing normal browsing capabilities. It defaults to
+  software rendering on remote desktops so maximizing after a display resize
+  paints the whole work area; hardware-backed operators can opt back into GPU
+  rendering with `TINYHAT_CHROME_DISABLE_GPU=0`.
 
 ## 0.0.58 - 2026-08-19
 

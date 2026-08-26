@@ -32,7 +32,9 @@ class InstallDesktopAppsCommandTests(TestCase):
 
         self.assertIn("google-chrome-stable_current_${architecture}.deb", installer)
         self.assertIn("TINYHAT_CHROME_RENDERER_PROCESS_LIMIT:-4", installer)
+        self.assertIn("TINYHAT_CHROME_DISABLE_GPU:-1", installer)
         self.assertIn("--disable-background-mode", installer)
+        self.assertIn("gpu_args+=(--disable-gpu)", installer)
         self.assertIn("--renderer-process-limit=", installer)
         self.assertNotIn("google-chrome-canary", installer)
 
@@ -65,6 +67,64 @@ class InstallDesktopAppsCommandTests(TestCase):
 
         self.assertIn("Google Chrome installation skipped", result.stdout)
         self.assertNotIn("Google Chrome is already installed", result.stdout)
+
+    def test_browser_launcher_defaults_to_software_rendering_with_opt_out(
+        self,
+    ) -> None:
+        installer = ROOT / "hermes_runtime" / "install_desktop_apps.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            chrome_args = base / "chrome-args.txt"
+            for utility in ("bash", "cat", "chmod", "head", "tr"):
+                source = shutil.which(utility)
+                self.assertIsNotNone(source, utility)
+                (bin_dir / utility).symlink_to(str(source))
+            _write_executable(
+                bin_dir / "google-chrome-stable",
+                f"""#!/usr/bin/env bash
+if [[ "${{1:-}}" == "--version" ]]; then
+  printf 'Google Chrome 152.0.7977.64\\n'
+  exit 0
+fi
+printf '%s\\n' "$@" > {chrome_args}
+""",
+            )
+            _write_executable(
+                bin_dir / "thunar",
+                "#!/usr/bin/env bash\nprintf 'Thunar 4.18.4\\n'\n",
+            )
+            env = dict(os.environ)
+            env["PATH"] = str(bin_dir)
+            launcher = base / "tinyhat-browser"
+            env["TINYHAT_BROWSER_LAUNCHER_PATH"] = str(launcher)
+
+            subprocess.run(
+                ["bash", str(installer)],
+                check=True,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            subprocess.run(
+                ["bash", str(launcher)],
+                check=True,
+                env=env,
+            )
+            self.assertIn(
+                "--disable-gpu", chrome_args.read_text(encoding="utf-8").splitlines()
+            )
+
+            env["TINYHAT_CHROME_DISABLE_GPU"] = "0"
+            subprocess.run(
+                ["bash", str(launcher)],
+                check=True,
+                env=env,
+            )
+            self.assertNotIn(
+                "--disable-gpu", chrome_args.read_text(encoding="utf-8").splitlines()
+            )
 
     def test_shared_installer_explains_non_root_skip_option(self) -> None:
         installer = (
@@ -253,6 +313,8 @@ fi
                 self.assertIn("Thunar ready: Thunar 4.18.4", result.stdout)
                 launcher_text = browser_launcher.read_text(encoding="utf-8")
                 self.assertIn("--disable-background-mode", launcher_text)
+                self.assertIn("TINYHAT_CHROME_DISABLE_GPU:-1", launcher_text)
+                self.assertIn("gpu_args+=(--disable-gpu)", launcher_text)
                 self.assertIn("--renderer-process-limit=", launcher_text)
 
 
