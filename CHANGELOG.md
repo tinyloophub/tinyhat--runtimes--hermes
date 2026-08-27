@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.59 - 2026-08-27
+
+- Add the `enroll_private_access` runtime command so an authenticated Computer
+  can join Tinyhat's private Tailscale network with a one-time platform-issued
+  enrollment payload. Credential material is written only to a mode-`0600`
+  temporary file, deleted immediately after use, and excluded from the
+  value-free connectivity result and redacted diagnostics. This gives the
+  interactive Computer desktop a private transport without exposing public
+  VNC, SSH, or SFTP ports.
+
 - Install official Google Chrome Stable and Thunar during Computer
   provisioning, and expose the same idempotent `install_desktop_apps` runtime
   command so Hat admin can repair older Computers. Chrome uses conservative
