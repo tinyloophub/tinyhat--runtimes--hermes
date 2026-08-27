@@ -27,6 +27,7 @@ def _env_with_fake_codex(bin_dir: Path) -> dict[str, str]:
     )
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    env["TINYHAT_SKIP_DESKTOP_APPS"] = "1"
     return env
 
 
@@ -167,6 +168,7 @@ chmod +x {fake_codex}
             env = dict(os.environ)
             env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin:/usr/sbin:/sbin"
             env["TINYHAT_CODEX_NPM_PACKAGE"] = "@openai/codex"
+            env["TINYHAT_SKIP_DESKTOP_APPS"] = "1"
 
             result = subprocess.run(
                 [
@@ -207,6 +209,7 @@ chmod +x {fake_codex}
             state_dir = base / "state"
             env = dict(os.environ)
             env["TINYHAT_SKIP_CODEX_CLI"] = "1"
+            env["TINYHAT_SKIP_DESKTOP_APPS"] = "1"
 
             result = subprocess.run(
                 [
@@ -285,6 +288,7 @@ fi
             )
             env = dict(os.environ)
             env["PATH"] = f"{bin_dir}{os.pathsep}/usr/bin:/bin:/usr/sbin:/sbin"
+            env["TINYHAT_SKIP_DESKTOP_APPS"] = "1"
 
             result = subprocess.run(
                 [
@@ -342,6 +346,9 @@ fi
         self.assertIn("@openai/codex", script)
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", script)
         self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", script)
+        self.assertIn("TINYHAT_SKIP_DESKTOP_APPS", script)
+        self.assertIn("TINYHAT_SKIP_GOOGLE_CHROME", script)
+        self.assertIn("hermes_runtime/install_desktop_apps.sh", script)
         self.assertIn("TINYHAT_APT_LOCK_TIMEOUT_SECONDS", script)
         self.assertIn("setup_${codex_node_major}.x", script)
         self.assertIn("ffmpeg", script)
@@ -360,6 +367,8 @@ fi
         self.assertIn("TINYHAT_SKIP_CODEX_CLI", help_result.stdout)
         self.assertIn("TINYHAT_CODEX_NODE_MAJOR", help_result.stdout)
         self.assertIn("TINYHAT_SKIP_RECOMMENDED_PACKAGES", help_result.stdout)
+        self.assertIn("TINYHAT_SKIP_DESKTOP_APPS", help_result.stdout)
+        self.assertIn("TINYHAT_SKIP_GOOGLE_CHROME", help_result.stdout)
         self.assertIn("TINYHAT_APT_LOCK_TIMEOUT_SECONDS", help_result.stdout)
 
     def _run_foreground_until_signal(
@@ -377,6 +386,10 @@ fi
             source.joinpath("hermes_runtime").mkdir(parents=True)
             source.joinpath("hermes_runtime", "__init__.py").write_text(
                 "", encoding="utf-8"
+            )
+            _write_executable(
+                source.joinpath("hermes_runtime", "install_desktop_apps.sh"),
+                "#!/usr/bin/env bash\nexit 0\n",
             )
             source.joinpath("tinyhat_hermes_runtime_bootstrap.py").write_text(
                 """
