@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from hermes_runtime import __version__
+from hermes_runtime import __version__, private_access
 from hermes_runtime.client import (
     CachedGoogleIdentityToken,
     PlatformClient,
@@ -678,6 +678,27 @@ def _safe_activate_staged_on_startup(ctx: RuntimeContext) -> dict[str, Any] | No
         return None
 
 
+def _restore_private_access_on_startup() -> None:
+    """Best-effort restart of an already-enrolled private network daemon."""
+
+    try:
+        result = private_access.restore_private_access_on_startup()
+    except Exception as exc:  # noqa: BLE001 - heartbeat must always start.
+        print(
+            f"private access restore failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if result.get("state") == "unreachable":
+        print(
+            "private access restore did not become reachable: "
+            f"{result.get('diagnostic') or 'unknown error'}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def _exec_args_after_code_swap() -> list[str]:
     bootstrap = (os.getenv("TINYHAT_RUNTIME_BOOTSTRAP") or "").strip()
     if bootstrap:
@@ -939,6 +960,7 @@ async def run() -> int:
             flush=True,
         )
         _reexec_after_code_swap(activated)
+    _restore_private_access_on_startup()
 
     while True:
         try:
