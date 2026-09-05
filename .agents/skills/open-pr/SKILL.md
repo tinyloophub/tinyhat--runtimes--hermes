@@ -5,7 +5,7 @@ description: Open a PR for the public Tinyhat Hermes runtime repo. Use parent Ti
 
 # open-pr - Hermes runtime repo adapter
 
-Parent alignment: when this standalone repo is nested under Tinyloop, first read the same-named skill from the parent skill root described in `AGENTS.md`, then apply this repo's override.
+Apply the [shared skill contract](../../../AGENTS.md#shared-skill-contract).
 Apply this repo's target, checks, and release boundary below.
 
 ## Scope Check
@@ -26,7 +26,7 @@ python3 scripts/check_repo_basics.py
 ```
 
 Add runtime checks from `define-tests` for any touched runtime surface.
-For future install/config/launch behavior, unit-test-only evidence is not enough:
+For install/config/launch behavior, unit-test-only evidence is not enough:
 include the Linux/container proof or explicitly call out why it was not required.
 
 ## PR Creation
@@ -37,7 +37,12 @@ Create PRs against:
 tinyloophub/tinyhat--runtimes--hermes
 ```
 
-Use the configured Codex bot identity for Codex-authored PRs when available, then restore `gh` to the maintainer account.
+Use [codex](../codex/SKILL.md) for Codex identity and GitHub writeback.
+Obtain independent review on the current head; after changes, rerun relevant
+checks and get the new head reviewed. Report review, CI, and required maintainer
+approval separately before calling a PR ready.
+When the parent checkout is mounted, follow its `open-pr` work-summary and
+`agent-pr-collaboration` handoff/watch loop after opening or updating a PR.
 
 The PR body should include:
 

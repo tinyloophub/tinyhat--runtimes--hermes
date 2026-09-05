@@ -5,7 +5,7 @@ description: Cut or verify a release of the public Tinyhat Hermes runtime repo.
 
 # release - Hermes runtime repo adapter
 
-Parent alignment: when this standalone repo is nested under Tinyloop, skim the same-named skill from the parent skill root described in `AGENTS.md`, then apply this repo's override.
+Apply the [shared skill contract](../../../AGENTS.md#shared-skill-contract).
 This repo releases the Tinyhat Hermes runtime package itself.
 
 ## Before Release
@@ -28,7 +28,7 @@ This repo releases the Tinyhat Hermes runtime package itself.
   python3 scripts/check_repo_basics.py
   ```
 
-- Add runtime-specific tests before release once this repo contains boot/install/launch code.
+- Run the runtime checks from [define-tests](../define-tests/SKILL.md) before release.
 
 ## Release Shape
 
@@ -67,4 +67,6 @@ This repo releases the Tinyhat Hermes runtime package itself.
    `git push origin ... --force-with-lease` shape, and do not change the GitHub
    Latest marker unless the same tag is also promoted to `channels/latest`.
 
-Read `VERSIONING.md` before changing this flow.
+Read [RELEASING.md](../../../RELEASING.md) for publication commands and the
+required live marker/channel conformance check. Read
+[VERSIONING.md](../../../VERSIONING.md) before changing this flow.
