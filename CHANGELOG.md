@@ -8,6 +8,10 @@
   context creates a terminal launcher and desktop shortcut, acknowledges the exact
   Agent/system, and skips Telegram gateway reconciliation for that assignment.
   Model account authentication remains a separate user setup step.
+- Add a preinstalled-image first-boot entrypoint that validates exact manifest
+  and runtime digests before configuring the machine and starting systemd.
+  First boot performs no package installation; inventory reports the public
+  image manifest digest for platform readiness checks.
 
 ## 0.0.59 - 2026-08-27
 

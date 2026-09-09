@@ -655,6 +655,23 @@ python3 scripts/check_repo_basics.py
 
 ## Coding-agent Computer context
 
+An image builder can install this runtime with `install.sh --source-dir PATH
+--ref COMMIT --no-systemd`, preinstall the public CLIs and desktop packages, and
+write `/opt/tinyhat-agent-image/manifest.json`. The manifest must have schema
+`tinyhat.agent-image.v1` and the exact `runtime_sha`. The builder must remove
+machine identity, runtime environment files, SSH host keys and any user state
+before publishing the image. It must never contain model or platform credentials.
+
+At first boot the platform invokes `python3 -m hermes_runtime.image_boot` with
+`--platform-url`, `--audience`, `--computer-id`, `--runtime-sha` and
+`--manifest-sha256`. This entrypoint requires Linux systemd/root, validates the
+manifest digest and installed runtime commit, writes only per-machine platform
+configuration, initializes missing host identities, and starts the runtime. It
+does not download or install software. Inventory includes the public manifest's
+SHA-256 so the platform can compare the running image with its catalog record.
+Desktop passwords and model-provider login are created separately on each
+Computer after assignment.
+
 Preinstalled images may set `TINYHAT_AGENT_SYSTEMS_PREINSTALLED=1`. The runtime
 then reports `agent_systems` with schema `tinyhat.agent-systems.v1`: bounded
 `--version` probes for `codex`, `claude`, `hermes` and `openclaw`, and the

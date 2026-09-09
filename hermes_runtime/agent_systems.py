@@ -9,6 +9,7 @@ configure a Telegram gateway.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -46,7 +47,16 @@ async def inventory() -> dict[str, Any]:
     probes = await asyncio.gather(*(_probe(system, command) for system, command in SYSTEM_COMMANDS.items()))
     desktop_ready = all(shutil.which(command) for command in ("tigervncserver", "vncpasswd", "startxfce4", "xfce4-terminal", "dbus-launch"))
     browser_ready = any(shutil.which(command) for command in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser"))
-    return {"schema": INVENTORY_SCHEMA, "desktop_ready": bool(desktop_ready and browser_ready), **dict(zip(SYSTEM_COMMANDS, probes))}
+    result = {"schema": INVENTORY_SCHEMA, "desktop_ready": bool(desktop_ready and browser_ready), **dict(zip(SYSTEM_COMMANDS, probes))}
+    # This is public build provenance, never credentials or machine identity.
+    try:
+        manifest = Path("/opt/tinyhat-agent-image/manifest.json").read_bytes()
+        value = json.loads(manifest)
+        if isinstance(value, dict) and value.get("schema") == "tinyhat.agent-image.v1":
+            result["image_manifest_sha256"] = hashlib.sha256(manifest).hexdigest()
+    except (OSError, ValueError):
+        pass
+    return result
 
 
 def ready(value: dict[str, Any] | None) -> bool:
