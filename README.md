@@ -652,3 +652,35 @@ python -m unittest discover -s tests -v
 python3 scripts/check_dev_skills.py
 python3 scripts/check_repo_basics.py
 ```
+
+## Coding-agent Computer context
+
+Preinstalled images may set `TINYHAT_AGENT_SYSTEMS_PREINSTALLED=1`. The runtime
+then reports `agent_systems` with schema `tinyhat.agent-systems.v1`: bounded
+`--version` probes for `codex`, `claude`, `hermes` and `openclaw`, and the
+presence of TigerVNC, XFCE, D-Bus and a browser. These checks do not authenticate
+with model providers. Non-opted-in machines keep their existing behavior.
+
+The authenticated heartbeat response may include `agent_api_context`:
+
+```json
+{
+  "schema": "tinyhat.agent-api-context.v1",
+  "computer_id": "cmp_cccccccccccccccccccccccccccccccc",
+  "agent_id": "agt_aaaaaaaaaaaaaaaaaaaaaa",
+  "system": "codex"
+}
+```
+
+The system is one of `codex`, `claude_code`, `hermes` or `openclaw`. When the
+installed prerequisites pass, this creates `~/.config/tinyhat/computer.json`,
+`~/.local/bin/tinyhat-agent` and a **Tinyhat Agent** desktop shortcut. The launcher
+opens the selected public CLI with its normal permissions. Repeated context
+acknowledgements preserve a user's launcher edits. A fresh runtime process
+revalidates the platform assignment before acknowledging it.
+
+Subsequent heartbeats include `agent_api` with the exact context and a `ready`
+boolean. The platform can distinguish this acknowledgement from an old
+assignment. This explicit mode skips Telegram gateway inspection/reconciliation;
+it does not invent a bot identity or mark model login complete. The platform
+continues to own Guacamole transport and its short-lived access credentials.

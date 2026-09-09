@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support an explicit coding-agent Computer assignment independently of Telegram.
+  Opted-in preinstalled images report bounded public CLI version probes for Codex,
+  Claude Code, Hermes and OpenClaw plus desktop prerequisites. A validated platform
+  context creates a terminal launcher and desktop shortcut, acknowledges the exact
+  Agent/system, and skips Telegram gateway reconciliation for that assignment.
+  Model account authentication remains a separate user setup step.
+
 ## 0.0.59 - 2026-08-27
 
 - Add the `enroll_private_access` runtime command so an authenticated Computer
