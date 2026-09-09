@@ -1,13 +1,35 @@
 # Preinstalled agent Computer verification
 
-Linux image source tested: `2944949082b2e868ee196bdd4399e2e94608bb5e`. The subsequent review fixes add disabled-image assignment isolation, graceful handling of unexecutable CLIs, and origin-port validation. The image and desktop evidence below predates those fixes; fresh image verification remains required before promotion.
+Runtime source tested: `992098da90ba878bbef22ff921cd0045944f3943`.
+This includes the review fixes for binding isolation, unavailable CLIs, callback
+origin validation and background CLI inventory. The image is immutable; update
+its runtime by baking and verifying a replacement image.
 
-On 2026-09-09, two fresh Ubuntu 24.04 image clones booted in Google Cloud. Both reported all four public CLI probes ready: Codex 0.153.4, Claude Code 2.1.266, Hermes Agent v0.19.0 at pinned commit 646761c7, and OpenClaw 2026.9.3. Both had desktop prerequisites installed, the exact expected manifest digest, different fresh machine/SSH identities, an active guest agent, and no copied model/platform authentication. Cold verification took 59.517 and 59.832 seconds; both temporary clones were deleted.
+On 2026-09-09, two fresh Ubuntu 24.04 image clones on `e2-medium` booted in Google
+Cloud. Both reported all four public CLI probes ready: Codex 0.153.4, Claude Code
+2.1.266, Hermes Agent v0.19.0 at pinned commit 646761c7, and OpenClaw 2026.9.3.
+Both had desktop prerequisites installed, the expected manifest digest, different
+fresh machine/SSH identities, an active guest agent, and no copied model/platform
+authentication. Cold verification took 46.880 and 50.376 seconds; both temporary
+clones were deleted.
 
-A separate image-backed Computer received an authenticated coding-agent assignment through the candidate platform API. Its matching acknowledgement moved the allocation to ready. Opening its Guacamole desktop and double-clicking the Tinyhat Agent shortcut displayed the actual Codex welcome screen below. Model login was not attempted; no model account or device code is present in the evidence.
+Four separate Computers from that image received authenticated coding-agent
+assignments through the candidate platform API. Their matching acknowledgements
+moved allocations to ready. Opening Guacamole and double-clicking the Tinyhat
+Agent shortcut displayed the selected Codex and Claude Code launchers below.
+Model login was not attempted; no account or device code is present.
 
 ![Guacamole desktop with the selected Codex launcher](codex-launcher.png)
 
-This proves the installed runtime/desktop and selected-system launcher. It does not establish a platform warm-allocation latency target, model authentication, production deployment, or runtime channel promotion. The candidate platform's shared development database exhausted its connection slots during further allocation tests; those timings remain pending in the platform change.
+![Guacamole desktop with the selected Claude Code launcher](claude-launcher.png)
 
-Local checks after review fixes: 491 runtime unit tests passed; compileall, development-skill validation and repository-basics validation passed. Tests cover context validation and binding, CLI inventory, first-boot digest checks and idempotency, plus v2 heartbeat routing only for opted-in preinstalled GCE Computers. Legacy and local-runtime routing stays unchanged.
+Three sequential warm claims measured allocation at 3.375, 5.652 and 2.230
+seconds, with visibly usable desktops by 28.797, 28.848 and 24.886 seconds.
+These are local candidate-platform tests against real cloud guests; they do not
+establish production deployment, model authentication or runtime channel promotion.
+
+Local checks: 493 runtime unit tests passed, plus compileall, development-skill
+validation and repository-basics validation. Linux CI passed on Python 3.10 and
+3.13. Tests cover context/binding isolation, first-boot digest checks, inventory
+timeouts and background scheduling, and v2 heartbeat routing only for opted-in
+preinstalled GCE Computers. Legacy and local-runtime routing stays unchanged.
