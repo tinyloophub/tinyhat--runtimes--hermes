@@ -21,6 +21,11 @@ INVENTORY = {"schema": agent_systems.INVENTORY_SCHEMA, "desktop_ready": True,
 
 
 class AgentSystemsTests(TestCase):
+    def setUp(self):
+        flag = patch.dict(os.environ, {"TINYHAT_AGENT_SYSTEMS_PREINSTALLED": "1"})
+        flag.start()
+        self.addCleanup(flag.stop)
+
     def test_public_cli_inventory_never_calls_auth_or_gateway(self):
         async def process(args, **kwargs):
             self.assertEqual(args[1:], ["--version"])
@@ -77,6 +82,34 @@ class AgentSystemsTests(TestCase):
         ctx = SimpleNamespace(agent_api_context=CONTEXT, gateway_reconcile_task=None)
         with patch("hermes_runtime.main._telegram_env_configured", side_effect=AssertionError("Telegram must not be consulted")):
             _maybe_start_gateway_reconcile(ctx)
+
+    def test_disabled_image_ignores_assignment_and_keeps_telegram_reconcile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            platform = SimpleNamespace(post_json=AsyncMock(return_value={"state": "assigned", "agent_api_context": CONTEXT}))
+            ctx = RuntimeContext(platform=platform, state_dir=Path(directory) / "state", started_at=0)
+            with patch.dict(os.environ, {"TINYHAT_AGENT_SYSTEMS_PREINSTALLED": "0"}), patch("hermes_runtime.main._telegram_env_configured", return_value=False) as telegram, patch.object(agent_systems, "inventory", new_callable=AsyncMock) as probe:
+                asyncio.run(_heartbeat_once(ctx))
+                probe.assert_not_awaited()
+                telegram.assert_called()
+                self.assertIsNone(ctx.agent_api_context)
+                self.assertIsNone(agent_systems.acknowledgement(ctx))
+                self.assertFalse(ctx.agent_api_context_ready)
+                self.assertNotIn("agent_api", platform.post_json.call_args.args[1]["metrics"])
+
+    def test_unexecutable_cli_does_not_interrupt_heartbeat(self):
+        async def process(args, **kwargs):
+            if args[0].endswith("codex"):
+                raise OSError("invalid executable format")
+            return {"ok": True, "stdout": "example 1.0\n"}
+        with tempfile.TemporaryDirectory() as directory:
+            platform = SimpleNamespace(post_json=AsyncMock(return_value={"state": "ready"}))
+            ctx = RuntimeContext(platform=platform, state_dir=Path(directory) / "state", started_at=0)
+            with patch.object(agent_systems.shutil, "which", side_effect=lambda name: "/bin/" + name), patch.object(agent_systems, "find_hermes_binary", return_value=Path("/bin/hermes")), patch.object(agent_systems, "run_process", side_effect=process):
+                asyncio.run(_heartbeat_once(ctx))
+            platform.post_json.assert_awaited_once()
+            metrics = platform.post_json.call_args.args[1]["metrics"]
+            self.assertEqual(metrics["agent_systems"]["codex"], {"ready": False, "version": None})
+            self.assertTrue(metrics["agent_systems"]["claude_code"]["ready"])
 
     def test_heartbeat_acknowledges_context_and_bounds_inventory_refresh(self):
         with tempfile.TemporaryDirectory() as directory:

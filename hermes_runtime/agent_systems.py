@@ -35,7 +35,12 @@ async def _probe(system: str, command: str) -> dict[str, Any]:
     binary = str(find_hermes_binary() or "") if system == "hermes" else shutil.which(command)
     if not binary:
         return {"ready": False, "version": None}
-    result = await run_process([binary, "--version"], timeout_seconds=5)
+    try:
+        result = await run_process([binary, "--version"], timeout_seconds=5)
+    except OSError:
+        # A missing interpreter or an invalid executable is an unavailable CLI,
+        # not a reason to stop the platform heartbeat.
+        return {"ready": False, "version": None}
     # --version is the supported, unauthenticated public interface. Never
     # include environment, diagnostics, stderr or model auth in inventory.
     output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", str(result.get("stdout") or "")).strip()
@@ -98,9 +103,14 @@ def _write_atomic(path: Path, content: str, mode: int) -> None:
 
 
 def apply_context(ctx: Any, value: Any, *, home: Path | None = None) -> None:
+    if not enabled():
+        ctx.agent_api_context = None
+        ctx.agent_api_context_ready = False
+        return
     context = _validated_context(value)
     if context is None:
         ctx.agent_api_context = None
+        ctx.agent_api_context_ready = False
         return
     # Only an explicit authenticated platform assignment changes the mode.
     # Repeated heartbeats do not overwrite the user's launcher or config.
@@ -124,6 +134,8 @@ def apply_context(ctx: Any, value: Any, *, home: Path | None = None) -> None:
 
 
 def acknowledgement(ctx: Any) -> dict[str, Any] | None:
+    if not enabled():
+        return None
     value = getattr(ctx, "agent_api_context", None)
     if value is None:
         return None

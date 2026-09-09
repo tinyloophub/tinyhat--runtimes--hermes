@@ -55,8 +55,11 @@ service mints a scoped `TINYHAT_LOCAL_DEV_TOKEN` for
 substitute for attestation. On GCloud Computers the runtime does not need a
 Tinyhat platform token: when it calls the platform, it asks the Google metadata
 server for a short-lived VM identity token, reuses that token until it is close
-to expiry, and sends it to the existing `/hapi/v1/computers/me/*` platform APIs.
-The platform verifies the Google token before accepting the call.
+to expiry, and sends it to the platform APIs. GCloud Computers with
+`TINYHAT_AGENT_SYSTEMS_PREINSTALLED=1` send heartbeats to
+`/hapi/v2/computers/me/heartbeat`; their command results and update checks still
+use `/hapi/v1/computers/me/*`. Local and non-opted-in Computers continue using
+v1 for every call. The platform verifies the Google token before accepting it.
 
 ### Private Hat repository access
 
@@ -662,7 +665,8 @@ write `/opt/tinyhat-agent-image/manifest.json`. The manifest must have schema
 machine identity, runtime environment files, SSH host keys and any user state
 before publishing the image. It must never contain model or platform credentials.
 
-At first boot the platform invokes `python3 -m hermes_runtime.image_boot` with
+At first boot the platform invokes
+`PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.image_boot` with
 `--platform-url`, `--audience`, `--computer-id`, `--runtime-sha` and
 `--manifest-sha256`. This entrypoint requires Linux systemd/root, validates the
 manifest digest and installed runtime commit, writes only per-machine platform

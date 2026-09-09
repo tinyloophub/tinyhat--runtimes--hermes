@@ -53,3 +53,9 @@ class ImageBootTests(TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 image_boot.configure(**{**self.arguments, key: value})
             self.assertFalse((self.root / "etc").exists())
+
+    def test_invalid_port_is_rejected_before_writing_configuration(self):
+        for port in ("abc", "65536", "-1", "0", ""):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                image_boot.configure(**{**self.arguments, "platform_url": "https://api.example.com:" + port})
+            self.assertFalse((self.root / "etc").exists())

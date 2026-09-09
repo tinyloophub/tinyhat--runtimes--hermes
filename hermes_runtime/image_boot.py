@@ -27,6 +27,9 @@ def _https_origin(value: str) -> str:
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise ValueError("The platform address must not contain whitespace or control characters")
     parsed = urlsplit(value)
+    # Accessing port validates its syntax and range before writing any config.
+    if parsed.port == 0 or parsed.netloc.endswith(":"):
+        raise ValueError("The platform address must use a valid port")
     if re.fullmatch(r"[A-Za-z0-9.-]+", parsed.hostname or "") is None:
         raise ValueError("The platform address must use a valid hostname")
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
