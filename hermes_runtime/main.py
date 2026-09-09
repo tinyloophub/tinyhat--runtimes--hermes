@@ -77,6 +77,7 @@ class RuntimeContext:
     platform_state: str = "provisioning"
     agent_systems_inventory: dict[str, Any] | None = None
     agent_systems_checked_at: float | None = None
+    agent_systems_inventory_task: asyncio.Task[None] | None = None
     agent_api_context: dict[str, str] | None = None
     agent_api_context_ready: bool = False
     restart_requested: bool = False

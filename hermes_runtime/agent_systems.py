@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -25,6 +26,8 @@ SYSTEM_COMMANDS = {"codex": "codex", "claude_code": "claude", "hermes": "hermes"
 INVENTORY_SCHEMA = "tinyhat.agent-systems.v1"
 CONTEXT_SCHEMA = "tinyhat.agent-api-context.v1"
 REFRESH_SECONDS = 60
+PROBE_TIMEOUT_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 def enabled() -> bool:
@@ -36,7 +39,7 @@ async def _probe(system: str, command: str) -> dict[str, Any]:
     if not binary:
         return {"ready": False, "version": None}
     try:
-        result = await run_process([binary, "--version"], timeout_seconds=5)
+        result = await run_process([binary, "--version"], timeout_seconds=PROBE_TIMEOUT_SECONDS)
     except OSError:
         # A missing interpreter or an invalid executable is an unavailable CLI,
         # not a reason to stop the platform heartbeat.
@@ -69,13 +72,27 @@ def ready(value: dict[str, Any] | None) -> bool:
 
 
 async def refresh_inventory(ctx: Any) -> None:
+    """Schedule at most one bounded inventory pass, without delaying a heartbeat."""
     if not enabled():
+        return
+    task = getattr(ctx, "agent_systems_inventory_task", None)
+    if task is not None and not task.done():
         return
     now = time.monotonic()
     if getattr(ctx, "agent_systems_checked_at", None) is not None and now - ctx.agent_systems_checked_at < REFRESH_SECONDS:
         return
-    ctx.agent_systems_inventory = await inventory()
-    ctx.agent_systems_checked_at = now
+    async def refresh():
+        try:
+            ctx.agent_systems_inventory = await inventory()
+        except Exception as exc:
+            # Keep unexpected probe failures out of the control loop and fail
+            # readiness closed. Do not log CLI output or credential material.
+            ctx.agent_systems_inventory = None
+            logger.warning("Agent-system inventory failed: %s", type(exc).__name__)
+        finally:
+            ctx.agent_systems_checked_at = time.monotonic()
+
+    ctx.agent_systems_inventory_task = asyncio.create_task(refresh())
 
 
 def _validated_context(value: Any) -> dict[str, str] | None:

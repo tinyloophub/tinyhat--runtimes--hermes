@@ -7,6 +7,9 @@
   results and update checks remain on v1; local and non-opted-in runtimes keep
   their existing routes. Non-opted-in runtimes ignore coding-agent assignments.
   An unexecutable CLI reports unavailable without interrupting heartbeats.
+  Inventory refresh runs in one background task per minute, with bounded
+  30-second CLI probes so cold-start checks on smaller VMs cannot delay the
+  heartbeat loop or incorrectly reject an installed CLI after five seconds.
 - Support an explicit coding-agent Computer assignment independently of Telegram.
   Opted-in preinstalled images report bounded public CLI version probes for Codex,
   Claude Code, Hermes and OpenClaw plus desktop prerequisites. A validated platform

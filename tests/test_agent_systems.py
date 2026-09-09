@@ -29,7 +29,7 @@ class AgentSystemsTests(TestCase):
     def test_public_cli_inventory_never_calls_auth_or_gateway(self):
         async def process(args, **kwargs):
             self.assertEqual(args[1:], ["--version"])
-            self.assertEqual(kwargs["timeout_seconds"], 5)
+            self.assertEqual(kwargs["timeout_seconds"], 30)
             return {"ok": not args[0].endswith("openclaw"), "stdout": "example 1.0\n", "stderr": ""}
         with patch.object(agent_systems.shutil, "which", side_effect=lambda name: "/bin/" + name), patch.object(agent_systems, "find_hermes_binary", return_value=Path("/bin/hermes")), patch.object(agent_systems, "run_process", side_effect=process):
             inventory = asyncio.run(agent_systems.inventory())
@@ -105,8 +105,12 @@ class AgentSystemsTests(TestCase):
             platform = SimpleNamespace(post_json=AsyncMock(return_value={"state": "ready"}))
             ctx = RuntimeContext(platform=platform, state_dir=Path(directory) / "state", started_at=0)
             with patch.object(agent_systems.shutil, "which", side_effect=lambda name: "/bin/" + name), patch.object(agent_systems, "find_hermes_binary", return_value=Path("/bin/hermes")), patch.object(agent_systems, "run_process", side_effect=process):
-                asyncio.run(_heartbeat_once(ctx))
-            platform.post_json.assert_awaited_once()
+                async def walk():
+                    await _heartbeat_once(ctx)
+                    await ctx.agent_systems_inventory_task
+                    await _heartbeat_once(ctx)
+                asyncio.run(walk())
+            self.assertEqual(platform.post_json.await_count, 2)
             metrics = platform.post_json.call_args.args[1]["metrics"]
             self.assertEqual(metrics["agent_systems"]["codex"], {"ready": False, "version": None})
             self.assertTrue(metrics["agent_systems"]["claude_code"]["ready"])
@@ -118,6 +122,8 @@ class AgentSystemsTests(TestCase):
             with patch.dict(os.environ, {"TINYHAT_AGENT_SYSTEMS_PREINSTALLED": "1"}), patch.object(agent_systems, "inventory", new_callable=AsyncMock, return_value=copy.deepcopy(INVENTORY)) as probe, patch.object(agent_systems.Path, "home", return_value=Path(directory)):
                 async def walk():
                     await _heartbeat_once(ctx)
+                    await ctx.agent_systems_inventory_task
+                    await _heartbeat_once(ctx)
                     await _heartbeat_once(ctx)
                 asyncio.run(walk())
                 probe.assert_awaited_once()
@@ -125,3 +131,44 @@ class AgentSystemsTests(TestCase):
                 self.assertEqual(payload["agent_api"], {**CONTEXT, "ready": True})
                 self.assertTrue(payload["hermes_runtime"]["capabilities"]["agent_api"])
                 self.assertTrue(payload["agent_systems"]["desktop_ready"])
+
+    def test_slow_inventory_does_not_delay_heartbeats_or_overlap_probes(self):
+        async def walk():
+            release = asyncio.Event()
+            started = asyncio.Event()
+            async def slow_inventory():
+                started.set()
+                await release.wait()
+                return copy.deepcopy(INVENTORY)
+            with tempfile.TemporaryDirectory() as directory:
+                platform = SimpleNamespace(post_json=AsyncMock(return_value={"state": "ready"}))
+                ctx = RuntimeContext(platform=platform, state_dir=Path(directory), started_at=0)
+                with patch.object(agent_systems, "inventory", side_effect=slow_inventory) as probe:
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    await asyncio.wait_for(started.wait(), timeout=0.2)
+                    await asyncio.wait_for(_heartbeat_once(ctx), timeout=0.2)
+                    self.assertEqual(platform.post_json.await_count, 2)
+                    probe.assert_awaited_once()
+                    self.assertIsNone(ctx.agent_systems_inventory)
+                    self.assertFalse(ctx.agent_systems_inventory_task.done())
+                    release.set()
+                    await ctx.agent_systems_inventory_task
+                    await _heartbeat_once(ctx)
+                    probe.assert_awaited_once()
+                    self.assertTrue(platform.post_json.call_args.args[1]["metrics"]["agent_systems"]["desktop_ready"])
+        asyncio.run(walk())
+
+    def test_inventory_failure_clears_readiness_and_retries_after_interval(self):
+        async def walk():
+            ctx = SimpleNamespace(agent_systems_inventory=copy.deepcopy(INVENTORY))
+            with patch.object(agent_systems, "inventory", side_effect=RuntimeError("probe failure")) as probe:
+                await agent_systems.refresh_inventory(ctx)
+                await ctx.agent_systems_inventory_task
+                self.assertIsNone(ctx.agent_systems_inventory)
+                await agent_systems.refresh_inventory(ctx)
+                probe.assert_awaited_once()
+                ctx.agent_systems_checked_at -= agent_systems.REFRESH_SECONDS
+                await agent_systems.refresh_inventory(ctx)
+                await ctx.agent_systems_inventory_task
+                self.assertEqual(probe.await_count, 2)
+        asyncio.run(walk())
