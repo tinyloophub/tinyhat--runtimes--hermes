@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.60 - 2026-09-09
+
 - Route heartbeats from opted-in preinstalled GCloud Computers through
   `/hapi/v2/computers/me/heartbeat` for bounded database reconciliation. Command
   results and update checks remain on v1; local and non-opted-in runtimes keep
