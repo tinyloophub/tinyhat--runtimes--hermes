@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.61 - 2026-09-10
+
 - Save platform-owned Computer creation and warm-assignment timing snapshots in
   `~/tinyhat/computer.json`, with a short local guide. Unchanged heartbeats do
   not rewrite files, and metadata failures do not stop runtime commands.
