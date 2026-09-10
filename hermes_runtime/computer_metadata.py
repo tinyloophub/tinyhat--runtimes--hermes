@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from hermes_runtime.agent_systems import SYSTEM_COMMANDS
+
 SCHEMA = "tinyhat.computer-metadata.v1"
 README = """# This Tinyhat Computer
 
@@ -28,6 +30,7 @@ Read it with `cat ~/tinyhat/computer.json` or open this folder in Files.
 Tinyhat replaces computer.json when the platform snapshot changes. Editing this
 file does not change the platform's records. It contains no access credentials.
 This folder is separate from your projects and from Tinyhat's private config.
+Your edits to this README are preserved.
 """
 
 
@@ -68,7 +71,7 @@ def validate(value: Any) -> dict[str, Any]:
     }
     assignment = value.get("assignment")
     if assignment is not None:
-        if not isinstance(assignment, dict) or assignment.get("system") not in {None, "codex", "claude_code", "hermes", "openclaw"} or assignment.get("source") not in {None, "warm"}:
+        if not isinstance(assignment, dict) or assignment.get("system") not in {None, *SYSTEM_COMMANDS} or assignment.get("source") not in {None, "warm"}:
             raise ValueError("Invalid Computer assignment metadata")
         result["assignment"] = {
             "computer_id": _identifier(assignment.get("computer_id"), r"cmp_[A-Za-z0-9_-]{32}"),
@@ -83,8 +86,13 @@ def validate(value: Any) -> dict[str, Any]:
 def _write_changed(path: Path, text: str) -> None:
     if path.is_symlink():
         raise OSError("Computer metadata path must not be a symlink")
-    if path.exists() and path.read_text(encoding="utf-8") == text:
-        return
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == text:
+            return
+    except (OSError, UnicodeError):
+        # A damaged/unreadable generated snapshot can still be replaced when
+        # its parent is writable. Retry must be able to repair this state.
+        pass
     descriptor, temporary = tempfile.mkstemp(prefix=".metadata-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -106,4 +114,6 @@ def apply(value: Any, *, home: Path | None = None) -> None:
         raise OSError("Computer metadata directory must not be a symlink")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     _write_changed(directory / "computer.json", content)
-    _write_changed(directory / "README.md", README)
+    guide = directory / "README.md"
+    if not guide.exists():
+        _write_changed(guide, README)

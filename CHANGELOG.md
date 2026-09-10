@@ -6,8 +6,6 @@
   `~/tinyhat/computer.json`, with a short local guide. Unchanged heartbeats do
   not rewrite files, and metadata failures do not stop runtime commands.
 
-## Unreleased
-
 ## 0.0.60 - 2026-09-09
 
 - Route heartbeats from opted-in preinstalled GCloud Computers through

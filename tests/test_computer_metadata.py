@@ -76,6 +76,18 @@ class ComputerMetadataTests(TestCase):
             metadata.apply({**CREATED, "assignment": ASSIGNED}, home=home)
             self.assertEqual(json.loads(path.read_text())["assignment"]["source"], "warm")
 
+    def test_corrupt_snapshot_is_repaired_without_erasing_readme_notes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            metadata.apply(CREATED, home=home)
+            path = home / "tinyhat/computer.json"
+            guide = home / "tinyhat/README.md"
+            guide.write_text("My troubleshooting notes\n")
+            path.write_bytes(b"\xff\xfe damaged JSON")
+            metadata.apply(CREATED, home=home)
+            self.assertEqual(json.loads(path.read_text())["creation"]["duration_ms"], 120000)
+            self.assertEqual(guide.read_text(), "My troubleshooting notes\n")
+
     def test_symlink_does_not_redirect_metadata_write(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)

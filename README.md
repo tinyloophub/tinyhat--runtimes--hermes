@@ -708,6 +708,10 @@ continues to own Guacamole transport and its short-lived access credentials.
 
 ## Computer timing metadata
 
+Use `~/tinyhat/computer.json` for timings; `~/.config/tinyhat/computer.json`
+contains the selected coding-agent launcher context instead. The local timing
+README is created once, so you can add your own notes there.
+
 The runtime saves authenticated `computer_metadata` heartbeat responses under
 `~/tinyhat/computer.json`, next to `~/tinyhat/README.md`. This works before warm
 assignment as well as afterwards. Inspect it from a terminal with:
