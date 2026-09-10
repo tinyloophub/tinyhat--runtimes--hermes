@@ -20,5 +20,8 @@ def computer_api_path(computer_id: str, suffix: str) -> str:
 def context_computer_api_path(ctx: Any, suffix: str) -> str:
     clean_suffix = suffix.lstrip("/")
     if getattr(ctx, "platform_auth", "local_dev") == "gcloud":
+        from hermes_runtime.agent_systems import enabled
+        if clean_suffix == "heartbeat" and enabled():
+            return "/hapi/v2/computers/me/heartbeat"
         return f"/hapi/v1/computers/me/{clean_suffix}"
     return computer_api_path(str(getattr(ctx, "computer_id", "local-dev")), suffix)

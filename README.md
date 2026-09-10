@@ -55,8 +55,11 @@ service mints a scoped `TINYHAT_LOCAL_DEV_TOKEN` for
 substitute for attestation. On GCloud Computers the runtime does not need a
 Tinyhat platform token: when it calls the platform, it asks the Google metadata
 server for a short-lived VM identity token, reuses that token until it is close
-to expiry, and sends it to the existing `/hapi/v1/computers/me/*` platform APIs.
-The platform verifies the Google token before accepting the call.
+to expiry, and sends it to the platform APIs. GCloud Computers with
+`TINYHAT_AGENT_SYSTEMS_PREINSTALLED=1` send heartbeats to
+`/hapi/v2/computers/me/heartbeat`; their command results and update checks still
+use `/hapi/v1/computers/me/*`. Local and non-opted-in Computers continue using
+v1 for every call. The platform verifies the Google token before accepting it.
 
 ### Private Hat repository access
 
@@ -652,3 +655,53 @@ python -m unittest discover -s tests -v
 python3 scripts/check_dev_skills.py
 python3 scripts/check_repo_basics.py
 ```
+
+## Coding-agent Computer context
+
+An image builder can install this runtime with `install.sh --source-dir PATH
+--ref COMMIT --no-systemd`, preinstall the public CLIs and desktop packages, and
+write `/opt/tinyhat-agent-image/manifest.json`. The manifest must have schema
+`tinyhat.agent-image.v1` and the exact `runtime_sha`. The builder must remove
+machine identity, runtime environment files, SSH host keys and any user state
+before publishing the image. It must never contain model or platform credentials.
+
+At first boot the platform invokes
+`PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.image_boot` with
+`--platform-url`, `--audience`, `--computer-id`, `--runtime-sha` and
+`--manifest-sha256`. This entrypoint requires Linux systemd/root, validates the
+manifest digest and installed runtime commit, writes only per-machine platform
+configuration, initializes missing host identities, and starts the runtime. It
+does not download or install software. Inventory includes the public manifest's
+SHA-256 so the platform can compare the running image with its catalog record.
+Desktop passwords and model-provider login are created separately on each
+Computer after assignment.
+
+Preinstalled images may set `TINYHAT_AGENT_SYSTEMS_PREINSTALLED=1`. The runtime
+then reports `agent_systems` with schema `tinyhat.agent-systems.v1`: bounded
+`--version` probes for `codex`, `claude`, `hermes` and `openclaw`, and the
+presence of TigerVNC, XFCE, D-Bus and a browser. These checks do not authenticate
+with model providers. Non-opted-in machines keep their existing behavior.
+
+The authenticated heartbeat response may include `agent_api_context`:
+
+```json
+{
+  "schema": "tinyhat.agent-api-context.v1",
+  "computer_id": "cmp_cccccccccccccccccccccccccccccccc",
+  "agent_id": "agt_aaaaaaaaaaaaaaaaaaaaaa",
+  "system": "codex"
+}
+```
+
+The system is one of `codex`, `claude_code`, `hermes` or `openclaw`. When the
+installed prerequisites pass, this creates `~/.config/tinyhat/computer.json`,
+`~/.local/bin/tinyhat-agent` and a **Tinyhat Agent** desktop shortcut. The launcher
+opens the selected public CLI with its normal permissions. Repeated context
+acknowledgements preserve a user's launcher edits. A fresh runtime process
+revalidates the platform assignment before acknowledging it.
+
+Subsequent heartbeats include `agent_api` with the exact context and a `ready`
+boolean. The platform can distinguish this acknowledgement from an old
+assignment. This explicit mode skips Telegram gateway inspection/reconciliation;
+it does not invent a bot identity or mark model login complete. The platform
+continues to own Guacamole transport and its short-lived access credentials.

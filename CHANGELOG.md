@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Route heartbeats from opted-in preinstalled GCloud Computers through
+  `/hapi/v2/computers/me/heartbeat` for bounded database reconciliation. Command
+  results and update checks remain on v1; local and non-opted-in runtimes keep
+  their existing routes. Non-opted-in runtimes ignore coding-agent assignments.
+  An unexecutable CLI reports unavailable without interrupting heartbeats.
+  Inventory refresh runs in one background task per minute, with bounded
+  30-second CLI probes so cold-start checks on smaller VMs cannot delay the
+  heartbeat loop or incorrectly reject an installed CLI after five seconds.
+- Support an explicit coding-agent Computer assignment independently of Telegram.
+  Opted-in preinstalled images report bounded public CLI version probes for Codex,
+  Claude Code, Hermes and OpenClaw plus desktop prerequisites. A validated platform
+  context creates a terminal launcher and desktop shortcut, acknowledges the exact
+  Agent/system, and skips Telegram gateway reconciliation for that assignment.
+  Model account authentication remains a separate user setup step.
+- Add a preinstalled-image first-boot entrypoint that validates exact manifest
+  and runtime digests before configuring the machine and starting systemd.
+  First boot performs no package installation; inventory reports the public
+  image manifest digest for platform readiness checks.
+
 ## 0.0.59 - 2026-08-27
 
 - Add the `enroll_private_access` runtime command so an authenticated Computer

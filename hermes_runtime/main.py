@@ -20,6 +20,7 @@ from hermes_runtime.client import (
     PlatformError,
 )
 from hermes_runtime.commands import run_command
+from hermes_runtime import agent_systems
 from hermes_runtime.commands.configure_telegram import (
     _active_gateway_foreground_generation,
     _compact_process,
@@ -74,6 +75,11 @@ class RuntimeContext:
     computer_id: str = "local-dev"
     platform_auth: str = "local_dev"
     platform_state: str = "provisioning"
+    agent_systems_inventory: dict[str, Any] | None = None
+    agent_systems_checked_at: float | None = None
+    agent_systems_inventory_task: asyncio.Task[None] | None = None
+    agent_api_context: dict[str, str] | None = None
+    agent_api_context_ready: bool = False
     restart_requested: bool = False
     update_check_task: asyncio.Task[dict[str, Any]] | None = None
     command_task: asyncio.Task[None] | None = None
@@ -230,6 +236,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "runtime_version": __version__,
         "capabilities": {
             "check_and_stage_updates": True,
+            "agent_api": agent_systems.enabled(),
         },
         "current_version": ctx.current_version(),
         "current_commit_sha": current_commit_sha,
@@ -251,10 +258,14 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     gateway_state = getattr(ctx, "gateway_state", None)
     if isinstance(gateway_state, dict) and gateway_state:
         runtime["gateway"] = gateway_state
-    return {
-        "runtime_generation": "tiny_runtime",
-        "hermes_runtime": runtime,
-    }
+    metrics = {"runtime_generation": "tiny_runtime", "hermes_runtime": runtime}
+    inventory = getattr(ctx, "agent_systems_inventory", None)
+    if inventory is not None:
+        metrics["agent_systems"] = inventory
+    acknowledgement = agent_systems.acknowledgement(ctx)
+    if acknowledgement is not None:
+        metrics["agent_api"] = acknowledgement
+    return metrics
 
 
 def _telegram_env_configured() -> bool:
@@ -568,6 +579,9 @@ async def _inspect_gateway_state(
 
 
 async def _refresh_gateway_state(ctx: RuntimeContext) -> None:
+    if getattr(ctx, "agent_api_context", None) is not None:
+        ctx.gateway_state = None
+        return
     state = (getattr(ctx, "platform_state", "") or "").strip().lower()
     if state not in ASSIGNED_PLATFORM_STATES:
         return
@@ -622,6 +636,8 @@ def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
     ``heal_hermes`` with ``spec.restart=true``).
     """
     _consume_gateway_reconcile_task(ctx)
+    if getattr(ctx, "agent_api_context", None) is not None:
+        return
     if ctx.gateway_reconciled or ctx.gateway_reconcile_task is not None:
         return
     command_task = getattr(ctx, "command_task", None)
@@ -910,6 +926,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     _consume_command_task(ctx)
     _consume_gateway_reconcile_task(ctx)
     _maybe_start_scheduled_update_check(ctx)
+    await agent_systems.refresh_inventory(ctx)
     await _refresh_gateway_state(ctx)
     response = await ctx.platform.post_json(
         context_computer_api_path(ctx, "heartbeat"),
@@ -918,6 +935,11 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     platform_state = response.get("state")
     if isinstance(platform_state, str) and platform_state.strip():
         ctx.platform_state = platform_state.strip()
+    try:
+        agent_systems.apply_context(ctx, response.get("agent_api_context"))
+    except (ValueError, OSError):
+        ctx.agent_api_context_ready = False
+        print("coding-agent context could not be applied; retrying on the next heartbeat", file=sys.stderr, flush=True)
     _maybe_start_gateway_reconcile(ctx)
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
