@@ -705,3 +705,27 @@ boolean. The platform can distinguish this acknowledgement from an old
 assignment. This explicit mode skips Telegram gateway inspection/reconciliation;
 it does not invent a bot identity or mark model login complete. The platform
 continues to own Guacamole transport and its short-lived access credentials.
+
+## Computer timing metadata
+
+Use `~/tinyhat/computer.json` for timings; `~/.config/tinyhat/computer.json`
+contains the selected coding-agent launcher context instead. The local timing
+README is created once, so you can add your own notes there.
+
+The runtime saves authenticated `computer_metadata` heartbeat responses under
+`~/tinyhat/computer.json`, next to `~/tinyhat/README.md`. This works before warm
+assignment as well as afterwards. Inspect it from a terminal with:
+
+```sh
+cat ~/tinyhat/computer.json
+```
+
+The `tinyhat.computer-metadata.v1` snapshot includes the Computer handle and its
+record creation timestamp, a `creation` object (provisioning start, machine
+launch, first heartbeat, ready time, total milliseconds), and a nullable
+`assignment` object (public Computer/Agent IDs, system, source, request start,
+reservation, ready time, allocation and total milliseconds). Unknown historical
+measurements are null. Warm-pool waiting time is not part of either duration.
+Only allowlisted identity and timing fields are saved, never credentials or
+raw diagnostics. Identical snapshots preserve file modification times, even
+after runtime restart. Older platforms may omit this optional response field.
