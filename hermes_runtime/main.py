@@ -20,7 +20,7 @@ from hermes_runtime.client import (
     PlatformError,
 )
 from hermes_runtime.commands import run_command
-from hermes_runtime import agent_systems
+from hermes_runtime import agent_systems, computer_metadata
 from hermes_runtime.commands.configure_telegram import (
     _active_gateway_foreground_generation,
     _compact_process,
@@ -940,6 +940,10 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     except (ValueError, OSError):
         ctx.agent_api_context_ready = False
         print("coding-agent context could not be applied; retrying on the next heartbeat", file=sys.stderr, flush=True)
+    try:
+        computer_metadata.apply(response.get("computer_metadata"))
+    except (ValueError, OSError, TypeError):
+        print("Computer metadata could not be saved; retrying on the next heartbeat", file=sys.stderr, flush=True)
     _maybe_start_gateway_reconcile(ctx)
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
