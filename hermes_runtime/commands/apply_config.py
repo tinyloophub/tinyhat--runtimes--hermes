@@ -192,11 +192,12 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     email_only = False
     email_failure = None
     if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
-        from hermes_runtime.email_onboarding import configure
+        from hermes_runtime.email_onboarding import configure, clear_failure, mark_ready
         from hermes_runtime.plugin_manager import hermes_home
         # An explicit platform configuration command re-arms automatic setup.
         ctx.email_gateway_attempts = 0
         ctx.email_failure_count = 0
+        clear_failure(ctx)
         ctx.email_checked_at = None
         try:
             await asyncio.to_thread(configure, hermes_home(), secrets)
@@ -227,6 +228,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
+        if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1" and email_failure is None:
+            # This command already applied the same config/env and restarted the
+            # gateway. Its next background check must not restart it a second time.
+            mark_ready(ctx, secrets)
     else:
         notice = {"ok": None}
         gateway = {

@@ -7,6 +7,8 @@ import io
 import importlib.util
 import os
 import tempfile
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase, skipUnless
@@ -31,6 +33,21 @@ VALUES = {
 
 
 class ConfigTests(TestCase):
+    def test_runtime_import_does_not_require_hermes_yaml_dependency(self):
+        probe = """import importlib.abc,sys
+class BlockYaml(importlib.abc.MetaPathFinder):
+ def find_spec(self, fullname, path=None, target=None):
+  if fullname == 'yaml' or fullname.startswith('yaml.'):
+   raise ImportError('YAML deliberately absent')
+sys.meta_path.insert(0,BlockYaml())
+import hermes_runtime.main,hermes_runtime.email_onboarding
+assert 'yaml' not in sys.modules
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, timeout=30
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     @skipUnless(
         importlib.util.find_spec("yaml"),
         "YAML integration runs in the Hermes environment",
@@ -146,6 +163,24 @@ class ConfigTests(TestCase):
 
 
 class ReconcileTests(IsolatedAsyncioTestCase):
+    async def test_reachable_channel_clears_old_status_failure_and_restores_setup_cadence(
+        self,
+    ):
+        ctx = SimpleNamespace(
+            platform=SimpleNamespace(
+                get_json=AsyncMock(return_value={"status": "pending"})
+            ),
+            email_setup_failure={"stage": "channel status", "http_status": 404},
+            email_failure_count=6,
+        )
+        await email_onboarding.reconcile(ctx)
+        self.assertIsNone(ctx.email_setup_failure)
+        self.assertEqual(ctx.email_failure_count, 0)
+        self.assertEqual(email_onboarding.retry_interval(ctx), 60)
+        ctx.email_setup_failure = {"stage": "gateway restart"}
+        ctx.email_failure_count = 0
+        self.assertEqual(email_onboarding.retry_interval(ctx), 60)
+
     async def test_failed_gateway_retries_are_capped_and_timed_out(self):
         async def get(path):
             return (
@@ -348,6 +383,19 @@ class ApplyConfigTests(IsolatedAsyncioTestCase):
                 ):
                     result = await apply_config.run(ctx, {"spec": {}})
                     self.assertEqual(os.environ["OTHER_TOOL_KEY"], "private-fixture")
+                    if not deferred:
+                        self.assertTrue(ctx.email_gateway_ready)
+                        ctx.platform.get_json.side_effect = lambda path: (
+                            {"status": "ready"}
+                            if path.endswith("/email")
+                            else {"secrets": values}
+                        )
+                        with patch.object(
+                            configure_telegram, "_run_gateway", new_callable=AsyncMock
+                        ) as background_restart:
+                            await email_onboarding.reconcile(ctx)
+                        background_restart.assert_not_called()
+                        self.assertIsNone(ctx.email_setup_failure)
                 self.assertTrue(result["configured"])
                 self.assertEqual(restart.await_count, 1)
                 self.assertEqual(send.call_count, int(telegram))

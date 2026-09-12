@@ -164,6 +164,24 @@ def configuration_lock(ctx):
     return ctx.email_configuration_lock
 
 
+def configuration_fingerprint(values):
+    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+
+
+def clear_failure(ctx, stage=None):
+    failure = getattr(ctx, "email_setup_failure", None)
+    if stage is None or (failure and failure.get("stage") == stage):
+        ctx.email_setup_failure = None
+        ctx.email_failure_count = 0
+
+
+def mark_ready(ctx, values):
+    ctx.email_config_fingerprint = configuration_fingerprint(values)
+    ctx.email_gateway_ready = True
+    ctx.email_checked_at = time.monotonic()
+    clear_failure(ctx)
+
+
 async def reconcile(ctx):
     async with configuration_lock(ctx):
         await _reconcile_locked(ctx)
@@ -184,24 +202,29 @@ async def _reconcile_locked(ctx):
         # This v2 endpoint uses attested production identities. Legacy local-dev
         # Computer tokens may return 401; those hosts defer quietly below.
         channel = await ctx.platform.get_json("/hapi/v2/computers/me/email")
+        clear_failure(ctx, stage)
         if channel.get("status") != "ready":
+            ctx.email_gateway_ready = False
             return
         stage = "runtime credentials"
         payload = await ctx.platform.get_json(
             context_computer_api_path(ctx, "runtime-secrets")
         )
         values = _clean_secret_map(payload)
-        fingerprint = hashlib.sha256(
-            json.dumps(values, sort_keys=True).encode()
-        ).hexdigest()
+        clear_failure(ctx, stage)
+        fingerprint = configuration_fingerprint(values)
         if getattr(ctx, "email_config_fingerprint", None) == fingerprint:
+            mark_ready(ctx, values)
             return
         if getattr(ctx, "email_attempt_fingerprint", None) != fingerprint:
             ctx.email_attempt_fingerprint = fingerprint
             ctx.email_gateway_attempts = 0
         stage = "Hermes email configuration"
         await asyncio.to_thread(configure, hermes_home(), values)
+        clear_failure(ctx, stage)
         if values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") != "1":
+            ctx.email_gateway_ready = False
+            clear_failure(ctx)
             return
         stage = "environment refresh"
         applied = [
@@ -227,9 +250,7 @@ async def _reconcile_locked(ctx):
         result = await asyncio.wait_for(_run_gateway(binary), GATEWAY_TIMEOUT_SECONDS)
         ctx.email_gateway_ready = result.get("healthy") is True
         if ctx.email_gateway_ready:
-            ctx.email_config_fingerprint = fingerprint
-            ctx.email_setup_failure = None
-            ctx.email_failure_count = 0
+            mark_ready(ctx, values)
         else:
             raise RuntimeError("Gateway did not become healthy")
     except Exception as exc:
@@ -259,7 +280,9 @@ async def _reconcile_locked(ctx):
 
 def retry_interval(ctx):
     if getattr(ctx, "email_setup_failure", None):
-        return min(1800, 60 * 2 ** min(getattr(ctx, "email_failure_count", 1) - 1, 5))
+        return min(
+            1800, 60 * 2 ** max(0, min(getattr(ctx, "email_failure_count", 1) - 1, 5))
+        )
     return 300 if getattr(ctx, "email_gateway_ready", False) else 60
 
 
