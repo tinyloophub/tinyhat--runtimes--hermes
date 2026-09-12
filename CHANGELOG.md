@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve valid Hermes YAML when adding or removing terminal environment names
+  after email configuration, including PyYAML's indentless block sequences.
+
 ## 0.0.63 - 2026-09-12
 
 - Keep native Mail installation running when package or signing-key metadata exceeds

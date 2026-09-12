@@ -111,13 +111,20 @@ def _find_terminal_key(
 
         items: list[str] = []
         stop = index + 1
+        key_indent = len(lines[index]) - len(lines[index].lstrip())
         while stop < end:
             line = lines[stop]
             stripped_child = line.strip()
             if not stripped_child:
                 stop += 1
                 continue
-            if not line.startswith("    "):
+            indent = len(line) - len(line.lstrip())
+            # PyYAML emits block sequence items at the same indentation as
+            # their key. Consume those too, stopping before the next mapping
+            # key; otherwise a rewrite leaves an orphaned second list behind.
+            if indent < key_indent or (
+                indent == key_indent and not stripped_child.startswith("- ")
+            ):
                 break
             if stripped_child.startswith("- "):
                 item = stripped_child[2:].strip().strip("'\"")
@@ -171,7 +178,7 @@ def _edit_terminal_list(
         return "\n".join(lines).rstrip() + "\n", True, add
 
     key_start, key_end, existing = found
-    next_items = [item for item in existing if item not in remove]
+    next_items = list(dict.fromkeys(item for item in existing if item not in remove))
     for item in add:
         if item not in next_items:
             next_items.append(item)
