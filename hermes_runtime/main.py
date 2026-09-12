@@ -20,7 +20,7 @@ from hermes_runtime.client import (
     PlatformError,
 )
 from hermes_runtime.commands import run_command
-from hermes_runtime import agent_systems, computer_metadata
+from hermes_runtime import agent_systems, computer_metadata, email_onboarding
 from hermes_runtime.commands.configure_telegram import (
     _active_gateway_foreground_generation,
     _compact_process,
@@ -787,6 +787,11 @@ def _append_local_command_entry(
 
 
 async def _run_one_command(ctx: RuntimeContext, command: dict[str, Any]) -> None:
+    async with email_onboarding.configuration_lock(ctx):
+        await _run_one_command_locked(ctx, command)
+
+
+async def _run_one_command_locked(ctx: RuntimeContext, command: dict[str, Any]) -> None:
     kind = command.get("kind")
     started_at = utc_now_iso()
     try:
@@ -947,6 +952,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     _maybe_start_gateway_reconcile(ctx)
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
+        email_onboarding.schedule(ctx)
         return
     command = envelope.get("command") if envelope.get("type") else envelope
     if isinstance(command, dict) and command:

@@ -729,3 +729,16 @@ measurements are null. Warm-pool waiting time is not part of either duration.
 Only allowlisted identity and timing fields are saved, never credentials or
 raw diagnostics. Identical snapshots preserve file modification times, even
 after runtime restart. Older platforms may omit this optional response field.
+
+## Email-first Computers
+
+After an authenticated coding-agent assignment, the runtime checks the platform
+email channel in a background task at most once a minute. When its mailbox is
+ready it applies the protected owner/mailbox environment, selects the included
+OpenRouter model only if no model is configured, enables the Tinyhat plugin's
+email platform, and starts the official `hermes gateway`. Polling, message
+history, welcome copy, renames and replies belong to the plugin/platform.
+
+Email setup does not run in the heartbeat request or reinstall software.
+Existing model choices and Computer contents survive restarts. The platform
+must enable email onboarding and deploy its APIs before this path is used.

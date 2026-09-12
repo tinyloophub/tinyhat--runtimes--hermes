@@ -188,6 +188,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         remove_names=removed_keys,
     )
 
+    if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
+        from hermes_runtime.email_onboarding import configure
+        from hermes_runtime.plugin_manager import hermes_home
+        configure(hermes_home(), secrets)
+
     restart_required = bool(secret_names or removed_keys)
     is_first_tool_setup = False
     if restart_required:
@@ -195,7 +200,9 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
         is_first_tool_setup = bool(secret_names) and not previous_keys
-        if is_first_tool_setup:
+        if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
+            notice = {"ok": None}
+        elif is_first_tool_setup:
             notice = await _send_secret_available_notice(secret_names)
         else:
             notice = await _send_secret_restart_notice()
