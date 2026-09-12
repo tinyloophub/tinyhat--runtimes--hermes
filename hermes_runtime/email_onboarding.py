@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 from hermes_runtime.agent_systems import _write_atomic
+from hermes_runtime import desktop_mail
 from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.openrouter_stt import hermes_python
 from hermes_runtime.platform_paths import context_computer_api_path
@@ -85,7 +86,14 @@ def configure(home: Path, values: dict[str, str]) -> bool:
         raise RuntimeError(
             f"Hermes email configuration failed ({failure}, exit {result.returncode})"
         )
-    return json.loads(result.stdout)["changed"] is True
+    try:
+        mail_changed = desktop_mail.configure(values)
+    except (ValueError, OSError) as exc:
+        # A desktop convenience must never prevent the Hermes channel starting.
+        # Log only the class: filesystem/validation errors may contain secrets.
+        logger.warning("Desktop mail profile skipped (%s)", type(exc).__name__)
+        mail_changed = False
+    return json.loads(result.stdout)["changed"] is True or mail_changed
 
 
 def merge_config(config: dict, model: str) -> dict:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -32,6 +33,33 @@ def _env_with_fake_codex(bin_dir: Path) -> dict[str, str]:
 
 
 class InstallScriptTests(TestCase):
+    def test_failed_optional_mail_install_still_installs_runtime(self) -> None:
+        for mail_exit in (1, 28):
+            with self.subTest(mail_exit=mail_exit), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                source = base / "source"
+                shutil.copytree(ROOT / "hermes_runtime", source / "hermes_runtime")
+                shutil.copy2(ROOT / "tinyhat_hermes_runtime_bootstrap.py", source)
+                _write_executable(
+                    source / "hermes_runtime" / "install_mail_client.sh",
+                    f"#!/usr/bin/env bash\necho 'native Mail unavailable' >&2\nexit {mail_exit}\n",
+                )
+                env = _env_with_fake_codex(base / "fake-bin")
+                env["TINYHAT_SKIP_RECOMMENDED_PACKAGES"] = "1"
+                prefix, state = base / "prefix", base / "state"
+                result = subprocess.run(
+                    ["bash", str(ROOT / "install.sh"), "--source-dir", str(source),
+                     "--prefix", str(prefix), "--state-dir", str(state),
+                     "--ref", "test-optional-mail", "--no-systemd"],
+                    env=env, text=True, capture_output=True, timeout=20,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("optional desktop Mail setup failed", result.stderr)
+                self.assertTrue((prefix / "hermes_runtime" / "main.py").is_file())
+                self.assertTrue((prefix / "bin" / "tinyhat-hermes-runtime").is_file())
+                self.assertEqual((state / "current" / "VERSION").read_text().strip(),
+                                 "test-optional-mail")
+
     def test_install_from_local_source_writes_launcher_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -389,6 +417,10 @@ fi
             )
             _write_executable(
                 source.joinpath("hermes_runtime", "install_desktop_apps.sh"),
+                "#!/usr/bin/env bash\nexit 0\n",
+            )
+            _write_executable(
+                source.joinpath("hermes_runtime", "install_mail_client.sh"),
                 "#!/usr/bin/env bash\nexit 0\n",
             )
             source.joinpath("tinyhat_hermes_runtime_bootstrap.py").write_text(

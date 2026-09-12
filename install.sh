@@ -18,8 +18,10 @@
 #    installs Tinyhat's recommended Hermes machine packages up front: Git,
 #    curl, xz-utils, build-essential, ffmpeg, ripgrep, xclip, and
 #    wl-clipboard. It also installs the official Google Chrome Stable package
-#    and Thunar file manager on supported amd64 and arm64 Linux Computers. If
-#    it needs to download the runtime source, it also requires curl and tar.
+#    and Thunar file manager on supported amd64 and arm64 Linux Computers.
+#    It also attempts optional native Thunderbird Mail setup; an unavailable
+#    package or failed Mail install does not stop the runtime installation.
+#    Downloading the runtime source also requires curl and tar.
 # 5. Gets the runtime source either from --source-dir, when you already have a
 #    checkout, or by downloading the selected ref from
 #    tinyloophub/tinyhat--runtimes--hermes as a GitHub tarball.
@@ -455,6 +457,9 @@ fi
 echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
 install_codex_cli
 bash "$src/hermes_runtime/install_desktop_apps.sh"
+if ! bash "$src/hermes_runtime/install_mail_client.sh"; then
+  echo "install.sh: optional desktop Mail setup failed; continuing runtime installation without it" >&2
+fi
 install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
