@@ -24,7 +24,8 @@ if [[ ! -x /usr/lib/thunderbird/thunderbird ]]; then
   key_file="$(mktemp)"
   trap 'rm -f "$key_file"' EXIT
   curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o "$key_file"
-  fingerprint="$(gpg --show-keys --with-colons "$key_file" | awk -F: '$1 == "fpr" {print $10; exit}')"
+  # Consume the full output: an early awk exit can SIGPIPE its producer under pipefail.
+  fingerprint="$(gpg --show-keys --with-colons "$key_file" | awk -F: '$1 == "fpr" && !found {print $10; found=1}')"
   [[ "$fingerprint" == 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3 ]] || {
     echo "install-mail-client: Mozilla signing key mismatch" >&2; exit 1;
   }
@@ -32,7 +33,7 @@ if [[ ! -x /usr/lib/thunderbird/thunderbird ]]; then
   printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt thunderbird-deb main' > /etc/apt/sources.list.d/mozilla-thunderbird.list
   printf '%s\n' 'Package: thunderbird*' 'Pin: origin packages.mozilla.org' 'Pin-Priority: 1000' > /etc/apt/preferences.d/mozilla-thunderbird
   apt-get "${apt_args[@]}" update
-  candidate="$(apt-cache policy thunderbird | awk '/Candidate:/ {print $2; exit}')"
+  candidate="$(apt-cache policy thunderbird | awk '/Candidate:/ && !found {print $2; found=1}')"
   if [[ -z "$candidate" || "$candidate" == '(none)' || "$candidate" == *snap* ]]; then
     echo "install-mail-client: a native Thunderbird package is unavailable for this distribution/architecture; refusing the Snap stub" >&2
     exit 1

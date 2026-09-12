@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep native Mail installation running when package or signing-key metadata exceeds
+  the shell pipe buffer. Parse the first match while draining the complete output.
+
 ## 0.0.62 - 2026-09-12
 
 - Start the configured owner-email channel after Computer assignment, using the
