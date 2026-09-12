@@ -238,7 +238,8 @@ class ScheduleTests(IsolatedAsyncioTestCase):
 
         ctx = SimpleNamespace(agent_api_context_ready=True)
         with patch.object(email_onboarding, "reconcile", side_effect=slow) as reconcile:
-            email_onboarding.schedule(ctx)
+            with patch.object(email_onboarding.time, "monotonic", return_value=0):
+                email_onboarding.schedule(ctx)
             first = ctx.email_setup_task
             await asyncio.sleep(0)
             for _ in range(10):

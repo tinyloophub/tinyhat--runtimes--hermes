@@ -222,7 +222,8 @@ def schedule(ctx):
     task = getattr(ctx, "email_setup_task", None)
     if task and not task.done():
         return
-    if time.monotonic() - getattr(ctx, "email_checked_at", 0) < 60:
+    checked_at = getattr(ctx, "email_checked_at", None)
+    if checked_at is not None and time.monotonic() - checked_at < 60:
         return
     # An active platform command can own the gateway restart/config files.
     if getattr(ctx, "command_task", None) and not ctx.command_task.done():
