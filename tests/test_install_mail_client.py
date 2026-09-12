@@ -11,7 +11,7 @@ KEY = "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
 
 
 class InstallMailClientTests(TestCase):
-    def run_installer(self, *, fingerprint=KEY, candidate="155.0.1", skip=False):
+    def run_installer(self, *, fingerprint=KEY, candidate="155.0.1", skip=False, large_output=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -44,6 +44,10 @@ exit 1''',
         }
         for name, body in tools.items():
             tool = bin_dir / name
+            if large_output and name in ("apt-cache", "gpg"):
+                # A real apt-cache policy result can exceed the pipe buffer.
+                # The writer must be allowed to finish under shell pipefail.
+                body += "\nawk 'BEGIN { for (i=0; i<100000; i++) print \"remaining package or key metadata\" }'"
             tool.write_text("#!/bin/sh\n" + body + "\n")
             tool.chmod(0o755)
         env = {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ['PATH'],
@@ -79,3 +83,9 @@ exit 1''',
         self.assertIn('TINYHAT_MAIL_SETTINGS_FILE="$HOME/.config/tinyhat/mail/settings.json"', launcher.read_text())
         self.assertIn('general.config.obscure_value", 0', (root / "usr/lib/thunderbird/defaults/pref/tinyhat-mail.js").read_text())
         self.assertEqual((root / "usr/lib/thunderbird/tinyhat-mail.cfg").read_text(), (ROOT / "hermes_runtime/tinyhat-mail.cfg").read_text())
+
+    def test_large_package_and_key_output_does_not_abort_native_install(self):
+        root, result = self.run_installer(large_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.access(root / "usr/local/bin/tinyhat-mail", os.X_OK))
+        self.assertIn("Thunderbird ready", result.stdout)
