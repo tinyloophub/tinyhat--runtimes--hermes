@@ -142,6 +142,62 @@ assert 'yaml' not in sys.modules
         importlib.util.find_spec("yaml"),
         "YAML integration runs in the Hermes environment",
     )
+    def test_terminal_update_repairs_duplicate_free_corruption_on_disk(self):
+        import yaml
+        from hermes_runtime.terminal_env_passthrough import _update_config_list
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(
+                "terminal:\n  env_passthrough:\n    - OPENROUTER_API_KEY\n"
+                "  - OWNER_TOKEN\n  timeout: 90\n"
+            )
+            with patch.dict(os.environ, {"HERMES_CONFIG_FILE": str(path)}):
+                result = _update_config_list(
+                    key="env_passthrough", add_items=["OPENROUTER_API_KEY"]
+                )
+                self.assertTrue(result["updated"])
+                self.assertEqual(yaml.safe_load(path.read_text())["terminal"], {
+                    "env_passthrough": ["OPENROUTER_API_KEY", "OWNER_TOKEN"],
+                    "timeout": 90,
+                })
+                self.assertFalse(_update_config_list(
+                    key="env_passthrough", add_items=["OPENROUTER_API_KEY"]
+                )["updated"])
+
+    @skipUnless(
+        importlib.util.find_spec("yaml"),
+        "YAML integration runs in the Hermes environment",
+    )
+    def test_terminal_update_preserves_nonstandard_mapping_indent(self):
+        import yaml
+        from hermes_runtime.terminal_env_passthrough import _edit_terminal_list
+
+        for existing in (
+            "    env_passthrough:\n        - OWNER_TOKEN\n",
+            "    env_passthrough: [OWNER_TOKEN]\n",
+            "",
+        ):
+            with self.subTest(existing=existing):
+                text = "terminal:\n" + existing + "    timeout: 90\n"
+                after, changed, names = _edit_terminal_list(
+                    text, key="env_passthrough", add_items=["OPENROUTER_API_KEY"]
+                )
+                self.assertTrue(changed)
+                self.assertEqual(yaml.safe_load(after)["terminal"], {
+                    "env_passthrough": names, "timeout": 90,
+                })
+                empty, _, _ = _edit_terminal_list(
+                    after, key="env_passthrough", remove_items=names
+                )
+                self.assertEqual(yaml.safe_load(empty)["terminal"], {
+                    "env_passthrough": [], "timeout": 90,
+                })
+
+    @skipUnless(
+        importlib.util.find_spec("yaml"),
+        "YAML integration runs in the Hermes environment",
+    )
     def test_invalid_yaml_reports_class_without_file_contents(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.yaml"
