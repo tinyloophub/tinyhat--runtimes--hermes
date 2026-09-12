@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.64 - 2026-09-12
 
 - Preserve valid Hermes YAML when adding or removing terminal environment names
   after email configuration, including PyYAML's indentless block sequences.
+- Repair malformed terminal lists left by earlier runtimes even when their
+  environment names are unchanged, preserving owner-selected indentation.
 
 ## 0.0.63 - 2026-09-12
 
