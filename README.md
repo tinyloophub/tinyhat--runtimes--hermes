@@ -733,7 +733,8 @@ after runtime restart. Older platforms may omit this optional response field.
 ## Email-first Computers
 
 After an authenticated coding-agent assignment, the runtime checks the platform
-email channel in a background task at most once a minute. When its mailbox is
+email channel in a background task every minute during setup and every five
+minutes after readiness. Failures back off to thirty minutes. When its mailbox is
 ready it applies the protected owner/mailbox environment, selects the included
 OpenRouter model only if no model is configured, enables the Tinyhat plugin's
 email platform, and starts the official `hermes gateway`. Polling, message
@@ -745,4 +746,12 @@ must enable email onboarding and deploy its APIs before this path is used.
 
 Email setup and configuration commands share a lock so they cannot restart the
 gateway over each other. A command may wait for an in-progress gateway restart
-(up to its existing restart timeout); heartbeat reporting continues independently.
+(at most sixty seconds plus subprocess cancellation cleanup); heartbeat reporting
+continues independently and includes sanitized email setup diagnostics. Automatic
+gateway starts stop after five failures for the same credentials; a platform
+configuration command or changed credentials re-arms them. Legacy local-dev
+Computer tokens are not supported by the v2 email route and defer quietly.
+
+Email configuration deliberately enables the channel, suppresses gateway restart
+notifications, and forces final-only responses without reasoning or progress
+emails. It preserves the owner's model and settings for other channels.

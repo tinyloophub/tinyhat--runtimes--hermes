@@ -258,6 +258,12 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
     gateway_state = getattr(ctx, "gateway_state", None)
     if isinstance(gateway_state, dict) and gateway_state:
         runtime["gateway"] = gateway_state
+    if hasattr(ctx, "email_gateway_ready") or getattr(ctx, "email_setup_failure", None):
+        runtime["email_onboarding"] = {
+            "ready": getattr(ctx, "email_gateway_ready", False),
+            "failure": getattr(ctx, "email_setup_failure", None),
+            "gateway_attempts": getattr(ctx, "email_gateway_attempts", 0),
+        }
     metrics = {"runtime_generation": "tiny_runtime", "hermes_runtime": runtime}
     inventory = getattr(ctx, "agent_systems_inventory", None)
     if inventory is not None:
@@ -630,9 +636,9 @@ def _consume_gateway_reconcile_task(ctx: RuntimeContext) -> None:
 def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
     """Start the one-shot assignment-time gateway bring-up reconcile.
 
-    This runs at most once per runtime process. The runtime never initiates
-    gateway mutations on its own beyond this single bring-up: recovery policy
-    belongs to the platform, which queues explicit commands (for example
+    This Telegram-only path runs at most once per runtime process. Coding-agent
+    email assignments use email_onboarding.schedule instead, with bounded
+    retries. Other recovery belongs to explicit platform commands (for example
     ``heal_hermes`` with ``spec.restart=true``).
     """
     _consume_gateway_reconcile_task(ctx)

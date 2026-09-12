@@ -20,6 +20,7 @@ from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
 
 logger = logging.getLogger(__name__)
+GATEWAY_TIMEOUT_SECONDS = 60
 
 
 def configure(home: Path, values: dict[str, str]) -> bool:
@@ -54,18 +55,41 @@ def configure(home: Path, values: dict[str, str]) -> bool:
         timeout=30,
         env={
             **os.environ,
-            "PYTHONPATH": str(Path(__file__).resolve().parents[1])
-            + os.pathsep
-            + os.environ.get("PYTHONPATH", ""),
+            "PYTHONPATH": os.pathsep.join(
+                part
+                for part in (
+                    str(Path(__file__).resolve().parents[1]),
+                    os.environ.get("PYTHONPATH", ""),
+                )
+                if part
+            ),
         },
     )
     if result.returncode != 0:
-        raise RuntimeError("Hermes email configuration could not be written")
+        # Never forward YAML, paths or credentials from subprocess stderr.
+        failure = "subprocess_failed"
+        try:
+            candidate = json.loads(result.stdout).get("error_type")
+            if candidate in {
+                "PermissionError",
+                "OSError",
+                "ValueError",
+                "ParserError",
+                "ScannerError",
+                "ImportError",
+                "ModuleNotFoundError",
+            }:
+                failure = candidate
+        except (ValueError, AttributeError):
+            pass
+        raise RuntimeError(
+            f"Hermes email configuration failed ({failure}, exit {result.returncode})"
+        )
     return json.loads(result.stdout)["changed"] is True
 
 
 def merge_config(config: dict, model: str) -> dict:
-    """Merge only documented email defaults; preserve the owner's other settings."""
+    """Enable final-only email delivery; preserve model and other channel settings."""
     if not isinstance(config, dict):
         raise ValueError("Hermes configuration is not an object")
     # Never replace a model/provider the owner has already selected.
@@ -109,6 +133,15 @@ def merge_config(config: dict, model: str) -> dict:
 
 
 def _configure_file():
+    try:
+        _write_config_file()
+    except Exception as exc:
+        # A bounded error class crosses the interpreter boundary, never config text.
+        print(json.dumps({"error_type": type(exc).__name__}))
+        raise SystemExit(1) from None
+
+
+def _write_config_file():
     # Executed only by Hermes's Python, which owns its public YAML dependency.
     import yaml
 
@@ -148,7 +181,8 @@ async def _reconcile_locked(ctx):
 
     stage = "channel status"
     try:
-        # The v2 route accepts both attested and local-dev Computer identities.
+        # This v2 endpoint uses attested production identities. Legacy local-dev
+        # Computer tokens may return 401; those hosts defer quietly below.
         channel = await ctx.platform.get_json("/hapi/v2/computers/me/email")
         if channel.get("status") != "ready":
             return
@@ -162,6 +196,9 @@ async def _reconcile_locked(ctx):
         ).hexdigest()
         if getattr(ctx, "email_config_fingerprint", None) == fingerprint:
             return
+        if getattr(ctx, "email_attempt_fingerprint", None) != fingerprint:
+            ctx.email_attempt_fingerprint = fingerprint
+            ctx.email_gateway_attempts = 0
         stage = "Hermes email configuration"
         await asyncio.to_thread(configure, hermes_home(), values)
         if values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") != "1":
@@ -184,11 +221,15 @@ async def _reconcile_locked(ctx):
             raise ValueError("Hermes is not installed")
         # A changed address/key must reach a running gateway even when its YAML
         # is unchanged or the platform's apply_config callback raced readiness.
-        result = await _run_gateway(binary)
+        if getattr(ctx, "email_gateway_attempts", 0) >= 5:
+            raise RuntimeError("Gateway setup requires an explicit configuration retry")
+        ctx.email_gateway_attempts = getattr(ctx, "email_gateway_attempts", 0) + 1
+        result = await asyncio.wait_for(_run_gateway(binary), GATEWAY_TIMEOUT_SECONDS)
         ctx.email_gateway_ready = result.get("healthy") is True
         if ctx.email_gateway_ready:
             ctx.email_config_fingerprint = fingerprint
             ctx.email_setup_failure = None
+            ctx.email_failure_count = 0
         else:
             raise RuntimeError("Gateway did not become healthy")
     except Exception as exc:
@@ -198,9 +239,10 @@ async def _reconcile_locked(ctx):
             "error_type": type(exc).__name__,
             "http_status": status,
         }
+        ctx.email_failure_count = min(getattr(ctx, "email_failure_count", 0) + 1, 6)
         log = (
             logger.debug
-            if stage == "channel status" and status == 404
+            if stage == "channel status" and status in {401, 404}
             else logger.warning
         )
         # Never log response bodies, environment values or YAML fragments.
@@ -215,15 +257,21 @@ async def _reconcile_locked(ctx):
         ctx.email_checked_at = time.monotonic()
 
 
+def retry_interval(ctx):
+    if getattr(ctx, "email_setup_failure", None):
+        return min(1800, 60 * 2 ** min(getattr(ctx, "email_failure_count", 1) - 1, 5))
+    return 300 if getattr(ctx, "email_gateway_ready", False) else 60
+
+
 def schedule(ctx):
-    """At most one setup attempt per minute, independently of heartbeat I/O."""
+    """Bound retries and steady-state checks independently of heartbeat I/O."""
     if not getattr(ctx, "agent_api_context_ready", False):
         return
     task = getattr(ctx, "email_setup_task", None)
     if task and not task.done():
         return
     checked_at = getattr(ctx, "email_checked_at", None)
-    if checked_at is not None and time.monotonic() - checked_at < 60:
+    if checked_at is not None and time.monotonic() - checked_at < retry_interval(ctx):
         return
     # An active platform command can own the gateway restart/config files.
     if getattr(ctx, "command_task", None) and not ctx.command_task.done():

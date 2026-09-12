@@ -3,17 +3,20 @@
 import asyncio
 import copy
 import json
+import io
+import importlib.util
 import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import IsolatedAsyncioTestCase, TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase, skipUnless
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 from hermes_runtime import email_onboarding
 from hermes_runtime.client import PlatformError
 from hermes_runtime.commands import apply_config, configure_telegram
+from hermes_runtime.main import _heartbeat_metrics
 
 VALUES = {
     "TINYHAT_EMAIL_CHANNEL_ENABLED": "1",
@@ -28,6 +31,59 @@ VALUES = {
 
 
 class ConfigTests(TestCase):
+    @skipUnless(
+        importlib.util.find_spec("yaml"),
+        "YAML integration runs in the Hermes environment",
+    )
+    def test_actual_yaml_file_preserves_model_and_writes_private_idempotent_config(
+        self,
+    ):
+        import yaml
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(
+                "model:\n  provider: openai-codex\n  default: owner/model\n"
+            )
+            payload = json.dumps({"home": tmp, "model": "initial/model"})
+            for changed in (True, False):
+                output = io.StringIO()
+                with (
+                    patch.object(email_onboarding.sys, "stdin", io.StringIO(payload)),
+                    patch.object(email_onboarding.sys, "stdout", output),
+                ):
+                    email_onboarding._configure_file()
+                self.assertEqual(json.loads(output.getvalue()), {"changed": changed})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                yaml.safe_load(path.read_text())["model"]["default"], "owner/model"
+            )
+
+    @skipUnless(
+        importlib.util.find_spec("yaml"),
+        "YAML integration runs in the Hermes environment",
+    )
+    def test_invalid_yaml_reports_class_without_file_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            secret_text = "private-fixture: [broken"
+            path.write_text(secret_text)
+            output = io.StringIO()
+            with (
+                patch.object(
+                    email_onboarding.sys,
+                    "stdin",
+                    io.StringIO(json.dumps({"home": tmp, "model": "example/model"})),
+                ),
+                patch.object(email_onboarding.sys, "stdout", output),
+                self.assertRaises(SystemExit),
+            ):
+                email_onboarding._configure_file()
+            self.assertEqual(
+                json.loads(output.getvalue()), {"error_type": "ParserError"}
+            )
+            self.assertEqual(path.read_text(), secret_text)
+
     def test_initial_config_is_idempotent(self):
         config = email_onboarding.merge_config(
             {}, VALUES["TINYHAT_EMAIL_INITIAL_MODEL"]
@@ -75,6 +131,7 @@ class ConfigTests(TestCase):
         )
         self.assertNotIn("fixture", str(args) + kwargs["input"])
         self.assertEqual(kwargs["timeout"], 30)
+        self.assertFalse(kwargs["env"]["PYTHONPATH"].endswith(os.pathsep))
 
     def test_username_and_initial_key_are_required_before_starting_email(self):
         for key in ("TINYHAT_MAILBOX_USERNAME", "OPENROUTER_API_KEY"):
@@ -88,6 +145,78 @@ class ConfigTests(TestCase):
 
 
 class ReconcileTests(IsolatedAsyncioTestCase):
+    async def test_failed_gateway_retries_are_capped_and_timed_out(self):
+        async def get(path):
+            return (
+                {"status": "ready"} if path.endswith("/email") else {"secrets": VALUES}
+            )
+
+        ctx = SimpleNamespace(
+            platform=SimpleNamespace(get_json=get), platform_auth="gcloud"
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(email_onboarding, "configure", return_value=False),
+            patch.object(
+                email_onboarding, "find_hermes_binary", return_value=Path("/hermes")
+            ),
+            patch.object(
+                apply_config, "_env_file_candidates", return_value=[Path(tmp) / "env"]
+            ),
+            patch.object(apply_config, "load_env_files_into_process"),
+            patch.object(apply_config, "sync_terminal_env_passthrough"),
+            patch.object(
+                configure_telegram,
+                "_run_gateway",
+                new_callable=AsyncMock,
+                return_value={"healthy": False},
+            ) as restart,
+            self.assertLogs(email_onboarding.logger),
+        ):
+            for _ in range(8):
+                await email_onboarding.reconcile(ctx)
+            self.assertEqual(restart.await_count, 5)
+            self.assertEqual(email_onboarding.retry_interval(ctx), 1800)
+            ctx.email_gateway_attempts = 0
+
+            async def slow(_):
+                await asyncio.sleep(10)
+
+            restart.side_effect = slow
+            with patch.object(email_onboarding, "GATEWAY_TIMEOUT_SECONDS", 0.001):
+                await email_onboarding.reconcile(ctx)
+            self.assertEqual(ctx.email_setup_failure["error_type"], "TimeoutError")
+
+    async def test_unsupported_local_identity_defers_quietly(self):
+        error = PlatformError("private response")
+        error.__cause__ = HTTPError(
+            "https://example.test/email", 401, "unauthorized", {}, None
+        )
+        ctx = SimpleNamespace(
+            platform=SimpleNamespace(get_json=AsyncMock(side_effect=error))
+        )
+        with self.assertLogs(email_onboarding.logger, level="DEBUG") as messages:
+            await email_onboarding.reconcile(ctx)
+        self.assertTrue(all(row.levelname == "DEBUG" for row in messages.records))
+
+    def test_setup_failure_is_visible_in_heartbeat_without_secret_values(self):
+        failure = {
+            "stage": "apply_config",
+            "error_type": "ValueError",
+            "http_status": None,
+        }
+        ctx = SimpleNamespace(
+            started_at=0,
+            current_version=lambda: "fixture",
+            staged_version=lambda: None,
+            email_setup_failure=failure,
+            email_gateway_ready=False,
+        )
+        metrics = _heartbeat_metrics(ctx, status="running")
+        self.assertEqual(
+            metrics["hermes_runtime"]["email_onboarding"]["failure"], failure
+        )
+
     async def test_restarts_for_changed_credentials_even_with_unchanged_yaml(self):
         values = dict(VALUES)
 
@@ -230,6 +359,21 @@ class ApplyConfigTests(IsolatedAsyncioTestCase):
 
 
 class ScheduleTests(IsolatedAsyncioTestCase):
+    async def test_healthy_checks_slow_down_and_failures_back_off(self):
+        ctx = SimpleNamespace(
+            agent_api_context_ready=True, email_gateway_ready=True, email_checked_at=0
+        )
+        with (
+            patch.object(email_onboarding, "reconcile", new_callable=AsyncMock) as run,
+            patch.object(email_onboarding.time, "monotonic", return_value=100),
+        ):
+            email_onboarding.schedule(ctx)
+            run.assert_not_called()
+        self.assertEqual(email_onboarding.retry_interval(ctx), 300)
+        ctx.email_setup_failure = {"stage": "gateway restart"}
+        ctx.email_failure_count = 3
+        self.assertEqual(email_onboarding.retry_interval(ctx), 240)
+
     async def test_slow_mail_setup_never_blocks_heartbeat_or_duplicates_task(self):
         gate = asyncio.Event()
 

@@ -194,11 +194,17 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
         from hermes_runtime.email_onboarding import configure
         from hermes_runtime.plugin_manager import hermes_home
+        # An explicit platform configuration command re-arms automatic setup.
+        ctx.email_gateway_attempts = 0
+        ctx.email_failure_count = 0
+        ctx.email_checked_at = None
         try:
             await asyncio.to_thread(configure, hermes_home(), secrets)
         except Exception as exc:
             # A pending initial key or mailbox must not block unrelated secrets.
             email_failure = type(exc).__name__
+            ctx.email_setup_failure = {"stage": "apply_config", "error_type": email_failure, "http_status": None}
+            ctx.email_gateway_ready = False
             logging.getLogger(__name__).warning("Email setup deferred during apply_config (%s)", email_failure)
         try:
             _telegram_credentials()
