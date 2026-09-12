@@ -40,7 +40,9 @@ class BlockYaml(importlib.abc.MetaPathFinder):
   if fullname == 'yaml' or fullname.startswith('yaml.'):
    raise ImportError('YAML deliberately absent')
 sys.meta_path.insert(0,BlockYaml())
-import hermes_runtime.main,hermes_runtime.email_onboarding
+import importlib,pkgutil,hermes_runtime
+for module in pkgutil.walk_packages(hermes_runtime.__path__, 'hermes_runtime.'):
+ importlib.import_module(module.name)
 assert 'yaml' not in sys.modules
 """
         result = subprocess.run(
