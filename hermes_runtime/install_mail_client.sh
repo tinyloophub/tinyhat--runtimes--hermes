@@ -13,7 +13,10 @@ fi
 source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 apt_args=(-o "DPkg::Lock::Timeout=${TINYHAT_APT_LOCK_TIMEOUT_SECONDS:-300}")
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
-# Use Mozilla's native package, avoiding Ubuntu's Snap stub on headless images.
+# Prefer Mozilla's native package, avoiding Ubuntu's Snap stub on headless images.
+# Mozilla's suite currently publishes amd64/i386; on arm64 a native distro
+# package may be used. If none exists, refuse the stub and let the runtime's
+# optional call site continue without desktop Mail.
 if [[ ! -x /usr/lib/thunderbird/thunderbird ]]; then
   apt-get "${apt_args[@]}" update
   apt-get "${apt_args[@]}" install -y --no-install-recommends curl ca-certificates gnupg

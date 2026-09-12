@@ -138,6 +138,14 @@ The foundation installer does this:
    Computers therefore receive the familiar Google Chrome Stable browser and
    Thunar file manager during provisioning, while older Computers can be
    repaired later without reinstalling the runtime.
+   It also attempts native Thunderbird installation for the **Mail** shortcut.
+   Mozilla's package suite supplies amd64 builds; arm64 can use a native
+   distribution package when available. Snap stubs are refused. Mail setup is
+   optional: package unavailability, download failures or rejected signing keys
+   are reported but do not abort runtime installation or the Hermes email
+   channel. Image builders should verify `/usr/local/bin/tinyhat-mail` exists
+   before advertising desktop Mail support. Assignment only writes the private
+   profile and shortcut; it installs no packages.
 4. Copies the runtime Python package and import-safe bootstrap into
    `/opt/tinyhat-hermes-runtime`.
 5. Writes the launcher to `/opt/tinyhat-hermes-runtime/bin/tinyhat-hermes-runtime`.

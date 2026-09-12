@@ -41,3 +41,15 @@ mailbox address. It shows the folder pane and the received message. Desktop
 setup failures now log only their exception class and cannot block Hermes's
 email gateway. Assignment also checks that the managed launcher exists, and
 preserves an existing private Desktop directory's permissions.
+
+## Review follow-up: optional install on ARM
+
+The complete `install.sh` path now continues when the optional Mail installer
+fails. A regression test substitutes package-unavailable and download-failure
+exit codes, then checks that the runtime package, launcher and version state
+were installed. This test and all four isolated Mail-installer branch tests
+also passed in a Linux **aarch64** container with networking disabled. Package
+tools were fixtures; this proves the installer's failure handling on ARM, not
+that Thunderbird is available on every ARM distribution. The container was
+removed after verification. Mozilla's suite currently publishes amd64/i386;
+ARM installations may use a native distribution package, never a Snap stub.
