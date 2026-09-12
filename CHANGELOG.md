@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.63 - 2026-09-12
+
 - Keep native Mail installation running when package or signing-key metadata exceeds
   the shell pipe buffer. Parse the first match while draining the complete output.
 
