@@ -10,6 +10,7 @@ Hermes only after the gateway is restarted.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ from hermes_runtime.runtime_env import (
     load_env_files_into_process,
     read_managed_secret_names,
 )
-from hermes_runtime.telegram_codex_auth import _telegram_send
+from hermes_runtime.telegram_codex_auth import _telegram_credentials, _telegram_send
 from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthrough
 
 
@@ -188,10 +189,21 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         remove_names=removed_keys,
     )
 
+    email_only = False
+    email_failure = None
     if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
         from hermes_runtime.email_onboarding import configure
         from hermes_runtime.plugin_manager import hermes_home
-        configure(hermes_home(), secrets)
+        try:
+            await asyncio.to_thread(configure, hermes_home(), secrets)
+        except Exception as exc:
+            # A pending initial key or mailbox must not block unrelated secrets.
+            email_failure = type(exc).__name__
+            logging.getLogger(__name__).warning("Email setup deferred during apply_config (%s)", email_failure)
+        try:
+            _telegram_credentials()
+        except RuntimeError:
+            email_only = True
 
     restart_required = bool(secret_names or removed_keys)
     is_first_tool_setup = False
@@ -200,7 +212,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
         is_first_tool_setup = bool(secret_names) and not previous_keys
-        if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
+        if email_only:
             notice = {"ok": None}
         elif is_first_tool_setup:
             notice = await _send_secret_available_notice(secret_names)
@@ -230,14 +242,15 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "env_reload": env_reload,
         "terminal_env_passthrough": terminal_env_passthrough,
         "secret_available_notice": _notice_result(
-            sent=restart_required and is_first_tool_setup,
+            sent=restart_required and not email_only and is_first_tool_setup,
             notice=notice,
         ),
         "gateway_restart_notice": _notice_result(
-            sent=restart_required and not is_first_tool_setup,
+            sent=restart_required and not email_only and not is_first_tool_setup,
             notice=notice,
         ),
         "gateway": gateway,
+        "email_setup_failure": email_failure,
         "restart_requested": restart_required,
         "systemd_restart_requested": False,
         "diagnostic": f"applied {len(secret_names)} runtime secret(s)",

@@ -7,13 +7,15 @@ import hashlib
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
-
-import yaml
+from urllib.error import HTTPError
 
 from hermes_runtime.agent_systems import _write_atomic
 from hermes_runtime.hermes_cli import find_hermes_binary
+from hermes_runtime.openrouter_stt import hermes_python
 from hermes_runtime.platform_paths import context_computer_api_path
 from hermes_runtime.plugin_manager import hermes_home
 
@@ -29,6 +31,7 @@ def configure(home: Path, values: dict[str, str]) -> bool:
         for key in (
             "TINYHAT_EMAIL_OWNER",
             "TINYHAT_MAILBOX_ADDRESS",
+            "TINYHAT_MAILBOX_USERNAME",
             "TINYHAT_MAILBOX_PASSWORD",
             "TINYHAT_MAILBOX_JMAP_URL",
             "OPENROUTER_API_KEY",
@@ -36,17 +39,39 @@ def configure(home: Path, values: dict[str, str]) -> bool:
         )
     ):
         raise ValueError("Email configuration is incomplete")
-    path = home / "config.yaml"
-    config = yaml.safe_load(path.read_text()) if path.exists() else {}
-    if config is None:
-        config = {}
+    # YAML belongs to Hermes's environment; the runtime stays standard-library-only.
+    result = subprocess.run(
+        [
+            str(hermes_python()),
+            "-c",
+            "from hermes_runtime.email_onboarding import _configure_file; _configure_file()",
+        ],
+        input=json.dumps(
+            {"home": str(home), "model": values["TINYHAT_EMAIL_INITIAL_MODEL"]}
+        ),
+        text=True,
+        capture_output=True,
+        timeout=30,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[1])
+            + os.pathsep
+            + os.environ.get("PYTHONPATH", ""),
+        },
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Hermes email configuration could not be written")
+    return json.loads(result.stdout)["changed"] is True
+
+
+def merge_config(config: dict, model: str) -> dict:
+    """Merge only documented email defaults; preserve the owner's other settings."""
     if not isinstance(config, dict):
         raise ValueError("Hermes configuration is not an object")
-    before = yaml.safe_dump(config, sort_keys=False)
     # Never replace a model/provider the owner has already selected.
     config.setdefault(
         "model",
-        {"default": values["TINYHAT_EMAIL_INITIAL_MODEL"], "provider": "openrouter"},
+        {"default": model, "provider": "openrouter"},
     )
     plugins = config.setdefault("plugins", {})
     active = plugins.setdefault("enabled", [])
@@ -80,11 +105,24 @@ def configure(home: Path, values: dict[str, str]) -> bool:
             "busy_ack_detail": False,
         }
     )
-    after = yaml.safe_dump(config, sort_keys=False)
-    if before != after:
+    return config
+
+
+def _configure_file():
+    # Executed only by Hermes's Python, which owns its public YAML dependency.
+    import yaml
+
+    payload = json.load(sys.stdin)
+    path = Path(payload["home"]) / "config.yaml"
+    config = yaml.safe_load(path.read_text()) if path.exists() else {}
+    if config is None:
+        config = {}
+    before = yaml.safe_dump(config, sort_keys=False)
+    after = yaml.safe_dump(merge_config(config, payload["model"]), sort_keys=False)
+    changed = before != after
+    if changed:
         _write_atomic(path, after, 0o600)
-        return True
-    return False
+    print(json.dumps({"changed": changed}))
 
 
 def configuration_lock(ctx):
@@ -106,16 +144,15 @@ async def _reconcile_locked(ctx):
         load_env_files_into_process,
         sync_terminal_env_passthrough,
     )
-    from hermes_runtime.commands.configure_telegram import (
-        _gateway_status_is_healthy,
-        _run_gateway,
-    )
-    from hermes_runtime.hermes_cli import run_process
+    from hermes_runtime.commands.configure_telegram import _run_gateway
 
+    stage = "channel status"
     try:
+        # The v2 route accepts both attested and local-dev Computer identities.
         channel = await ctx.platform.get_json("/hapi/v2/computers/me/email")
         if channel.get("status") != "ready":
             return
+        stage = "runtime credentials"
         payload = await ctx.platform.get_json(
             context_computer_api_path(ctx, "runtime-secrets")
         )
@@ -125,9 +162,11 @@ async def _reconcile_locked(ctx):
         ).hexdigest()
         if getattr(ctx, "email_config_fingerprint", None) == fingerprint:
             return
-        configured = configure(hermes_home(), values)
+        stage = "Hermes email configuration"
+        await asyncio.to_thread(configure, hermes_home(), values)
         if values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") != "1":
             return
+        stage = "environment refresh"
         applied = [
             _write_runtime_secret_env_file(path, values)
             for path in _env_file_candidates()
@@ -139,22 +178,37 @@ async def _reconcile_locked(ctx):
             [Path(item["path"]) for item in applied], keys=list(values)
         )
         sync_terminal_env_passthrough(list(values), remove_names=sorted(removed))
+        stage = "gateway restart"
         binary = find_hermes_binary()
         if not binary:
             raise ValueError("Hermes is not installed")
-        status = await run_process(
-            [str(binary), "gateway", "status"], timeout_seconds=45
-        )
-        if configured or not _gateway_status_is_healthy(status):
-            result = await _run_gateway(binary)
-            ctx.email_gateway_ready = result.get("healthy") is True
-        else:
-            ctx.email_gateway_ready = True
+        # A changed address/key must reach a running gateway even when its YAML
+        # is unchanged or the platform's apply_config callback raced readiness.
+        result = await _run_gateway(binary)
+        ctx.email_gateway_ready = result.get("healthy") is True
         if ctx.email_gateway_ready:
             ctx.email_config_fingerprint = fingerprint
-    except Exception:
-        logger.warning(
-            "Email onboarding is not ready; retrying without blocking heartbeat"
+            ctx.email_setup_failure = None
+        else:
+            raise RuntimeError("Gateway did not become healthy")
+    except Exception as exc:
+        status = exc.__cause__.code if isinstance(exc.__cause__, HTTPError) else None
+        ctx.email_setup_failure = {
+            "stage": stage,
+            "error_type": type(exc).__name__,
+            "http_status": status,
+        }
+        log = (
+            logger.debug
+            if stage == "channel status" and status == 404
+            else logger.warning
+        )
+        # Never log response bodies, environment values or YAML fragments.
+        log(
+            "Email onboarding retry at %s (%s, HTTP %s)",
+            stage,
+            type(exc).__name__,
+            status,
         )
         ctx.email_gateway_ready = False
     finally:

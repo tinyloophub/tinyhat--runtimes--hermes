@@ -742,3 +742,7 @@ history, welcome copy, renames and replies belong to the plugin/platform.
 Email setup does not run in the heartbeat request or reinstall software.
 Existing model choices and Computer contents survive restarts. The platform
 must enable email onboarding and deploy its APIs before this path is used.
+
+Email setup and configuration commands share a lock so they cannot restart the
+gateway over each other. A command may wait for an in-progress gateway restart
+(up to its existing restart timeout); heartbeat reporting continues independently.

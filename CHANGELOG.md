@@ -3,10 +3,6 @@
 ## Unreleased
 
 - Start the Tinyhat email channel after coding-agent Computer assignment using the included model and public Hermes configuration. Preserve existing model choices and keep setup outside the heartbeat.
-
-
-## Unreleased
-
 ## 0.0.61 - 2026-09-10
 
 - Save platform-owned Computer creation and warm-assignment timing snapshots in
