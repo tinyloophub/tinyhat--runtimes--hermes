@@ -739,6 +739,8 @@ ready it applies the protected owner/mailbox environment, selects the included
 OpenRouter model only if no model is configured, enables the Tinyhat plugin's
 email platform, and starts the official `hermes gateway`. Polling, message
 history, welcome copy, renames and replies belong to the plugin/platform.
+The initial model requests at most 4,096 output tokens, so a short email does not
+reserve a model's entire output window against the included credit allowance.
 
 Email setup does not run in the heartbeat request or reinstall software.
 Existing model choices and Computer contents survive restarts. The platform

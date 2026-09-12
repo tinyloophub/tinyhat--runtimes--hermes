@@ -95,7 +95,7 @@ def merge_config(config: dict, model: str) -> dict:
     # Never replace a model/provider the owner has already selected.
     config.setdefault(
         "model",
-        {"default": model, "provider": "openrouter"},
+        {"default": model, "provider": "openrouter", "max_tokens": 4096},
     )
     plugins = config.setdefault("plugins", {})
     active = plugins.setdefault("enabled", [])

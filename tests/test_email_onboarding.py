@@ -91,6 +91,7 @@ class ConfigTests(TestCase):
         self.assertEqual(config["plugins"]["enabled"], ["tinyhat"])
         self.assertFalse(config["display"]["platforms"]["tinyhat_email"]["streaming"])
         self.assertEqual(config["model"]["provider"], "openrouter")
+        self.assertEqual(config["model"]["max_tokens"], 4096)
         again = email_onboarding.merge_config(
             copy.deepcopy(config), VALUES["TINYHAT_EMAIL_INITIAL_MODEL"]
         )
