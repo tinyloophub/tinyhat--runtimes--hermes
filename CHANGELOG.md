@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.62 - 2026-09-12
+
+- Start the configured owner-email channel after Computer assignment, using the
+  supplied initial model configuration and preserving existing gateway behavior.
+- Offer a preconfigured Thunderbird inbox through the desktop Mail shortcut,
+  with private mailbox credentials and normal IMAP/SMTP transport.
+- Keep optional Mail installation failures from interrupting runtime installation;
+  supported Linux package sources also cover ARM computers.
+- Enable email onboarding only with the compatible platform APIs and Tinyhat
+  plugin deployed. Build new preinstalled images to include the desktop client.
+
 - Keep runtime installation working when optional Thunderbird setup fails or a
   native package is unavailable, including supported ARM Computers.
 
