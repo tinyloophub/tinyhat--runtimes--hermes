@@ -111,13 +111,20 @@ def _find_terminal_key(
 
         items: list[str] = []
         stop = index + 1
+        key_indent = len(lines[index]) - len(lines[index].lstrip())
         while stop < end:
             line = lines[stop]
             stripped_child = line.strip()
             if not stripped_child:
                 stop += 1
                 continue
-            if not line.startswith("    "):
+            indent = len(line) - len(line.lstrip())
+            # PyYAML emits block sequence items at the same indentation as
+            # their key. Consume those too, stopping before the next mapping
+            # key; otherwise a rewrite leaves an orphaned second list behind.
+            if indent < key_indent or (
+                indent == key_indent and not stripped_child.startswith("- ")
+            ):
                 break
             if stripped_child.startswith("- "):
                 item = stripped_child[2:].strip().strip("'\"")
@@ -128,15 +135,18 @@ def _find_terminal_key(
     return None
 
 
-def _render_terminal_list(key: str, items: Iterable[str]) -> list[str]:
+def _render_terminal_list(
+    key: str, items: Iterable[str], *, key_indent: int = 2
+) -> list[str]:
     unique: list[str] = []
     for item in items:
         clean = str(item).strip()
         if clean and clean not in unique:
             unique.append(clean)
+    padding = " " * key_indent
     if not unique:
-        return [f"  {key}: []"]
-    return [f"  {key}:"] + [f"    - {item}" for item in unique]
+        return [f"{padding}{key}: []"]
+    return [f"{padding}{key}:"] + [f"{padding}  - {item}" for item in unique]
 
 
 def _edit_terminal_list(
@@ -166,23 +176,32 @@ def _edit_terminal_list(
     if found is None:
         if not add:
             return text if text.endswith("\n") or not text else text + "\n", False, []
-        insertion = _render_terminal_list(key, add)
+        # A new key must share the indentation of existing terminal settings.
+        key_indent = next(
+            (len(line) - len(line.lstrip()) for line in lines[start + 1 : end]
+             if line.strip() and not line.lstrip().startswith("#")),
+            2,
+        )
+        insertion = _render_terminal_list(key, add, key_indent=key_indent)
         lines[start + 1 : start + 1] = insertion
         return "\n".join(lines).rstrip() + "\n", True, add
 
     key_start, key_end, existing = found
-    next_items = [item for item in existing if item not in remove]
+    next_items = list(dict.fromkeys(item for item in existing if item not in remove))
     for item in add:
         if item not in next_items:
             next_items.append(item)
-    changed = next_items != existing
+    key_indent = len(lines[key_start]) - len(lines[key_start].lstrip())
+    replacement = _render_terminal_list(key, next_items, key_indent=key_indent)
+    # Re-render malformed old blocks even when their name set is unchanged.
+    changed = replacement != lines[key_start:key_end]
     if not changed:
         return (
             text if text.endswith("\n") or not text else text + "\n",
             False,
             next_items,
         )
-    lines[key_start:key_end] = _render_terminal_list(key, next_items)
+    lines[key_start:key_end] = replacement
     return "\n".join(lines).rstrip() + "\n", True, next_items
 
 
