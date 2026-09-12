@@ -19,6 +19,28 @@ VALUES = {
 
 
 class DesktopMailTests(TestCase):
+    def setUp(self):
+        launcher = patch.object(desktop_mail.os, "access", return_value=True)
+        launcher.start()
+        self.addCleanup(launcher.stop)
+
+    def test_missing_launcher_never_creates_a_broken_shortcut(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            desktop_mail.shutil, "which", return_value="/usr/bin/thunderbird"
+        ), patch.object(desktop_mail.os, "access", return_value=False):
+            self.assertFalse(desktop_mail.configure(VALUES, home=Path(temporary)))
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_existing_private_desktop_is_not_made_public(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(
+            desktop_mail.shutil, "which", return_value="/usr/bin/thunderbird"
+        ):
+            home = Path(temporary)
+            desktop = home / "Desktop"
+            desktop.mkdir(mode=0o700)
+            desktop_mail.configure(VALUES, home=home)
+            self.assertEqual(desktop.stat().st_mode & 0o777, 0o700)
+
     def test_assignment_and_rename_keep_profile_and_secrets_private(self):
         with tempfile.TemporaryDirectory() as temporary, patch.object(
             desktop_mail.shutil, "which", return_value="/usr/bin/thunderbird"

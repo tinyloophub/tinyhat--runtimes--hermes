@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep Hermes email running if optional desktop Mail setup fails; require its launcher and preserve existing Desktop permissions.
+
 - Include Thunderbird in desktop images and add a preconfigured Mail shortcut at email assignment. Standard TLS IMAP/SMTP credentials stay in a private home-directory profile; reconfiguration preserves messages and drafts and does not install packages or interrupt an open mail client.
 
 - Start the Tinyhat email channel after coding-agent Computer assignment using the included model and public Hermes configuration. Preserve existing model choices and keep setup outside the heartbeat.

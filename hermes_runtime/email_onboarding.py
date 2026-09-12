@@ -86,7 +86,13 @@ def configure(home: Path, values: dict[str, str]) -> bool:
         raise RuntimeError(
             f"Hermes email configuration failed ({failure}, exit {result.returncode})"
         )
-    mail_changed = desktop_mail.configure(values)
+    try:
+        mail_changed = desktop_mail.configure(values)
+    except (ValueError, OSError) as exc:
+        # A desktop convenience must never prevent the Hermes channel starting.
+        # Log only the class: filesystem/validation errors may contain secrets.
+        logger.warning("Desktop mail profile skipped (%s)", type(exc).__name__)
+        mail_changed = False
     return json.loads(result.stdout)["changed"] is True or mail_changed
 
 

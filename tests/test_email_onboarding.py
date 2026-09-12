@@ -33,6 +33,17 @@ VALUES = {
 
 
 class ConfigTests(TestCase):
+    def test_desktop_failure_does_not_block_channel_or_log_secrets(self):
+        for failure in (ValueError("private-fixture"), OSError("private-fixture")):
+            with self.subTest(failure=type(failure).__name__), patch.object(
+                email_onboarding.subprocess, "run",
+                return_value=SimpleNamespace(returncode=0, stdout='{"changed": true}'),
+            ), patch.object(email_onboarding, "hermes_python", return_value=Path("/python")), patch.object(
+                email_onboarding.desktop_mail, "configure", side_effect=failure,
+            ), self.assertLogs(email_onboarding.logger, level="WARNING") as messages:
+                self.assertTrue(email_onboarding.configure(Path("/hermes"), VALUES))
+            self.assertNotIn("private-fixture", str(messages.output))
+
     def test_runtime_import_does_not_require_hermes_yaml_dependency(self):
         probe = """import importlib.abc,sys
 class BlockYaml(importlib.abc.MetaPathFinder):
@@ -254,6 +265,27 @@ class ReconcileTests(IsolatedAsyncioTestCase):
         self.assertEqual(
             metrics["hermes_runtime"]["email_onboarding"]["failure"], failure
         )
+
+    async def test_desktop_failure_still_restarts_and_marks_gateway_ready(self):
+        ctx = SimpleNamespace(platform=SimpleNamespace(get_json=AsyncMock(side_effect=[
+            {"status": "ready"}, {"secrets": VALUES},
+        ])), platform_auth="gcloud")
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            email_onboarding.subprocess, "run",
+            return_value=SimpleNamespace(returncode=0, stdout='{"changed": true}'),
+        ), patch.object(email_onboarding, "hermes_python", return_value=Path("/python")), patch.object(
+            email_onboarding.desktop_mail, "configure", side_effect=OSError("private-fixture"),
+        ), patch.object(email_onboarding, "find_hermes_binary", return_value=Path("/hermes")), patch.object(
+            apply_config, "_env_file_candidates", return_value=[Path(tmp) / "env"],
+        ), patch.object(apply_config, "load_env_files_into_process"), patch.object(
+            apply_config, "sync_terminal_env_passthrough",
+        ), patch.object(configure_telegram, "_run_gateway", new_callable=AsyncMock,
+                        return_value={"healthy": True}) as restart:
+            with self.assertLogs(email_onboarding.logger, level="WARNING"):
+                await email_onboarding.reconcile(ctx)
+            restart.assert_awaited_once()
+            self.assertTrue(ctx.email_gateway_ready)
+            self.assertIsNone(ctx.email_setup_failure)
 
     async def test_restarts_for_changed_credentials_even_with_unchanged_yaml(self):
         values = dict(VALUES)

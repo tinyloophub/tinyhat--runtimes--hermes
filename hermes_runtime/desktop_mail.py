@@ -11,13 +11,15 @@ from urllib.parse import urlsplit
 from hermes_runtime.agent_systems import _write_atomic
 
 
-def _directory(path: Path, mode: int = 0o700) -> None:
+def _directory(path: Path, mode: int = 0o700, *, preserve_mode: bool = False) -> None:
     if path.is_symlink():
         raise ValueError("Mail directory must not be a symbolic link")
+    existed = path.exists()
     path.mkdir(mode=mode, exist_ok=True)
     if not path.is_dir() or path.stat().st_uid != os.getuid():
         raise ValueError("Mail directory has an unexpected owner")
-    path.chmod(mode)
+    if not (preserve_mode and existed):
+        path.chmod(mode)
 
 
 def configure(values: dict[str, str], *, home: Path | None = None) -> bool:
@@ -25,17 +27,21 @@ def configure(values: dict[str, str], *, home: Path | None = None) -> bool:
 
     Credentials stay outside the project and are read by Thunderbird AutoConfig,
     never interpolated into JavaScript or passed on the command line. An already
-    open client picks up renamed credentials when its owner next opens it.
+    open client picks up renamed credentials after it is closed and reopened.
     """
     if values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") != "1":
         return False
-    if not shutil.which("thunderbird"):
+    if not shutil.which("thunderbird") or not os.access("/usr/local/bin/tinyhat-mail", os.X_OK):
         # Older images can still run the Hermes email channel. The image/desktop
         # installer owns package installation; background assignment never does.
         return False
     address = values.get("TINYHAT_MAILBOX_ADDRESS", "")
     username = values.get("TINYHAT_MAILBOX_USERNAME", "")
     password = values.get("TINYHAT_MAILBOX_PASSWORD", "")
+    # Tinyhat's managed mailbox contract uses the public mail-server origin for
+    # JMAP, IMAP 993 and SMTP 465. This is not an arbitrary third-party JMAP
+    # endpoint or the backend API origin. The client-settings API shares this
+    # contract; split service hosts require a coordinated contract revision.
     parsed = urlsplit(values.get("TINYHAT_MAILBOX_JMAP_URL", ""))
     if (
         parsed.scheme != "https"
@@ -66,7 +72,7 @@ def configure(values: dict[str, str], *, home: Path | None = None) -> bool:
     else:
         path.chmod(0o600)
     desktop = home / "Desktop"
-    _directory(desktop, 0o755)
+    _directory(desktop, 0o755, preserve_mode=True)
     entry = desktop / "Tinyhat Mail.desktop"
     _write_atomic(
         entry,
