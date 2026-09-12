@@ -20,7 +20,10 @@ jobs:
       - name: Byte-compile scripts
         run: python -m compileall -q scripts hermes_runtime
       - name: Runtime unit tests
-        run: python -m unittest discover -s tests -v
+        # Test-only: the runtime remains stdlib-only; Hermes owns YAML in production.
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python -m unittest discover -s tests -v
       - name: Development skill adapters
         run: python3 scripts/check_dev_skills.py
       - name: Repository basics

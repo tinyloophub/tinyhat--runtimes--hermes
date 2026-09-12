@@ -10,6 +10,7 @@ Hermes only after the gateway is restarted.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ from hermes_runtime.runtime_env import (
     load_env_files_into_process,
     read_managed_secret_names,
 )
-from hermes_runtime.telegram_codex_auth import _telegram_send
+from hermes_runtime.telegram_codex_auth import _telegram_credentials, _telegram_send
 from hermes_runtime.terminal_env_passthrough import sync_terminal_env_passthrough
 
 
@@ -188,6 +189,29 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         remove_names=removed_keys,
     )
 
+    email_only = False
+    email_failure = None
+    if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
+        from hermes_runtime.email_onboarding import configure, clear_failure, mark_ready
+        from hermes_runtime.plugin_manager import hermes_home
+        # An explicit platform configuration command re-arms automatic setup.
+        ctx.email_gateway_attempts = 0
+        ctx.email_failure_count = 0
+        clear_failure(ctx)
+        ctx.email_checked_at = None
+        try:
+            await asyncio.to_thread(configure, hermes_home(), secrets)
+        except Exception as exc:
+            # A pending initial key or mailbox must not block unrelated secrets.
+            email_failure = type(exc).__name__
+            ctx.email_setup_failure = {"stage": "apply_config", "error_type": email_failure, "http_status": None}
+            ctx.email_gateway_ready = False
+            logging.getLogger(__name__).warning("Email setup deferred during apply_config (%s)", email_failure)
+        try:
+            _telegram_credentials()
+        except RuntimeError:
+            email_only = True
+
     restart_required = bool(secret_names or removed_keys)
     is_first_tool_setup = False
     if restart_required:
@@ -195,13 +219,19 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         if hermes_bin is None:
             raise RuntimeError("Hermes CLI was not found; cannot restart Hermes gateway.")
         is_first_tool_setup = bool(secret_names) and not previous_keys
-        if is_first_tool_setup:
+        if email_only:
+            notice = {"ok": None}
+        elif is_first_tool_setup:
             notice = await _send_secret_available_notice(secret_names)
         else:
             notice = await _send_secret_restart_notice()
         gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
+        if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1" and email_failure is None:
+            # This command already applied the same config/env and restarted the
+            # gateway. Its next background check must not restart it a second time.
+            mark_ready(ctx, secrets)
     else:
         notice = {"ok": None}
         gateway = {
@@ -223,14 +253,15 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
         "env_reload": env_reload,
         "terminal_env_passthrough": terminal_env_passthrough,
         "secret_available_notice": _notice_result(
-            sent=restart_required and is_first_tool_setup,
+            sent=restart_required and not email_only and is_first_tool_setup,
             notice=notice,
         ),
         "gateway_restart_notice": _notice_result(
-            sent=restart_required and not is_first_tool_setup,
+            sent=restart_required and not email_only and not is_first_tool_setup,
             notice=notice,
         ),
         "gateway": gateway,
+        "email_setup_failure": email_failure,
         "restart_requested": restart_required,
         "systemd_restart_requested": False,
         "diagnostic": f"applied {len(secret_names)} runtime secret(s)",

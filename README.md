@@ -729,3 +729,38 @@ measurements are null. Warm-pool waiting time is not part of either duration.
 Only allowlisted identity and timing fields are saved, never credentials or
 raw diagnostics. Identical snapshots preserve file modification times, even
 after runtime restart. Older platforms may omit this optional response field.
+
+## Email-first Computers
+
+After an authenticated coding-agent assignment, the runtime checks the platform
+email channel in a background task every minute during setup and every five
+minutes after readiness. Failures back off to thirty minutes. When its mailbox is
+ready it applies the protected owner/mailbox environment, selects the included
+OpenRouter model only if no model is configured, enables the Tinyhat plugin's
+email platform, and starts the official `hermes gateway`. Polling, message
+history, welcome copy, renames and replies belong to the plugin/platform.
+The initial model requests at most 4,096 output tokens, so a short email does not
+reserve a model's entire output window against the included credit allowance.
+
+Email setup does not run in the heartbeat request or reinstall software.
+Existing model choices and Computer contents survive restarts. The platform
+must enable email onboarding and deploy its APIs before this path is used.
+
+Email setup and configuration commands share a lock so they cannot restart the
+gateway over each other. A command may wait for an in-progress gateway restart
+(the lock also covers platform calls and configuration writes before the
+sixty-second gateway budget); heartbeat reporting continues independently and
+includes sanitized email setup diagnostics. Automatic
+gateway starts stop after five failures for the same credentials; a platform
+configuration command or changed credentials re-arms them. Legacy local-dev
+Computer tokens are not supported by the v2 email route and defer quietly.
+
+Background setup targets the preinstalled image and intentionally limits gateway
+bring-up to sixty seconds. Repair or installation that needs more time belongs
+to the explicit platform configuration command, which retains the existing
+longer gateway budgets. A healthy explicit apply is latched, avoiding a second
+background restart of the same configuration.
+
+Email configuration deliberately enables the channel, suppresses gateway restart
+notifications, and forces final-only responses without reasoning or progress
+emails. It preserves the owner's model and settings for other channels.
