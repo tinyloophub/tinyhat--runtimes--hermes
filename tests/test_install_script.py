@@ -391,6 +391,10 @@ fi
                 source.joinpath("hermes_runtime", "install_desktop_apps.sh"),
                 "#!/usr/bin/env bash\nexit 0\n",
             )
+            _write_executable(
+                source.joinpath("hermes_runtime", "install_mail_client.sh"),
+                "#!/usr/bin/env bash\nexit 0\n",
+            )
             source.joinpath("tinyhat_hermes_runtime_bootstrap.py").write_text(
                 """
 from __future__ import annotations

@@ -455,6 +455,7 @@ fi
 echo "install.sh: installing Tinyhat Hermes runtime ref $runtime_ref"
 install_codex_cli
 bash "$src/hermes_runtime/install_desktop_apps.sh"
+bash "$src/hermes_runtime/install_mail_client.sh"
 install -d "$prefix" "$prefix/bin" "$state_dir" "$state_dir/current"
 rm -rf "$prefix/hermes_runtime"
 cp -R "$src/hermes_runtime" "$prefix/hermes_runtime"
