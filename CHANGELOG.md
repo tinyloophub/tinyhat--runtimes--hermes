@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.65 - 2026-09-13
+
 - Leave fresh Hermes installations without a selected model so assignment can
   apply the platform default instead of retaining the installer default.
   The minimal seed replaces the installer's example config; Hermes still
