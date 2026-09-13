@@ -100,11 +100,17 @@ def merge_config(config: dict, model: str) -> dict:
     """Enable final-only email delivery; preserve model and other channel settings."""
     if not isinstance(config, dict):
         raise ValueError("Hermes configuration is not an object")
-    # Never replace a model/provider the owner has already selected.
-    # Hermes uses an empty string for a fresh, unconfigured model. A missing
-    # key is not the only unconfigured state; setdefault alone preserves the
-    # empty sentinel and Hermes then falls back to its own model.
-    if not config.get("model"):
+    # Empty models and provider:auto alone are unconfigured; Telegram setup
+    # can write the latter before receiving a platform model. Preserve a
+    # selected model or an explicit subscription/custom provider. For an
+    # unconfigured platform provider, replace the block with its initial model.
+    current = config.get("model")
+    selected = (
+        current.get("default") or current.get("model")
+        if isinstance(current, dict) else current
+    )
+    provider = current.get("provider") if isinstance(current, dict) else None
+    if not selected and provider in (None, "", "auto", "openrouter"):
         config["model"] = {
             "default": model, "provider": "openrouter", "max_tokens": 4096,
         }

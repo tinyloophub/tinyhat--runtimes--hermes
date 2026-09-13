@@ -115,7 +115,6 @@ from hermes_runtime.day_one_capabilities import (
     TTS_PROVIDER,
     WEB_SEARCH_BACKEND,
 )
-from hermes_runtime.runtime_env import hermes_home
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     hermes_install_script,
@@ -124,6 +123,7 @@ from hermes_runtime.hermes_cli import (
     run_process,
     run_shell,
 )
+from hermes_runtime.runtime_env import hermes_home
 
 
 def _hermes_project_candidates() -> list[Path]:

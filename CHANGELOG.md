@@ -4,8 +4,12 @@
 
 - Leave fresh Hermes installations without a selected model so assignment can
   apply the platform default instead of retaining the installer default.
+  The minimal seed replaces the installer's example config; Hermes still
+  supplies its normal defaults for omitted settings.
 - Fill the documented empty-model sentinel when enabling owner email; preserve
   existing model choices during reinstallation and repeated configuration.
+  A provider-only `auto`/`openrouter` block also receives the platform model;
+  explicit subscription and custom providers remain unchanged.
 
 ## 0.0.64 - 2026-09-12
 
