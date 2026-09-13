@@ -115,6 +115,7 @@ from hermes_runtime.day_one_capabilities import (
     TTS_PROVIDER,
     WEB_SEARCH_BACKEND,
 )
+from hermes_runtime.runtime_env import hermes_home
 from hermes_runtime.hermes_cli import (
     find_hermes_binary,
     hermes_install_script,
@@ -1161,12 +1162,28 @@ async def _prefetch_local_stt_model() -> dict[str, Any]:
     }
 
 
+def _seed_unconfigured_model() -> None:
+    """Keep installer defaults out of fresh images without replacing owner config."""
+    path = hermes_home() / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    # Hermes's public installer preserves an existing config. Seed its
+    # documented unconfigured sentinel before installation, so failed/retried
+    # installations also leave model selection to the platform at assignment.
+    with os.fdopen(fd, "w") as config:
+        config.write("model: ''\n")
+
+
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
     installed_before = find_hermes_binary() is not None
     prerequisites: dict[str, Any] | None = None
     install_result: dict[str, Any] | None = None
 
     if not installed_before:
+        _seed_unconfigured_model()
         prerequisites = await maybe_install_debian_prerequisites()
         install_result = await run_shell(
             hermes_install_script(),

@@ -101,10 +101,13 @@ def merge_config(config: dict, model: str) -> dict:
     if not isinstance(config, dict):
         raise ValueError("Hermes configuration is not an object")
     # Never replace a model/provider the owner has already selected.
-    config.setdefault(
-        "model",
-        {"default": model, "provider": "openrouter", "max_tokens": 4096},
-    )
+    # Hermes uses an empty string for a fresh, unconfigured model. A missing
+    # key is not the only unconfigured state; setdefault alone preserves the
+    # empty sentinel and Hermes then falls back to its own model.
+    if not config.get("model"):
+        config["model"] = {
+            "default": model, "provider": "openrouter", "max_tokens": 4096,
+        }
     plugins = config.setdefault("plugins", {})
     active = plugins.setdefault("enabled", [])
     if not isinstance(active, list):

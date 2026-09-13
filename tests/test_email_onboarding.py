@@ -233,6 +233,17 @@ assert 'yaml' not in sys.modules
         self.assertEqual(config, again)
         self.assertNotIn("fixture", json.dumps(config))
 
+    def test_unconfigured_model_uses_platform_choice(self):
+        for empty in (None, "", {}):
+            with self.subTest(model=empty):
+                result = email_onboarding.merge_config(
+                    {"model": empty}, "anthropic/claude-opus-5"
+                )
+                self.assertEqual(result["model"]["default"], "anthropic/claude-opus-5")
+                # A changed platform default must not overwrite the selection.
+                repeated = email_onboarding.merge_config(result, "other/model")
+                self.assertEqual(repeated["model"]["default"], "anthropic/claude-opus-5")
+
     def test_existing_model_and_other_channels_survive(self):
         existing = {
             "model": {"provider": "openai-codex", "default": "owner/model"},

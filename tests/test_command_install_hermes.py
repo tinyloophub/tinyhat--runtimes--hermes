@@ -1456,6 +1456,14 @@ def test_install_hermes_repairs_messaging_when_cli_exists() -> None:
 
 
 def test_install_hermes_runs_official_installer_when_missing() -> None:
+    _assert_missing_install_model(existing_config=False)
+
+
+def test_missing_cli_with_existing_config_keeps_the_owner_model() -> None:
+    _assert_missing_install_model(existing_config=True)
+
+
+def _assert_missing_install_model(*, existing_config: bool) -> None:
     install_calls: list[tuple[str, dict[str, str] | None]] = []
 
     async def fake_status(*, timeout_seconds: int = 30) -> dict[str, object]:
@@ -1478,6 +1486,8 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
         return {"ok": True, "changed": True}
 
     with (
+        tempfile.TemporaryDirectory() as home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -1520,9 +1530,17 @@ def test_install_hermes_runs_official_installer_when_missing() -> None:
             return_value={"installed": True, "commands": ["codex_auth"]},
         ),
     ):
+        if existing_config:
+            (Path(home) / "config.yaml").write_text("model: owner/chosen\n")
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
         )
+
+        if existing_config:
+            assert (Path(home) / "config.yaml").read_text() == "model: owner/chosen\n"
+        else:
+            assert (Path(home) / "config.yaml").read_text() == "model: ''\n"
+            assert (Path(home) / "config.yaml").stat().st_mode & 0o777 == 0o600
 
     assert len(install_calls) == 1
     script, env = install_calls[0]
@@ -1623,6 +1641,8 @@ def test_install_hermes_retries_transient_status_failure_after_install() -> None
                 "TINYHAT_HERMES_STATUS_PROBE_TIMEOUT_SECONDS": "45",
             },
         ),
+        tempfile.TemporaryDirectory() as install_home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(install_home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -1758,6 +1778,8 @@ def test_install_hermes_raises_when_installer_fails() -> None:
 
     with (
         patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
+        tempfile.TemporaryDirectory() as install_home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(install_home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -1793,6 +1815,8 @@ def test_install_hermes_raises_when_cli_missing_after_install() -> None:
 
     with (
         patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
+        tempfile.TemporaryDirectory() as install_home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(install_home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,
@@ -1836,6 +1860,8 @@ def test_install_hermes_raises_when_status_check_fails_after_install() -> None:
 
     with (
         patch.dict(os.environ, {"TINYHAT_HERMES_STATUS_PROBE_ATTEMPTS": "1"}),
+        tempfile.TemporaryDirectory() as install_home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(install_home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=None,

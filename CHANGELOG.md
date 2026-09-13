@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Leave fresh Hermes installations without a selected model so assignment can
+  apply the platform default instead of retaining the installer default.
+- Fill the documented empty-model sentinel when enabling owner email; preserve
+  existing model choices during reinstallation and repeated configuration.
+
 ## 0.0.64 - 2026-09-12
 
 - Preserve valid Hermes YAML when adding or removing terminal environment names
