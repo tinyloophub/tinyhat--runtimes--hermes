@@ -717,7 +717,7 @@ continues to own Guacamole transport and its short-lived access credentials.
 
 ## Linux coding-agent desktop apps
 
-Image builders explicitly run `bash hermes_runtime/install_agent_desktops.sh`
+Image builders explicitly run `python3 -m hermes_runtime.agent_desktops --install`
 before publishing a new image. It installs the official ChatGPT desktop app
 (Codex mode) and Claude Desktop from their vendors on Ubuntu 24.04/26.04 or
 Debian 13, amd64/arm64. Anthropic's apt signing fingerprint is checked before
@@ -733,8 +733,26 @@ app's default sandbox. Nothing copies or reads provider credentials.
 For an explicit repair on a compatible older Computer:
 
 ```sh
-PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.agent_desktops --install
+PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.agent_desktops --install --system codex
 ```
+
+Use `--system claude_code` for Claude or `--system hermes` to remove Tinyhat-managed
+coding-app desktop icons. Without `--system`, installation writes no desktop
+shortcuts; assignment selects the matching icon. User-created icons are preserved.
+This repair is an explicit operator shell action, not an admin runtime command;
+the platform rollout path is a fresh image bake.
+
+Both vendors register apt sources. ChatGPT's official package installs its signed
+OpenAI apt source; Anthropic's source is registered by this installer. An operator's
+subsequent `apt upgrade` can update these apps independently of the runtime.
+Downloaded ChatGPT bytes are identified by a local SHA-256 digest under
+`/var/lib/tinyhat/agent-desktop-install/`, alongside installed package versions and
+architecture. The digest records the download; it is not an independently verified
+vendor checksum. Package name/architecture checks are format checks, not proof of
+authenticity. The initial ChatGPT download relies on the vendor's HTTPS endpoint.
+
+Claude Chat and Code are the intended desktop modes. The installer skips optional
+Cowork VM dependencies; Cowork is not enabled or verified on these Computers.
 
 Complete CLI and desktop sign-in separately through each provider's supported
 browser flow. Verify real responses in both; installation and cached login

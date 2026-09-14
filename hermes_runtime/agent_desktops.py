@@ -30,6 +30,13 @@ def inventory() -> dict[str, dict[str, bool]]:
 def write_launchers(home: Path, system: str) -> None:
     from hermes_runtime.agent_systems import _write_atomic
 
+    if system not in {*DESKTOP_APPS, "hermes"}:
+        return
+    for other_system, (_, other_label, _) in DESKTOP_APPS.items():
+        entry = home / "Desktop" / (other_label + ".desktop")
+        if other_system != system and entry.is_file():
+            if "X-Tinyhat-Managed=true\n" in entry.read_text():
+                entry.unlink()
     app = DESKTOP_APPS.get(system)
     if app is None or not shutil.which(app[0]):
         return
@@ -47,7 +54,7 @@ def write_launchers(home: Path, system: str) -> None:
     desktop_exec = str(launcher).replace("\\", "\\\\").replace('"', '\\"')
     _write_atomic(
         home / "Desktop" / (label + ".desktop"),
-        "[Desktop Entry]\nVersion=1.0\nType=Application\n"
+        "[Desktop Entry]\nVersion=1.0\nType=Application\nX-Tinyhat-Managed=true\n"
         f"Name={label}\nComment=Open {label} desktop\n"
         f'Exec="{desktop_exec}"\nIcon={icon}\nTerminal=false\nCategories=Development;\n',
         0o755,
@@ -57,15 +64,16 @@ def write_launchers(home: Path, system: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--system", choices=[*DESKTOP_APPS, "hermes"])
     args = parser.parse_args()
     if args.install:
         subprocess.run(
-            ["bash", str(Path(__file__).with_name("install_agent_desktops.sh"))],
+            ["bash", str(Path(__file__).with_name("install_coding_agent_apps.sh"))],
             check=True,
             timeout=1800,
         )
-        for system in DESKTOP_APPS:
-            write_launchers(Path.home(), system)
+    if args.system:
+        write_launchers(Path.home(), args.system)
     print(
         json.dumps(
             {"desktop_apps": inventory(), "authentication": "verify_in_provider_app"}

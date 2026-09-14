@@ -1,5 +1,6 @@
 """Usage: python -m unittest discover -s tests -p 'test_agent_desktops.py'."""
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -10,6 +11,73 @@ from hermes_runtime import agent_desktops
 
 
 class AgentDesktopTests(TestCase):
+    def test_reassignment_replaces_only_tinyhat_managed_app_icons(self):
+        with (
+            tempfile.TemporaryDirectory() as path,
+            patch.object(agent_desktops.shutil, "which", return_value="/usr/bin/app"),
+        ):
+            home = Path(path)
+            agent_desktops.write_launchers(home, "codex")
+            agent_desktops.write_launchers(home, "claude_code")
+            self.assertFalse((home / "Desktop/ChatGPT.desktop").exists())
+            self.assertIn(
+                "tinyhat-claude-desktop", (home / "Desktop/Claude.desktop").read_text()
+            )
+            custom = home / "Desktop/ChatGPT.desktop"
+            custom.write_text("my own shortcut")
+            agent_desktops.write_launchers(home, "hermes")
+            self.assertFalse((home / "Desktop/Claude.desktop").exists())
+            self.assertEqual(custom.read_text(), "my own shortcut")
+
+    def test_install_has_no_implicit_shortcuts_and_repair_uses_explicit_system(self):
+        with (
+            patch.object(subprocess, "run") as install,
+            patch.object(agent_desktops, "write_launchers") as launchers,
+            patch.object(agent_desktops, "inventory", return_value={}),
+        ):
+            with patch("sys.argv", ["agent_desktops", "--install"]):
+                agent_desktops.main()
+            launchers.assert_not_called()
+            self.assertTrue(
+                install.call_args.args[0][1].endswith("install_coding_agent_apps.sh")
+            )
+            with patch(
+                "sys.argv", ["agent_desktops", "--install", "--system", "claude_code"]
+            ):
+                agent_desktops.main()
+            launchers.assert_called_once_with(Path.home(), "claude_code")
+
+    def test_launchers_disable_sandbox_only_for_root_and_preserve_arguments(self):
+        with (
+            tempfile.TemporaryDirectory() as path,
+            patch.object(agent_desktops.shutil, "which", return_value="/usr/bin/app"),
+        ):
+            home = Path(path)
+            stub = home / "stubs"
+            stub.mkdir()
+            for system, (command, _, _) in agent_desktops.DESKTOP_APPS.items():
+                app = stub / command
+                app.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+                app.chmod(0o755)
+                agent_desktops.write_launchers(home, system)
+                for uid in (0, 1000):
+                    identity = stub / "id"
+                    identity.write_text(f"#!/bin/sh\necho {uid}\n")
+                    identity.chmod(0o755)
+                    result = subprocess.run(
+                        [
+                            str(home / ".local/bin" / ("tinyhat-" + command)),
+                            "space in argument",
+                        ],
+                        env={**os.environ, "PATH": str(stub)},
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    args = result.stdout.splitlines()
+                    self.assertEqual("--no-sandbox" in args, uid == 0)
+                    self.assertEqual(args[-1], "space in argument")
+
     def test_inventory_does_not_launch_apps_or_read_provider_credentials(self):
         with (
             patch.object(
