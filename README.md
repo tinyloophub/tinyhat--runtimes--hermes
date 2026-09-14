@@ -801,8 +801,13 @@ commands. The plugin persists `TINYHAT_SETTINGS_MINIAPP_URL`; the runtime sets t
 bot menu and command priority. The destination remains owner-authenticated.
 
 Unsupported pending providers are reported as `setup_failed` while supported
-providers continue. A failed acknowledgement does not skip recovery; recovery
-still requires a fresh ownership check before changing local state. The platform
-owns the overall command timeout; provider probes use 20-second budgets. Unchanged providers with stale evidence remain unknown without waiting
-through that budget. An unsupported-only request returns a no-op with per-provider
-failure details; it does not require a Hermes restart.
+providers continue. Missing provider/revision fields and failed acknowledgements
+have distinct result codes; they do not block supported channels. An unsupported-only
+request is a no-op and does not require Hermes or restart its gateway.
+
+A failed acknowledgement does not skip recovery; recovery still requires a fresh
+ownership check. The platform owns the overall command timeout. New-provider
+probes use a 20-second budget; unchanged providers get a separate five-second
+window to refresh their evidence after a restart. Fresh failures are reported;
+evidence that remains unknown preserves the previous connected status. A later
+failure needs an explicit retry to refresh that status.

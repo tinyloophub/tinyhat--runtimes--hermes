@@ -294,12 +294,18 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     if channel.get("status") != "connected":
                         # A newer platform can offer providers this runtime
                         # does not understand. Do not block supported siblings.
+                        code = "setup_failed"
                         try:
-                            if channel.get("revision"):
-                                await acknowledge(channel, False, "setup_failed")
+                            if not channel.get("provider"):
+                                code = "provider_missing"
+                            elif not channel.get("revision"):
+                                code = "revision_missing"
                             else:
+                                await acknowledge(channel, False, code)
+                            if code != "setup_failed":
                                 logger.warning(
-                                    "Unsupported channel has no revision; acknowledgement skipped"
+                                    "Unsupported channel acknowledgement skipped: %s",
+                                    code,
                                 )
                         except PlatformError as report_error:
                             if getattr(report_error, "status_code", None) in {
@@ -309,15 +315,16 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                                 409,
                             }:
                                 raise
+                            code = "acknowledgement_failed"
                             logger.warning(
                                 "Unsupported channel acknowledgement failed: exception_type=%s",
                                 type(report_error).__name__,
                             )
                         unsupported.append(
                             {
-                                "provider": channel.get("provider"),
+                                "provider": channel.get("provider") or "unknown",
                                 "status": "failed",
-                                "error": "setup_failed",
+                                "error": code,
                             }
                         )
                     else:
@@ -552,7 +559,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     adapter.record_applied, assignment, provider, channel["revision"]
                 )
                 outcomes.append({"provider": provider, "status": "connected"})
-            if any(item["status"] == "failed" for item in outcomes):
+            if any(
+                item["status"] == "failed" and item["provider"] in SUPPORTED_PROVIDERS
+                for item in outcomes
+            ):
                 raise RuntimeError(
                     "A channel could not be configured. Check its reported status."
                 )

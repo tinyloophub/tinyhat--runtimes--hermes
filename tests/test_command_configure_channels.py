@@ -355,8 +355,7 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             0,
             {"provider": "future_provider", "revision": "future1", "status": "pending"},
         )
-        with self.assertRaises(RuntimeError):
-            await command.run(self.ctx, self.input)
+        result = await command.run(self.ctx, self.input)
         self.assertEqual(self.latest_ack("future_provider")["error"], "setup_failed")
         self.assertTrue(self.latest_ack("slack")["connected"])
         self.adapter.record_applied.assert_called_once_with(
@@ -366,9 +365,9 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_row_without_revision_skips_ack_but_sets_up_sibling(self):
         self.config["channels"].insert(0, {"provider": "future", "status": "pending"})
         with self.assertLogs(command.logger, level="WARNING") as logs:
-            with self.assertRaises(RuntimeError):
-                await command.run(self.ctx, self.input)
-        self.assertTrue(any("has no revision" in line for line in logs.output))
+            result = await command.run(self.ctx, self.input)
+        self.assertEqual(result["channels"][0]["error"], "revision_missing")
+        self.assertTrue(any("revision_missing" in line for line in logs.output))
         self.assertFalse(
             any(
                 c.args[1].get("provider") == "future"
@@ -406,8 +405,14 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             return {}
 
         self.platform.post_json.side_effect = report
-        with self.assertRaises(RuntimeError):
-            await command.run(self.ctx, self.input)
+        result = await command.run(self.ctx, self.input)
+        self.assertTrue(self.latest_ack("slack")["connected"])
+
+    async def test_missing_provider_does_not_block_supported_setup(self):
+        self.config["channels"].insert(0, {"revision": "rev", "status": "pending"})
+        with self.assertLogs(command.logger, level="WARNING"):
+            result = await command.run(self.ctx, self.input)
+        self.assertEqual(result["channels"][0]["error"], "provider_missing")
         self.assertTrue(self.latest_ack("slack")["connected"])
 
     async def test_webhook_recovery_failure_still_acknowledges_and_rechecks(self):
