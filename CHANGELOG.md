@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.0.66 - 2026-09-14
+
+- Requires the compatible Computer-channel APIs in
+  [tinyloophub/tinyloop#1315](https://github.com/tinyloophub/tinyloop/pull/1315)
+  and Tinyhat plugin 0.32.16 to activate new channel connections. Publication
+  and channel promotion do not deploy those platform APIs or update existing
+  Computers. Install the coordinated stack before enabling channel setup.
 
 - Preserve existing channels through temporary disconnects during a gateway restart;
   downgrade only when the entire bounded observation window reports failure.
