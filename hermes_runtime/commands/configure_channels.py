@@ -217,6 +217,7 @@ async def _connected(
             providers,
             since_unix=since,
             stale_is_unknown=survivors,
+            connecting_is_unknown=survivors,
         )
         remaining = deadline - time.monotonic()
         if (

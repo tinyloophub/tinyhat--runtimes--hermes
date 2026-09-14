@@ -570,6 +570,42 @@ class ProviderReadinessTests(unittest.TestCase):
                 )
             )
 
+    def test_survivor_connecting_is_unknown_but_terminal_failure_is_false(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gateway_state.json"
+            state = {
+                "pid": 123,
+                "gateway_state": "running",
+                "updated_at": "1970-01-01T00:20:00+00:00",
+                "platforms": {
+                    "slack": {
+                        "state": "connecting",
+                        "updated_at": "1970-01-01T00:20:00+00:00",
+                    }
+                },
+            }
+            args = dict(service_main_pid=123, since_unix=1000, provider="slack")
+            for value in (
+                "connecting", "reconnecting", "disconnected", "error", "connected"
+            ):
+                with self.subTest(state=value):
+                    state["platforms"]["slack"]["state"] = value
+                    path.write_text(json.dumps(state))
+                    self.assertIs(
+                        readiness._runtime_state_telegram_evidence(path, **args),
+                        value == "connected",
+                    )
+                    self.assertIs(
+                        readiness._runtime_state_telegram_evidence(
+                            path, **args, connecting_is_unknown=True
+                        ),
+                        (
+                            None
+                            if value in {"connecting", "reconnecting"}
+                            else value == "connected"
+                        ),
+                    )
+
 
 class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
     async def test_survivors_observe_late_evidence_within_a_bounded_window(self):
@@ -582,6 +618,7 @@ class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
 
                 def probe(*args, **kwargs):
                     self.assertTrue(kwargs["stale_is_unknown"])
+                    self.assertTrue(kwargs["connecting_is_unknown"])
                     return {"telegram": eventual if clock[0] >= 3 else None}
 
                 with (

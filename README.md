@@ -808,6 +808,7 @@ request is a no-op and does not require Hermes or restart its gateway.
 A failed acknowledgement does not skip recovery; recovery still requires a fresh
 ownership check. The platform owns the overall command timeout. New-provider
 probes use a 20-second budget; unchanged providers get a separate five-second
-window to refresh their evidence after a restart. Fresh failures are reported;
+window to refresh their evidence after a restart. An unchanged provider still
+connecting is unknown, not a confirmed failure. Fresh terminal failures are reported;
 evidence that remains unknown preserves the previous connected status. A later
 failure needs an explicit retry to refresh that status.

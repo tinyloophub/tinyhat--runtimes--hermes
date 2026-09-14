@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve existing channels that are still reconnecting after a gateway restart;
+  only fresh terminal failures downgrade their previous connected status.
+
 - Keep unchanged connected channels on unknown readiness, recover despite failed status reporting, and configure supported providers even when a newer provider is unavailable.
 
 - Configure optional Telegram and Slack channels on an already owned Computer,
