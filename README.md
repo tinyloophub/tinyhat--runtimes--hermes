@@ -715,6 +715,33 @@ assignment. This explicit mode skips Telegram gateway inspection/reconciliation;
 it does not invent a bot identity or mark model login complete. The platform
 continues to own Guacamole transport and its short-lived access credentials.
 
+## Linux coding-agent desktop apps
+
+Image builders explicitly run `bash hermes_runtime/install_agent_desktops.sh`
+before publishing a new image. It installs the official ChatGPT desktop app
+(Codex mode) and Claude Desktop from their vendors on Ubuntu 24.04/26.04 or
+Debian 13, amd64/arm64. Anthropic's apt signing fingerprint is checked before
+registering its repository. Installed packages are preserved on repeated runs.
+This installer never runs on heartbeat, assignment or an ordinary runtime update.
+
+Inventory adds `desktop_apps` with installation presence, not authentication.
+An assigned Codex/Claude Computer gets its matching desktop shortcut alongside
+the existing Tinyhat Agent CLI shortcut. On current root-owned XFCE sessions,
+the launcher supplies Electron's required root flag; normal users retain the
+app's default sandbox. Nothing copies or reads provider credentials.
+
+For an explicit repair on a compatible older Computer:
+
+```sh
+PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.agent_desktops --install
+```
+
+Complete CLI and desktop sign-in separately through each provider's supported
+browser flow. Verify real responses in both; installation and cached login
+status do not prove working model access. Hermes channel authentication remains
+independent. See the official [ChatGPT Linux instructions](https://learn.chatgpt.com/docs/linux/linux-app)
+and [Claude Linux instructions](https://code.claude.com/docs/en/desktop-linux).
+
 ## Computer timing metadata
 
 Use `~/tinyhat/computer.json` for timings; `~/.config/tinyhat/computer.json`
