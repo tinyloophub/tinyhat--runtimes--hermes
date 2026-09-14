@@ -45,6 +45,12 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
 
         self.patches = [
             patch.object(command, "_prepare_telegram"),
+            patch.object(
+                command,
+                "_snapshot_webhook",
+                return_value={"url": "https://example.com/private-hook"},
+            ),
+            patch.object(command, "_restore_webhook"),
             patch.object(command, "channel_adapter", adapter),
             patch.object(
                 command, "find_hermes_binary", return_value=Path("/bin/hermes")
@@ -98,8 +104,28 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(RuntimeError):
                 await command.run(self.ctx, self.input)
-        self.assertEqual(self.adapter.record_applied.call_count, 0)
-        self.assertEqual(self.adapter.restore_channel.call_count, 2)
+        self.adapter.record_applied.assert_called_once_with(
+            self.config["assignment"], "slack", "rev1"
+        )
+        self.assertEqual(self.adapter.restore_channel.call_count, 1)
+        command._restore_webhook.assert_called_once_with(
+            "disposable", {"url": "https://example.com/private-hook"}
+        )
+        acknowledgements = [
+            call.args[1]
+            for call in self.platform.post_json.call_args_list
+            if call.args[0].endswith("/applied")
+        ]
+        self.assertIn(
+            {
+                "assignment": self.config["assignment"],
+                "provider": "slack",
+                "revision": "rev1",
+                "connected": True,
+                "error": None,
+            },
+            acknowledgements,
+        )
 
     async def test_connected_revision_is_noop_and_empty_setup_only_prepares_key(self):
         self.channel["status"] = "connected"
@@ -182,14 +208,52 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             stop.assert_not_awaited()
         command._run_gateway_for_managed_setup.assert_not_awaited()
 
-    async def test_unknown_readiness_has_distinct_error_and_restores_batch(self):
+    async def test_unknown_readiness_keeps_healthy_gateway_without_rollback(self):
         command._connected.return_value = {"slack": None}
         with self.assertRaises(RuntimeError):
             await command.run(self.ctx, self.input)
         self.assertEqual(
             self.platform.post_json.call_args.args[1]["error"], "readiness_unknown"
         )
+        self.adapter.restore_channel.assert_not_called()
+        self.assertEqual(command._run_gateway_for_managed_setup.await_count, 1)
+
+    async def test_unreadable_snapshot_never_changes_the_channel(self):
+        self.adapter.snapshot_channel.side_effect = PermissionError("unreadable")
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.adapter.install_channel.assert_not_called()
+        self.adapter.restore_channel.assert_not_called()
+        command._run_gateway_for_managed_setup.assert_not_awaited()
+
+    async def test_telegram_success_survives_slack_failure(self):
+        telegram = {
+            "provider": "telegram",
+            "revision": "rev2",
+            "status": "pending",
+            "bot_token": "disposable",
+            "owner_id": "12345",
+            "settings_miniapp_url": "https://example.com/settings",
+        }
+        self.config["channels"] = [telegram, self.channel]
+        command._connected.return_value = {"telegram": True, "slack": False}
+        with (
+            patch.object(
+                command, "_telegram_delete_webhook", return_value={"ok": True}
+            ),
+            patch.object(
+                command,
+                "_configure_tinyhat_menu_button",
+                AsyncMock(return_value={"configured": True}),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+        self.adapter.record_applied.assert_called_once_with(
+            self.config["assignment"], "telegram", "rev2"
+        )
         self.adapter.restore_channel.assert_called_once()
+        command._restore_webhook.assert_not_called()
 
     async def test_unknown_connected_provider_is_ignored(self):
         self.config["channels"] = [
@@ -280,3 +344,106 @@ class AdapterLoadingTests(unittest.TestCase):
             self.assertFalse(
                 any(name.startswith(command._PACKAGE) for name in sys.modules)
             )
+
+
+class WebhookRecoveryTests(unittest.TestCase):
+    def test_preserves_observed_webhook_and_pending_updates(self):
+        with patch.object(
+            command,
+            "_telegram_transport",
+            return_value={
+                "url": "https://example.com/private-hook",
+                "allowed_updates": ["message"],
+                "max_connections": 30,
+            },
+        ) as transport:
+            snapshot = command._snapshot_webhook("secret-token")
+            command._restore_webhook("secret-token", snapshot)
+            self.assertEqual(
+                transport.call_args.args,
+                (
+                    "secret-token",
+                    "setWebhook",
+                    {
+                        "url": "https://example.com/private-hook",
+                        "allowed_updates": ["message"],
+                        "max_connections": 30,
+                        "drop_pending_updates": False,
+                    },
+                ),
+            )
+
+    def test_previous_polling_does_not_set_a_webhook(self):
+        with patch.object(
+            command, "_telegram_transport", return_value={"url": ""}
+        ) as transport:
+            snapshot = command._snapshot_webhook("secret-token")
+            transport.reset_mock()
+            command._restore_webhook("secret-token", snapshot)
+            transport.assert_not_called()
+
+
+class TelegramFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_service_journal_probe_is_bound_to_the_same_invocation(self):
+        generation = {"main_pid": 42, "invocation_id": "test-invocation"}
+        with (
+            patch(
+                "hermes_runtime.gateway_service.discover_gateway_service",
+                AsyncMock(
+                    return_value={
+                        "ok": True,
+                        "generation": generation,
+                        "owner": {"manager": "system"},
+                    }
+                ),
+            ),
+            patch(
+                "hermes_runtime.gateway_service.gateway_generation_active",
+                return_value=True,
+            ),
+            patch(
+                "hermes_runtime.gateway_service.snapshot_gateway_service",
+                AsyncMock(return_value=generation),
+            ),
+            patch(
+                "hermes_runtime.gateway_service.gateway_generation_same",
+                return_value=True,
+            ) as same,
+            patch(
+                "hermes_runtime.gateway_readiness.probe_functional_readiness",
+                AsyncMock(
+                    return_value={"status_healthy": True, "telegram_connected": True}
+                ),
+            ) as probe,
+        ):
+            self.assertTrue(
+                await command._telegram_fallback(Path("/bin/hermes"), 100, 5)
+            )
+            self.assertEqual(
+                probe.call_args.kwargs["service_invocation_id"], "test-invocation"
+            )
+            self.assertEqual(probe.call_args.kwargs["since_unix"], 100)
+            same.return_value = False
+            self.assertIsNone(
+                await command._telegram_fallback(Path("/bin/hermes"), 100, 5)
+            )
+
+    async def test_fallback_does_not_use_an_unidentified_foreground_log(self):
+        with (
+            patch(
+                "hermes_runtime.gateway_service.discover_gateway_service",
+                AsyncMock(return_value={"ok": False}),
+            ),
+            patch(
+                "hermes_runtime.commands.configure_telegram._active_gateway_foreground_generation",
+                return_value=None,
+            ),
+            patch(
+                "hermes_runtime.gateway_readiness.probe_functional_readiness",
+                AsyncMock(),
+            ) as probe,
+        ):
+            self.assertIsNone(
+                await command._telegram_fallback(Path("/bin/hermes"), 100, 5)
+            )
+            probe.assert_not_awaited()

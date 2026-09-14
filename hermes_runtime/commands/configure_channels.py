@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
+import logging
 import sys
 import time
 from types import ModuleType
 from urllib.parse import urlencode, urlsplit
+from urllib.request import Request, urlopen
 from contextlib import contextmanager
 from typing import Any
 
@@ -28,10 +31,15 @@ SCHEMA = "tinyhat_configure_channels_v1"
 _PACKAGE = "_tinyhat_runtime_channels_plugin"
 CHANNEL_READY_TIMEOUT_SECONDS = 20
 SUPPORTED_PROVIDERS = {"telegram", "slack"}
+logger = logging.getLogger(__name__)
 
 
 class AssignmentChanged(RuntimeError):
     """A confirmed assignment rejection, distinct from unavailable transport."""
+
+
+class AssignmentUnavailable(RuntimeError):
+    """A transport failure while checking ownership must preserve working chat."""
 
 
 class ChannelSetupError(RuntimeError):
@@ -46,9 +54,120 @@ def _prepare_telegram(channel):
         raise ChannelSetupError("settings_unavailable")
     if not ensure_telegram_network_fallback_env(_env_file_candidates()).get("ok"):
         raise ChannelSetupError("network_unavailable")
-    _install_codex_auth_quick_commands()
-    _install_codex_auth_plugin_commands()
-    _install_telegram_command_menu_priority()
+    try:
+        for install in (
+            _install_codex_auth_quick_commands,
+            _install_codex_auth_plugin_commands,
+            _install_telegram_command_menu_priority,
+        ):
+            if not install().get("installed"):
+                raise ChannelSetupError("settings_unavailable")
+    except Exception:
+        raise ChannelSetupError("settings_unavailable") from None
+
+
+def _telegram_transport(token, method, payload=None):
+    """Value-free failures; webhook URLs are credentials and stay in memory."""
+    try:
+        body = json.dumps(payload or {}).encode()
+        req = Request(
+            f"https://api.telegram.org/bot{token}/{method}",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=10) as response:
+            result = json.loads(response.read(65536))
+        if not result.get("ok"):
+            raise ValueError()
+        return result.get("result")
+    except Exception:
+        raise ChannelSetupError("network_unavailable") from None
+
+
+def _snapshot_webhook(token):
+    result = _telegram_transport(token, "getWebhookInfo")
+    if not isinstance(result, dict):
+        raise ChannelSetupError("network_unavailable")
+    url = str(result.get("url") or "")
+    if not url:
+        return None
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or result.get("has_custom_certificate")
+    ):
+        raise ChannelSetupError("network_unavailable")
+    # Tinyhat managed-bot parking authenticates in its private URL, not with a
+    # secret header. Preserve that observed destination and queued updates.
+    return {
+        "url": url,
+        "allowed_updates": result.get("allowed_updates", ["message"]),
+        "max_connections": result.get("max_connections", 40),
+        "drop_pending_updates": False,
+    }
+
+
+def _restore_webhook(token, snapshot):
+    if snapshot:
+        _telegram_transport(token, "setWebhook", snapshot)
+
+
+async def _telegram_fallback(hermes, since, budget):
+    from hermes_runtime.gateway_service import (
+        discover_gateway_service,
+        gateway_generation_active,
+        gateway_generation_same,
+        snapshot_gateway_service,
+    )
+    from hermes_runtime.gateway_readiness import probe_functional_readiness
+    from hermes_runtime.commands.configure_telegram import (
+        _active_gateway_foreground_generation,
+        _gateway_log_path,
+    )
+
+    discovery = await discover_gateway_service()
+    generation = discovery.get("generation")
+    if discovery.get("ok") and gateway_generation_active(generation):
+        owner = discovery["owner"]
+        result = await probe_functional_readiness(
+            hermes,
+            since_unix=since,
+            service_manager=owner.get("manager", "user"),
+            service_invocation_id=generation.get("invocation_id"),
+            service_main_pid=generation.get("main_pid"),
+            timeout_seconds=budget,
+        )
+        after = await snapshot_gateway_service(owner, timeout_seconds=budget)
+        if gateway_generation_same(generation, after):
+            return (
+                result.get("telegram_connected")
+                if result.get("status_healthy")
+                else False
+            )
+        return None
+    foreground = await asyncio.to_thread(_active_gateway_foreground_generation, hermes)
+    if not foreground:
+        return None
+    result = await probe_functional_readiness(
+        hermes,
+        since_unix=since,
+        log_path=_gateway_log_path(),
+        log_offset=foreground["log_offset"],
+        service_main_pid=foreground["pid"],
+        expected_process_start_time=foreground["process_start_time"],
+        expected_gateway_argv=foreground["argv"],
+        timeout_seconds=budget,
+    )
+    after = await asyncio.to_thread(_active_gateway_foreground_generation, hermes)
+    return (
+        result.get("telegram_connected")
+        if foreground == after and result.get("status_healthy")
+        else None
+    )
 
 
 @contextmanager
@@ -84,17 +203,25 @@ async def _connected(providers: list[str], since: float) -> dict[str, bool | Non
         states = await asyncio.to_thread(
             connected_channel_states, providers, since_unix=since
         )
+        remaining = deadline - time.monotonic()
+        if "telegram" in providers and states.get("telegram") is None and remaining > 0:
+            try:
+                states["telegram"] = await asyncio.wait_for(
+                    _telegram_fallback(find_hermes_binary(), since, remaining),
+                    timeout=remaining,
+                )
+            except (TimeoutError, OSError):
+                pass
         if all(states.values()) or time.monotonic() >= deadline:
             return states
         await asyncio.sleep(1)
 
 
 async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
-    """Apply a batch, restoring its provider values if activation is unhealthy.
+    """Activate providers independently; a failed sibling cannot undo success.
 
-    Recovery touches only channel configuration; model, email and files are not
-    replaced. Confirmed reassignment stops the gateway instead of restoring an
-    earlier owner's secrets. Transient platform failures preserve running chat.
+    Restore confirmed failures, retain healthy-but-unverified configuration,
+    and fail the command honestly. Model, email and files are not replaced.
     """
     path = api_path(ctx)
     assignment = str((command.get("spec") or {}).get("assignment") or "")
@@ -103,7 +230,14 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     configuration_path = path + "?" + urlencode({"assignment": assignment})
 
     async def current():
-        config = await ctx.platform.get_json(configuration_path)
+        try:
+            config = await ctx.platform.get_json(configuration_path)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) in {401, 403, 404, 409}:
+                raise
+            raise AssignmentUnavailable(
+                "Computer assignment could not be checked."
+            ) from None
         if config.get("assignment") != assignment:
             raise AssignmentChanged("Computer assignment changed.")
         return config
@@ -133,18 +267,23 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     "slack_manifest": await asyncio.to_thread(adapter.slack_manifest),
                 },
             )
-            channels = [
-                {**channel, "revision": str(channel["revision"])}
-                for channel in config.get("channels", [])
-                if channel.get("provider") in SUPPORTED_PROVIDERS
-            ]
-            pending = [
-                channel
-                for channel in channels
-                if channel.get("status") != "connected"
-                or adapter.applied_revision(assignment, channel["provider"])
-                != channel["revision"]
-            ]
+            channels = []
+            for channel in config.get("channels") or []:
+                if channel.get("provider") not in SUPPORTED_PROVIDERS:
+                    continue
+                if not channel.get("revision"):
+                    raise RuntimeError("A channel revision is required.")
+                channels.append({**channel, "revision": str(channel["revision"])})
+            pending = []
+            for channel in channels:
+                applied = await asyncio.to_thread(
+                    adapter.applied_revision, assignment, channel["provider"]
+                )
+                if (
+                    channel.get("status") != "connected"
+                    or applied != channel["revision"]
+                ):
+                    pending.append(channel)
             if not pending:
                 return {
                     "schema": SCHEMA,
@@ -155,17 +294,34 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             hermes = find_hermes_binary()
             if hermes is None:
                 raise RuntimeError("Hermes is not installed on this Computer.")
-            installed, outcomes, snapshots = [], [], {}
+            outcomes = []
             for channel in pending:
                 provider = channel["provider"]
                 await current()
-                snapshot = await asyncio.to_thread(adapter.snapshot_channel, provider)
-                wrote = False
+                # An unreadable snapshot raises before installation; recovery
+                # must never confuse unknown old values with absent values.
+                try:
+                    snapshot = await asyncio.to_thread(
+                        adapter.snapshot_channel, provider
+                    )
+                except (OSError, ValueError):
+                    await acknowledge(channel, False, "setup_failed")
+                    outcomes.append(
+                        {
+                            "provider": provider,
+                            "status": "failed",
+                            "error": "setup_failed",
+                        }
+                    )
+                    continue
+                wrote = restarted = released = False
+                webhook = None
                 try:
                     if provider == "telegram":
                         await asyncio.to_thread(_prepare_telegram, channel)
-                    # A failed CLI write may be partial. Retain prior values for
-                    # recovery before any secret is changed.
+                        webhook = await asyncio.to_thread(
+                            _snapshot_webhook, channel["bot_token"]
+                        )
                     changed = wrote = True
                     await asyncio.to_thread(
                         adapter.install_channel, assignment, channel
@@ -176,6 +332,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         )
                         if not cleared.get("ok"):
                             raise ChannelSetupError("network_unavailable")
+                        released = True
                         menu = await _configure_tinyhat_menu_button(
                             token=channel["bot_token"],
                             settings_url=channel["settings_miniapp_url"],
@@ -183,12 +340,56 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         )
                         if not menu.get("configured"):
                             raise ChannelSetupError("settings_unavailable")
-                    snapshots[provider] = snapshot
-                    installed.append(channel)
+                    await current()
+                    since = time.time()
+                    restarted = True
+                    gateway, _ = await _run_gateway_for_managed_setup(hermes)
+                    states = (
+                        await _connected([provider], since)
+                        if gateway.get("healthy")
+                        else {}
+                    )
+                    await current()
+                    if not gateway.get("healthy") or states.get(provider) is False:
+                        raise ChannelSetupError("gateway_unavailable")
+                    if states.get(provider) is not True:
+                        # A healthy gateway with unknown evidence may be working.
+                        # Keep it running and require an explicit retry to confirm.
+                        await acknowledge(channel, False, "readiness_unknown")
+                        outcomes.append(
+                            {
+                                "provider": provider,
+                                "status": "failed",
+                                "error": "readiness_unknown",
+                            }
+                        )
+                        continue
                 except Exception as exc:
+                    # Do not undo or restart anything on an uncertain fence.
+                    if (
+                        isinstance(exc, (AssignmentChanged, AssignmentUnavailable))
+                        or getattr(exc, "status_code", None) in {401, 403, 404, 409}
+                        or (not isinstance(exc, ChannelSetupError) and restarted)
+                    ):
+                        raise
+                    logger.warning(
+                        "Channel installation failed: provider=%s exception_type=%s",
+                        provider,
+                        type(exc).__name__,
+                    )
                     if wrote:
                         await current()
                         await asyncio.to_thread(adapter.restore_channel, snapshot)
+                    if restarted:
+                        recovery_since = time.time()
+                        recovery, _ = await _run_gateway_for_managed_setup(hermes)
+                    else:
+                        recovery = {"healthy": True}
+                    if released:
+                        await current()
+                        await asyncio.to_thread(
+                            _restore_webhook, channel["bot_token"], webhook
+                        )
                     code = (
                         exc.code
                         if isinstance(exc, ChannelSetupError)
@@ -198,46 +399,39 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     outcomes.append(
                         {"provider": provider, "status": "failed", "error": code}
                     )
-            await current()
-            if installed:
-                since = time.time()
-                gateway, _ = await _run_gateway_for_managed_setup(hermes)
-                states = (
-                    await _connected([item["provider"] for item in installed], since)
-                    if gateway.get("healthy")
-                    else {}
-                )
-                await current()
-                if not gateway.get("healthy") or not all(
-                    states.get(item["provider"]) is True for item in installed
-                ):
-                    # Failed activation must not strand existing email/chat on
-                    # bad new credentials. Restore this batch and restart the
-                    # previous provider configuration after the owner fence.
-                    for snapshot in snapshots.values():
-                        await asyncio.to_thread(adapter.restore_channel, snapshot)
-                    recovery, _ = await _run_gateway_for_managed_setup(hermes)
-                    for channel in installed:
-                        code = (
-                            "readiness_unknown"
-                            if gateway.get("healthy")
-                            and states.get(channel["provider"]) is None
-                            else "gateway_unavailable"
+                    if not recovery.get("healthy"):
+                        raise RuntimeError(
+                            "Channel activation and gateway recovery failed."
                         )
-                        await acknowledge(channel, False, code)
-                    raise RuntimeError(
-                        "Channel activation failed; previous channel settings restored."
-                        if recovery.get("healthy")
-                        else "Channel activation and gateway recovery failed."
-                    )
-                for channel in installed:
-                    await acknowledge(channel, True)
-                    adapter.record_applied(
-                        assignment, channel["provider"], channel["revision"]
-                    )
-                    outcomes.append(
-                        {"provider": channel["provider"], "status": "connected"}
-                    )
+                    # Prior providers keep their values; verify their state after
+                    # the recovery restart rather than reporting stale success.
+                    survivors = [
+                        item for item in outcomes if item["status"] == "connected"
+                    ]
+                    if restarted and survivors:
+                        recovered = await _connected(
+                            [item["provider"] for item in survivors], recovery_since
+                        )
+                        for item in survivors:
+                            if recovered.get(item["provider"]) is not True:
+                                old = next(
+                                    c
+                                    for c in channels
+                                    if c["provider"] == item["provider"]
+                                )
+                                code = (
+                                    "readiness_unknown"
+                                    if recovered.get(item["provider"]) is None
+                                    else "gateway_unavailable"
+                                )
+                                await acknowledge(old, False, code)
+                                item.update(status="failed", error=code)
+                    continue
+                await acknowledge(channel, True)
+                await asyncio.to_thread(
+                    adapter.record_applied, assignment, provider, channel["revision"]
+                )
+                outcomes.append({"provider": provider, "status": "connected"})
             if any(item["status"] == "failed" for item in outcomes):
                 raise RuntimeError(
                     "A channel could not be configured. Check its reported status."

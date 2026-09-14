@@ -777,8 +777,18 @@ emails. It preserves the owner's model and settings for other channels.
 ### Channel activation recovery
 
 `configure_channels` uses the plugin's `snapshot_channel` / `restore_channel`
-adapter methods to keep prior provider values in memory while activating a
-batch. Failed activation restores that batch and restarts the prior gateway;
+adapter methods to keep prior provider values in memory while activating each
+provider independently. A confirmed failure restores only that provider and
+restarts the previous configuration; successful sibling channels keep their
+values and are rechecked after recovery. An unreadable snapshot aborts before
+installation. A healthy gateway with unknown provider evidence is left running,
+reported as `readiness_unknown`, and requires an explicit retry. Missing readiness
+never becomes an automatic restart loop. For Telegram, the observed managed-bot
+webhook is restored on rollback, without dropping queued updates. Its private
+URL remains in memory and is never logged. Tinyhat managed webhook URLs carry
+their authentication; arbitrary custom-certificate webhook migrations are rejected.
+
+Recovery is not a transactional rollback of model or user files:
 model and email settings are never included in the snapshot. Confirmed ownership
 rejection stops the gateway. A transient platform failure before activation does
 not stop working chat. Missing per-provider state is `readiness_unknown`, distinct
