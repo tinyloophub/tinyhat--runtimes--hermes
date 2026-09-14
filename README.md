@@ -773,3 +773,18 @@ background restart of the same configuration.
 Email configuration deliberately enables the channel, suppresses gateway restart
 notifications, and forces final-only responses without reasoning or progress
 emails. It preserves the owner's model and settings for other channels.
+
+### Channel activation recovery
+
+`configure_channels` uses the plugin's `snapshot_channel` / `restore_channel`
+adapter methods to keep prior provider values in memory while activating a
+batch. Failed activation restores that batch and restarts the prior gateway;
+model and email settings are never included in the snapshot. Confirmed ownership
+rejection stops the gateway. A transient platform failure before activation does
+not stop working chat. Missing per-provider state is `readiness_unknown`, distinct
+from a disconnected gateway; the platform records a failed channel and waits for
+an explicit owner/admin retry.
+
+For Telegram this command also installs the existing network fallback and quick
+commands. The plugin persists `TINYHAT_SETTINGS_MINIAPP_URL`; the runtime sets the
+bot menu and command priority. The destination remains owner-authenticated.

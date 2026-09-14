@@ -7,7 +7,10 @@
   the platform and decrypt Slack credentials only on the destination Computer.
 - Reuse saved revisions without reinstalling Hermes or replacing model/email
   settings. Report connected status only after the new gateway confirms each
-  provider, and preserve healthy channels during transient acknowledgement errors.
+  provider, and preserve healthy channels during transient platform errors.
+- Restore provider settings and recover the previous gateway after a failed
+  activation. Unknown readiness is reported separately and requires an explicit
+  retry. Telegram setup includes network fallback, settings and quick commands.
 
 ## 0.0.65 - 2026-09-13
 

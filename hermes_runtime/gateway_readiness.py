@@ -653,22 +653,22 @@ def _runtime_state_telegram_evidence(
     return gateway_state == "running" and telegram_state == "connected"
 
 
-def connected_channel_states(providers: list[str], *, since_unix: float) -> dict[str, bool]:
+def connected_channel_states(providers: list[str], *, since_unix: float) -> dict[str, bool | None]:
     """Read provider readiness from the same live gateway generation."""
     generation = read_gateway_runtime_generation()
     if generation is None:
-        return {provider: False for provider in providers}
+        return {provider: None for provider in providers}
     result = {
         provider: _runtime_state_telegram_evidence(
             hermes_home() / "gateway_state.json",
             service_main_pid=generation["pid"], since_unix=since_unix,
             expected_start_time=generation["start_time"], expected_argv=generation["argv"],
             provider=provider,
-        ) is True
+        )
         for provider in providers
     }
     if not gateway_runtime_generation_same(generation, read_gateway_runtime_generation()):
-        return {provider: False for provider in providers}
+        return {provider: None for provider in providers}
     return result
 
 

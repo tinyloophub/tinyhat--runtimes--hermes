@@ -34,6 +34,8 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             slack_manifest=Mock(return_value={}),
             applied_revision=Mock(return_value=None),
             install_channel=Mock(),
+            snapshot_channel=Mock(return_value={"SLACK_BOT_TOKEN": "previous"}),
+            restore_channel=Mock(),
             record_applied=Mock(),
         )
 
@@ -42,6 +44,7 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             yield self.adapter
 
         self.patches = [
+            patch.object(command, "_prepare_telegram"),
             patch.object(command, "channel_adapter", adapter),
             patch.object(
                 command, "find_hermes_binary", return_value=Path("/bin/hermes")
@@ -93,9 +96,10 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(return_value={"configured": True}),
             ),
         ):
-            result = await command.run(self.ctx, self.input)
-        self.assertIn({"provider": "telegram", "status": "failed"}, result["channels"])
-        self.assertEqual(self.adapter.record_applied.call_count, 1)
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+        self.assertEqual(self.adapter.record_applied.call_count, 0)
+        self.assertEqual(self.adapter.restore_channel.call_count, 2)
 
     async def test_connected_revision_is_noop_and_empty_setup_only_prepares_key(self):
         self.channel["status"] = "connected"
@@ -129,12 +133,11 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_error_never_leaks_credentials(self):
         self.adapter.install_channel.side_effect = ValueError("xoxb-private-value")
-        result = await command.run(self.ctx, self.input)
-        self.assertNotIn("private-value", json.dumps(result))
+        with self.assertRaises(RuntimeError) as failure:
+            await command.run(self.ctx, self.input)
+        self.assertNotIn("private-value", str(failure.exception))
         self.assertNotIn("private-value", str(self.platform.post_json.call_args_list))
-        self.assertEqual(
-            result["channels"], [{"provider": "slack", "status": "failed"}]
-        )
+        self.adapter.restore_channel.assert_called_once()
 
     async def test_uncertain_acknowledgement_preserves_healthy_gateway(self):
         self.platform.post_json.side_effect = [{}, TimeoutError()]
@@ -155,6 +158,69 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError):
                 await command.run(self.ctx, self.input)
             stop.assert_awaited_once()
+
+    async def test_unhealthy_gateway_restores_old_values_and_is_failed(self):
+        command._run_gateway_for_managed_setup.side_effect = [
+            ({"healthy": False}, {}),
+            ({"healthy": True}, {}),
+        ]
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.adapter.restore_channel.assert_called_once_with(
+            {"SLACK_BOT_TOKEN": "previous"}
+        )
+        self.adapter.record_applied.assert_not_called()
+        self.assertEqual(
+            self.platform.post_json.call_args.args[1]["error"], "gateway_unavailable"
+        )
+
+    async def test_transient_fence_failure_does_not_stop_existing_gateway(self):
+        self.platform.get_json.side_effect = [self.config, self.config, TimeoutError()]
+        with patch("hermes_runtime.commands.stop_hermes.run", AsyncMock()) as stop:
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+            stop.assert_not_awaited()
+        command._run_gateway_for_managed_setup.assert_not_awaited()
+
+    async def test_unknown_readiness_has_distinct_error_and_restores_batch(self):
+        command._connected.return_value = {"slack": None}
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertEqual(
+            self.platform.post_json.call_args.args[1]["error"], "readiness_unknown"
+        )
+        self.adapter.restore_channel.assert_called_once()
+
+    async def test_unknown_connected_provider_is_ignored(self):
+        self.config["channels"] = [
+            {"provider": "future", "revision": 1, "status": "connected"}
+        ]
+        self.assertFalse((await command.run(self.ctx, self.input))["changed"])
+        self.adapter.applied_revision.assert_not_called()
+
+
+class TelegramPreparationTests(unittest.TestCase):
+    def test_missing_menu_url_never_prepares_or_installs(self):
+        with patch.object(command, "ensure_telegram_network_fallback_env") as network:
+            with self.assertRaises(command.ChannelSetupError) as failure:
+                command._prepare_telegram({})
+            self.assertEqual(failure.exception.code, "settings_unavailable")
+            network.assert_not_called()
+
+    def test_network_fallback_is_required_before_quick_commands(self):
+        channel = {"settings_miniapp_url": "https://example.com/computer"}
+        with (
+            patch.object(
+                command,
+                "ensure_telegram_network_fallback_env",
+                return_value={"ok": False},
+            ),
+            patch.object(command, "_install_codex_auth_quick_commands") as quick,
+        ):
+            with self.assertRaises(command.ChannelSetupError) as failure:
+                command._prepare_telegram(channel)
+            self.assertEqual(failure.exception.code, "network_unavailable")
+            quick.assert_not_called()
 
 
 class ProviderReadinessTests(unittest.TestCase):
