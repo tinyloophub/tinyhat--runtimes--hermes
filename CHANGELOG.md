@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Configure optional Telegram and Slack channels on an already owned Computer,
+  including Slack without Telegram. Fetch assignment-scoped credentials from
+  the platform and decrypt Slack credentials only on the destination Computer.
+- Reuse saved revisions without reinstalling Hermes or replacing model/email
+  settings. Report connected status only after the new gateway confirms each
+  provider, and preserve healthy channels during transient acknowledgement errors.
+
 ## 0.0.65 - 2026-09-13
 
 - Leave fresh Hermes installations without a selected model so assignment can

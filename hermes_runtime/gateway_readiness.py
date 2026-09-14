@@ -592,6 +592,7 @@ def _runtime_state_telegram_evidence(
     since_unix: float,
     expected_start_time: int | None = None,
     expected_argv: list[str] | None = None,
+    provider: str = "telegram",
 ) -> bool | None:
     """Return invocation-scoped Telegram state; ``None`` means unusable.
 
@@ -629,7 +630,7 @@ def _runtime_state_telegram_evidence(
 
     gateway_updated_at = _parse_iso_timestamp(payload.get("updated_at"))
     platforms = payload.get("platforms")
-    telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+    telegram = platforms.get(provider) if isinstance(platforms, dict) else None
     if not isinstance(telegram, dict):
         return False
     telegram_updated_at = _parse_iso_timestamp(telegram.get("updated_at"))
@@ -650,6 +651,25 @@ def _runtime_state_telegram_evidence(
         telegram.get("state") or telegram.get("status") or ""
     ).strip().lower()
     return gateway_state == "running" and telegram_state == "connected"
+
+
+def connected_channel_states(providers: list[str], *, since_unix: float) -> dict[str, bool]:
+    """Read provider readiness from the same live gateway generation."""
+    generation = read_gateway_runtime_generation()
+    if generation is None:
+        return {provider: False for provider in providers}
+    result = {
+        provider: _runtime_state_telegram_evidence(
+            hermes_home() / "gateway_state.json",
+            service_main_pid=generation["pid"], since_unix=since_unix,
+            expected_start_time=generation["start_time"], expected_argv=generation["argv"],
+            provider=provider,
+        ) is True
+        for provider in providers
+    }
+    if not gateway_runtime_generation_same(generation, read_gateway_runtime_generation()):
+        return {provider: False for provider in providers}
+    return result
 
 
 def gateway_status_reports_telegram_fatal(result: dict[str, Any] | None) -> bool:
