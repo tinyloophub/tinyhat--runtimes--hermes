@@ -31,6 +31,7 @@ from hermes_runtime.commands.configure_telegram import (
 SCHEMA = "tinyhat_configure_channels_v1"
 _PACKAGE = "_tinyhat_runtime_channels_plugin"
 CHANNEL_READY_TIMEOUT_SECONDS = 20
+SURVIVOR_READY_TIMEOUT_SECONDS = 5
 SUPPORTED_PROVIDERS = {"telegram", "slack"}
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,9 @@ async def _connected(
 ) -> dict[str, bool | None]:
     from hermes_runtime.gateway_readiness import connected_channel_states
 
-    deadline = time.monotonic() + CHANNEL_READY_TIMEOUT_SECONDS
+    deadline = time.monotonic() + (
+        SURVIVOR_READY_TIMEOUT_SECONDS if survivors else CHANNEL_READY_TIMEOUT_SECONDS
+    )
     while True:
         states = await asyncio.to_thread(
             connected_channel_states,
@@ -215,10 +218,13 @@ async def _connected(
             since_unix=since,
             stale_is_unknown=survivors,
         )
-        if survivors and all(state is not False for state in states.values()):
-            return states
         remaining = deadline - time.monotonic()
-        if "telegram" in providers and states.get("telegram") is None and remaining > 0:
+        if (
+            not survivors
+            and "telegram" in providers
+            and states.get("telegram") is None
+            and remaining > 0
+        ):
             try:
                 states["telegram"] = await asyncio.wait_for(
                     _telegram_fallback(find_hermes_binary(), since, remaining),

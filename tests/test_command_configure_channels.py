@@ -567,21 +567,40 @@ class ProviderReadinessTests(unittest.TestCase):
 
 
 class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_unknown_survivor_does_not_wait_or_probe_again(self):
-        with (
-            patch.object(
-                readiness, "connected_channel_states", return_value={"slack": None}
-            ) as probe,
-            patch.object(command.asyncio, "sleep", AsyncMock()) as sleep,
-        ):
-            self.assertEqual(
-                await command._connected(["slack"], 1000, survivors=True),
-                {"slack": None},
-            )
-            probe.assert_called_once_with(
-                ["slack"], since_unix=1000, stale_is_unknown=True
-            )
-            sleep.assert_not_awaited()
+    async def test_survivors_observe_late_evidence_within_a_bounded_window(self):
+        for eventual in (True, False, None):
+            with self.subTest(eventual=eventual):
+                clock = [0.0]
+
+                async def sleep(seconds):
+                    clock[0] += seconds
+
+                def probe(*args, **kwargs):
+                    self.assertTrue(kwargs["stale_is_unknown"])
+                    return {"telegram": eventual if clock[0] >= 3 else None}
+
+                with (
+                    patch.object(
+                        command.time, "monotonic", side_effect=lambda: clock[0]
+                    ),
+                    patch.object(command.asyncio, "sleep", side_effect=sleep),
+                    patch.object(
+                        readiness, "connected_channel_states", side_effect=probe
+                    ) as read,
+                    patch.object(
+                        command, "_telegram_fallback", AsyncMock()
+                    ) as fallback,
+                ):
+                    result = await command._connected(
+                        ["telegram"], 1000, survivors=True
+                    )
+                self.assertEqual(result, {"telegram": eventual})
+                self.assertGreater(read.call_count, 1)
+                self.assertEqual(
+                    clock[0],
+                    3 if eventual is True else command.SURVIVOR_READY_TIMEOUT_SECONDS,
+                )
+                fallback.assert_not_awaited()
 
 
 class AdapterLoadingTests(unittest.TestCase):
