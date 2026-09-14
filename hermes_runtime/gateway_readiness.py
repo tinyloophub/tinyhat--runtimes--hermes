@@ -593,6 +593,7 @@ def _runtime_state_telegram_evidence(
     expected_start_time: int | None = None,
     expected_argv: list[str] | None = None,
     provider: str = "telegram",
+    stale_is_unknown: bool = False,
 ) -> bool | None:
     """Return invocation-scoped Telegram state; ``None`` means unusable.
 
@@ -644,7 +645,7 @@ def _runtime_state_telegram_evidence(
         or gateway_updated_at < since_unix
         or telegram_updated_at < since_unix
     ):
-        return False
+        return None if stale_is_unknown else False
 
     gateway_state = str(payload.get("gateway_state") or "").strip().lower()
     telegram_state = (
@@ -654,7 +655,7 @@ def _runtime_state_telegram_evidence(
 
 
 def connected_channel_states(
-    providers: list[str], *, since_unix: float
+    providers: list[str], *, since_unix: float, stale_is_unknown: bool = False
 ) -> dict[str, bool | None]:
     """Read provider readiness from the same live gateway generation."""
     generation = read_gateway_runtime_generation()
@@ -668,6 +669,7 @@ def connected_channel_states(
             expected_start_time=generation["start_time"],
             expected_argv=generation["argv"],
             provider=provider,
+            stale_is_unknown=stale_is_unknown,
         )
         for provider in providers
     }

@@ -201,14 +201,21 @@ def api_path(ctx: Any) -> str:
     return f"/hapi/v2/computers/{kind}/channels"
 
 
-async def _connected(providers: list[str], since: float) -> dict[str, bool | None]:
+async def _connected(
+    providers: list[str], since: float, *, survivors: bool = False
+) -> dict[str, bool | None]:
     from hermes_runtime.gateway_readiness import connected_channel_states
 
     deadline = time.monotonic() + CHANNEL_READY_TIMEOUT_SECONDS
     while True:
         states = await asyncio.to_thread(
-            connected_channel_states, providers, since_unix=since
+            connected_channel_states,
+            providers,
+            since_unix=since,
+            stale_is_unknown=survivors,
         )
+        if survivors and all(state is not False for state in states.values()):
+            return states
         remaining = deadline - time.monotonic()
         if "telegram" in providers and states.get("telegram") is None and remaining > 0:
             try:
@@ -301,6 +308,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                                 "error": "setup_failed",
                             }
                         )
+                    else:
+                        unsupported.append(
+                            {"provider": channel.get("provider"), "status": "connected"}
+                        )
                     continue
                 if not channel.get("revision"):
                     raise RuntimeError("A channel revision is required.")
@@ -335,24 +346,35 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             ]
             by_provider = {c["provider"]: c for c in channels}
 
-            async def refresh_survivors(gateway):
-                survivors = [item for item in outcomes if item["status"] == "connected"]
+            async def refresh_survivors(gateway, since):
+                survivors = [
+                    item
+                    for item in outcomes
+                    if item["status"] == "connected" and item["provider"] in by_provider
+                ]
                 if not survivors:
                     return
                 states = (
-                    await _connected([item["provider"] for item in survivors], 0)
+                    await _connected(
+                        [item["provider"] for item in survivors], since, survivors=True
+                    )
                     if gateway.get("healthy")
                     else {}
                 )
                 await current()
                 for item in survivors:
                     state = states.get(item["provider"])
-                    # Unchanged settings are not a fresh installation. Require
-                    # the live process generation but do not demand a rewritten
-                    # provider timestamp or erase success for missing evidence.
+                    # Keep the restart-time fence. Inherited provider rows are
+                    # unknown, never proof of a new connection. Preserve prior
+                    # success on unknown evidence; fresh failures get the probe
+                    # budget to reconnect before they are marked failed.
                     if gateway.get("healthy") and state is not False:
                         continue
-                    code = "gateway_unavailable"
+                    code = (
+                        "setup_failed"
+                        if gateway.get("healthy")
+                        else "gateway_unavailable"
+                    )
                     await acknowledge(by_provider[item["provider"]], False, code)
                     item.update(status="failed", error=code)
                     # Applied revision means values were installed, not that
@@ -418,7 +440,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     await current()
                     # Every restart replaces the generation supporting earlier
                     # success, including providers skipped as already applied.
-                    await refresh_survivors(gateway)
+                    await refresh_survivors(gateway, since)
                     if not gateway.get("healthy") or states.get(provider) is False:
                         raise ChannelSetupError("gateway_unavailable")
                     if states.get(provider) is not True:
@@ -468,6 +490,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     outcome = {"provider": provider, "status": "failed", "error": code}
                     outcomes.append(outcome)
                     recovery = {"healthy": False}
+                    recovery_since = time.time()
                     recovery_fenced = False
                     try:
                         if wrote:
@@ -503,7 +526,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         # Also runs when webhook restoration fails or the
                         # gateway cannot recover. Never retain stale success.
                         if restarted and not recovery_fenced:
-                            await refresh_survivors(recovery)
+                            await refresh_survivors(recovery, recovery_since)
                     if report_error is not None:
                         raise report_error
                     if restarted and not recovery.get("healthy"):

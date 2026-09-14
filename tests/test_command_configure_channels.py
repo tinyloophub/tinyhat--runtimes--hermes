@@ -327,7 +327,9 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result["channels"][0], {"provider": "slack", "status": "connected"}
         )
-        self.assertEqual(command._connected.call_args.args, (["slack"], 0))
+        self.assertEqual(command._connected.call_args.args[0], ["slack"])
+        self.assertGreater(command._connected.call_args.args[1], 0)
+        self.assertTrue(command._connected.call_args.kwargs["survivors"])
         self.adapter.restore_channel.assert_not_called()
         self.assertTrue(self.latest_ack("telegram")["connected"])
 
@@ -498,6 +500,61 @@ class ProviderReadinessTests(unittest.TestCase):
                     path, service_main_pid=456, since_unix=1, provider="slack"
                 )
             )
+
+    def test_survivor_inherited_connected_row_is_unknown_until_refreshed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gateway_state.json"
+            state = {
+                "pid": 123,
+                "gateway_state": "running",
+                "updated_at": "1970-01-01T00:20:00+00:00",
+                "platforms": {
+                    "slack": {
+                        "state": "connected",
+                        "updated_at": "1970-01-01T00:15:00+00:00",
+                    }
+                },
+            }
+            path.write_text(json.dumps(state))
+            args = dict(service_main_pid=123, since_unix=1000, provider="slack")
+            self.assertFalse(readiness._runtime_state_telegram_evidence(path, **args))
+            self.assertIsNone(
+                readiness._runtime_state_telegram_evidence(
+                    path, **args, stale_is_unknown=True
+                )
+            )
+            state["platforms"]["slack"]["updated_at"] = state["updated_at"]
+            path.write_text(json.dumps(state))
+            self.assertTrue(
+                readiness._runtime_state_telegram_evidence(
+                    path, **args, stale_is_unknown=True
+                )
+            )
+            state["platforms"]["slack"]["state"] = "disconnected"
+            path.write_text(json.dumps(state))
+            self.assertFalse(
+                readiness._runtime_state_telegram_evidence(
+                    path, **args, stale_is_unknown=True
+                )
+            )
+
+
+class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unknown_survivor_does_not_wait_or_probe_again(self):
+        with (
+            patch.object(
+                readiness, "connected_channel_states", return_value={"slack": None}
+            ) as probe,
+            patch.object(command.asyncio, "sleep", AsyncMock()) as sleep,
+        ):
+            self.assertEqual(
+                await command._connected(["slack"], 1000, survivors=True),
+                {"slack": None},
+            )
+            probe.assert_called_once_with(
+                ["slack"], since_unix=1000, stale_is_unknown=True
+            )
+            sleep.assert_not_awaited()
 
 
 class AdapterLoadingTests(unittest.TestCase):
