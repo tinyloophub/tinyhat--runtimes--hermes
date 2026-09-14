@@ -363,6 +363,33 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             self.config["assignment"], "slack", "rev1"
         )
 
+    async def test_unsupported_row_without_revision_skips_ack_but_sets_up_sibling(self):
+        self.config["channels"].insert(0, {"provider": "future", "status": "pending"})
+        with self.assertLogs(command.logger, level="WARNING") as logs:
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+        self.assertTrue(any("has no revision" in line for line in logs.output))
+        self.assertFalse(
+            any(
+                c.args[1].get("provider") == "future"
+                for c in self.platform.post_json.call_args_list
+            )
+        )
+        self.assertTrue(self.latest_ack("slack")["connected"])
+
+    async def test_unsupported_only_returns_per_channel_failure_without_hermes(self):
+        self.config["channels"] = [
+            {"provider": "future", "revision": "rev", "status": "pending"}
+        ]
+        command.find_hermes_binary.return_value = None
+        result = await command.run(self.ctx, self.input)
+        self.assertFalse(result["changed"])
+        self.assertEqual(
+            result["channels"],
+            [{"provider": "future", "status": "failed", "error": "setup_failed"}],
+        )
+        command._run_gateway_for_managed_setup.assert_not_awaited()
+
     async def test_unsupported_provider_report_rejection_preserves_supported_setup(
         self,
     ):

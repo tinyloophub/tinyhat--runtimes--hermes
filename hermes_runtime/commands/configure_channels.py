@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from contextlib import contextmanager
 from typing import Any
 
+from hermes_runtime.client import PlatformError
 from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
 from hermes_runtime.commands.configure_telegram import (
@@ -288,8 +289,13 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         # A newer platform can offer providers this runtime
                         # does not understand. Do not block supported siblings.
                         try:
-                            await acknowledge(channel, False, "setup_failed")
-                        except Exception as report_error:
+                            if channel.get("revision"):
+                                await acknowledge(channel, False, "setup_failed")
+                            else:
+                                logger.warning(
+                                    "Unsupported channel has no revision; acknowledgement skipped"
+                                )
+                        except PlatformError as report_error:
                             if getattr(report_error, "status_code", None) in {
                                 401,
                                 403,
@@ -326,12 +332,13 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     or applied != channel["revision"]
                 ):
                     pending.append(channel)
-            if not pending and not unsupported:
+            if not pending:
                 return {
                     "schema": SCHEMA,
                     "changed": False,
                     "prepared": True,
-                    "channels": [
+                    "channels": unsupported
+                    + [
                         {"provider": c["provider"], "status": "connected"}
                         for c in channels
                     ],

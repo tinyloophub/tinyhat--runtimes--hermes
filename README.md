@@ -803,4 +803,6 @@ bot menu and command priority. The destination remains owner-authenticated.
 Unsupported pending providers are reported as `setup_failed` while supported
 providers continue. A failed acknowledgement does not skip recovery; recovery
 still requires a fresh ownership check before changing local state. The platform
-allows 30 minutes for this command; provider probes use 20-second budgets.
+owns the overall command timeout; provider probes use 20-second budgets. Unchanged providers with stale evidence remain unknown without waiting
+through that budget. An unsupported-only request returns a no-op with per-provider
+failure details; it does not require a Hermes restart.
