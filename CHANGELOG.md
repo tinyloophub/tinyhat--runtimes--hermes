@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.67 - 2026-09-14
 
 - Add an explicit image-bake installer for the official Linux ChatGPT (Codex)
   and Claude desktop apps. Report app presence in inventory and create the
