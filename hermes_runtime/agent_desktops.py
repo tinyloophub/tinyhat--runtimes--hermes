@@ -28,14 +28,14 @@ def inventory() -> dict[str, dict[str, bool]]:
 
 
 def write_launchers(home: Path, system: str) -> None:
-    from hermes_runtime.agent_systems import _write_atomic
+    from hermes_runtime.agent_systems import SYSTEM_COMMANDS, _write_atomic
 
-    if system not in {*DESKTOP_APPS, "hermes"}:
+    if system not in SYSTEM_COMMANDS:
         return
     for other_system, (_, other_label, _) in DESKTOP_APPS.items():
         entry = home / "Desktop" / (other_label + ".desktop")
         if other_system != system and entry.is_file():
-            if "X-Tinyhat-Managed=true\n" in entry.read_text():
+            if b"X-Tinyhat-Managed=true\n" in entry.read_bytes():
                 entry.unlink()
     app = DESKTOP_APPS.get(system)
     if app is None or not shutil.which(app[0]):
@@ -62,9 +62,11 @@ def write_launchers(home: Path, system: str) -> None:
 
 
 def main() -> None:
+    from hermes_runtime.agent_systems import SYSTEM_COMMANDS
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install", action="store_true")
-    parser.add_argument("--system", choices=[*DESKTOP_APPS, "hermes"])
+    parser.add_argument("--system", choices=list(SYSTEM_COMMANDS))
     args = parser.parse_args()
     if args.install:
         subprocess.run(

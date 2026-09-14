@@ -736,7 +736,7 @@ For an explicit repair on a compatible older Computer:
 PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.agent_desktops --install --system codex
 ```
 
-Use `--system claude_code` for Claude or `--system hermes` to remove Tinyhat-managed
+Use `--system claude_code` for Claude or `--system hermes` / `--system openclaw` to remove Tinyhat-managed
 coding-app desktop icons. Without `--system`, installation writes no desktop
 shortcuts; assignment selects the matching icon. User-created icons are preserved.
 This repair is an explicit operator shell action, not an admin runtime command;

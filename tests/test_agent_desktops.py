@@ -28,6 +28,12 @@ class AgentDesktopTests(TestCase):
             agent_desktops.write_launchers(home, "hermes")
             self.assertFalse((home / "Desktop/Claude.desktop").exists())
             self.assertEqual(custom.read_text(), "my own shortcut")
+            agent_desktops.write_launchers(home, "codex")
+            agent_desktops.write_launchers(home, "openclaw")
+            self.assertFalse(custom.exists())
+            custom.write_bytes(b"my own non-UTF-8 shortcut: \xff")
+            agent_desktops.write_launchers(home, "openclaw")
+            self.assertEqual(custom.read_bytes(), b"my own non-UTF-8 shortcut: \xff")
 
     def test_install_has_no_implicit_shortcuts_and_repair_uses_explicit_system(self):
         with (
