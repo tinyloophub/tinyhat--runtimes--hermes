@@ -8,8 +8,8 @@
 - Reuse saved revisions without reinstalling Hermes or replacing model/email
   settings. Report connected status only after the new gateway confirms each
   provider, and preserve healthy channels during transient platform errors.
-- Restore provider settings and recover the previous gateway after a failed
-  activation. Unknown readiness is reported separately and requires an explicit
+- Recover failed providers independently, preserve the prior Telegram webhook
+  subscription, and re-check every connected provider after each restart. Unknown readiness is reported separately and requires an explicit
   retry. Telegram setup includes network fallback, settings and quick commands.
 
 ## 0.0.65 - 2026-09-13

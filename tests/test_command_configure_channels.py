@@ -44,6 +44,14 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             yield self.adapter
 
         self.patches = [
+            patch.object(
+                command, "_telegram_delete_webhook", return_value={"ok": True}
+            ),
+            patch.object(
+                command,
+                "_configure_tinyhat_menu_button",
+                AsyncMock(return_value={"configured": True}),
+            ),
             patch.object(command, "_prepare_telegram"),
             patch.object(
                 command,
@@ -262,6 +270,101 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await command.run(self.ctx, self.input))["changed"])
         self.adapter.applied_revision.assert_not_called()
 
+    def add_telegram(self):
+        self.config["channels"].append(
+            {
+                "provider": "telegram",
+                "revision": "rev2",
+                "status": "pending",
+                "bot_token": "disposable",
+                "owner_id": "12345",
+                "settings_miniapp_url": "https://example.com/settings",
+            }
+        )
+
+    def latest_ack(self, provider):
+        return [
+            c.args[1]
+            for c in self.platform.post_json.call_args_list
+            if c.args[0].endswith("/applied") and c.args[1]["provider"] == provider
+        ][-1]
+
+    async def test_failed_recovery_downgrades_previously_connected_sibling(self):
+        self.add_telegram()
+        command._run_gateway_for_managed_setup.side_effect = [
+            ({"healthy": True}, {}),
+            ({"healthy": True}, {}),
+            ({"healthy": False}, {}),
+        ]
+        command._connected.side_effect = [
+            {"slack": True},
+            {"telegram": False},
+            {"slack": True},
+        ]
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertFalse(self.latest_ack("slack")["connected"])
+        self.assertEqual(self.latest_ack("slack")["error"], "gateway_unavailable")
+        self.assertFalse(self.latest_ack("telegram")["connected"])
+
+    async def test_successful_restart_rechecks_an_already_applied_sibling(self):
+        self.add_telegram()
+        self.channel["status"] = "connected"
+        self.adapter.applied_revision.return_value = "rev1"
+        command._connected.side_effect = [{"telegram": True}, {"slack": False}]
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertFalse(self.latest_ack("slack")["connected"])
+        self.assertTrue(self.latest_ack("telegram")["connected"])
+        self.adapter.install_channel.assert_called_once()
+
+    async def test_webhook_recovery_failure_still_acknowledges_and_rechecks(self):
+        self.add_telegram()
+        command._connected.side_effect = [
+            {"slack": True},
+            {"telegram": False},
+            {"slack": True},
+            {"slack": False},
+        ]
+        command._restore_webhook.side_effect = command.ChannelSetupError(
+            "network_unavailable"
+        )
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertFalse(self.latest_ack("slack")["connected"])
+        self.assertEqual(self.latest_ack("telegram")["error"], "network_unavailable")
+
+    async def test_restore_failure_cannot_swallow_failed_acknowledgement(self):
+        command._connected.return_value = {"slack": False}
+        self.adapter.restore_channel.side_effect = ValueError("private-detail")
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertEqual(self.latest_ack("slack")["error"], "setup_failed")
+        self.assertNotIn("private-detail", str(self.platform.post_json.call_args_list))
+
+    async def test_confirmed_rejection_during_recovery_is_not_masked(self):
+        from hermes_runtime.client import PlatformError
+
+        command._connected.return_value = {"slack": False}
+        self.adapter.restore_channel.side_effect = PlatformError(
+            "stale", status_code=409
+        )
+        with patch("hermes_runtime.commands.stop_hermes.run", AsyncMock()) as stop:
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+            stop.assert_awaited_once()
+
+    async def test_http_settings_origin_reports_settings_error_before_writes(self):
+        self.add_telegram()
+        self.config["channels"] = [self.config["channels"][-1]]
+        self.config["channels"][0]["settings_miniapp_url"] = (
+            "http://localhost:3000/settings"
+        )
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertEqual(self.latest_ack("telegram")["error"], "settings_unavailable")
+        self.adapter.install_channel.assert_not_called()
+
 
 class TelegramPreparationTests(unittest.TestCase):
     def test_missing_menu_url_never_prepares_or_installs(self):
@@ -312,6 +415,14 @@ class ProviderReadinessTests(unittest.TestCase):
                     path, service_main_pid=123, since_unix=1, provider="slack"
                 )
             )
+            saved = state["platforms"].pop("slack")
+            path.write_text(json.dumps(state))
+            self.assertIsNone(
+                readiness._runtime_state_telegram_evidence(
+                    path, service_main_pid=123, since_unix=1, provider="slack"
+                )
+            )
+            state["platforms"]["slack"] = saved
             state["platforms"]["slack"]["state"] = "connected"
             path.write_text(json.dumps(state))
             self.assertTrue(
@@ -373,6 +484,16 @@ class WebhookRecoveryTests(unittest.TestCase):
                 ),
             )
 
+    def test_missing_update_subscription_is_not_narrowed(self):
+        with patch.object(
+            command,
+            "_telegram_transport",
+            return_value={"url": "https://example.com/hook"},
+        ):
+            self.assertNotIn(
+                "allowed_updates", command._snapshot_webhook("secret-token")
+            )
+
     def test_previous_polling_does_not_set_a_webhook(self):
         with patch.object(
             command, "_telegram_transport", return_value={"url": ""}
@@ -423,6 +544,10 @@ class TelegramFallbackTests(unittest.IsolatedAsyncioTestCase):
                 probe.call_args.kwargs["service_invocation_id"], "test-invocation"
             )
             self.assertEqual(probe.call_args.kwargs["since_unix"], 100)
+            probe.return_value = {"status_healthy": False, "telegram_connected": None}
+            self.assertIsNone(
+                await command._telegram_fallback(Path("/bin/hermes"), 100, 5)
+            )
             same.return_value = False
             self.assertIsNone(
                 await command._telegram_fallback(Path("/bin/hermes"), 100, 5)

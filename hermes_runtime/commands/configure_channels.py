@@ -48,10 +48,14 @@ class ChannelSetupError(RuntimeError):
         super().__init__(code)
 
 
-def _prepare_telegram(channel):
+def _validate_telegram_settings(channel):
     url = urlsplit(str(channel.get("settings_miniapp_url") or ""))
     if url.scheme != "https" or not url.hostname or url.username or url.password:
         raise ChannelSetupError("settings_unavailable")
+
+
+def _prepare_telegram(channel):
+    _validate_telegram_settings(channel)
     if not ensure_telegram_network_fallback_env(_env_file_candidates()).get("ok"):
         raise ChannelSetupError("network_unavailable")
     try:
@@ -103,12 +107,14 @@ def _snapshot_webhook(token):
         raise ChannelSetupError("network_unavailable")
     # Tinyhat managed-bot parking authenticates in its private URL, not with a
     # secret header. Preserve that observed destination and queued updates.
-    return {
+    payload = {
         "url": url,
-        "allowed_updates": result.get("allowed_updates", ["message"]),
         "max_connections": result.get("max_connections", 40),
         "drop_pending_updates": False,
     }
+    if "allowed_updates" in result:
+        payload["allowed_updates"] = result["allowed_updates"]
+    return payload
 
 
 def _restore_webhook(token, snapshot):
@@ -146,7 +152,7 @@ async def _telegram_fallback(hermes, since, budget):
             return (
                 result.get("telegram_connected")
                 if result.get("status_healthy")
-                else False
+                else None
             )
         return None
     foreground = await asyncio.to_thread(_active_gateway_foreground_generation, hermes)
@@ -270,6 +276,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             channels = []
             for channel in config.get("channels") or []:
                 if channel.get("provider") not in SUPPORTED_PROVIDERS:
+                    if channel.get("status") != "connected":
+                        raise RuntimeError(
+                            "Update the runtime to configure this channel."
+                        )
                     continue
                 if not channel.get("revision"):
                     raise RuntimeError("A channel revision is required.")
@@ -294,7 +304,38 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             hermes = find_hermes_binary()
             if hermes is None:
                 raise RuntimeError("Hermes is not installed on this Computer.")
-            outcomes = []
+            outcomes = [
+                {"provider": c["provider"], "status": "connected"}
+                for c in channels
+                if c not in pending
+            ]
+            by_provider = {c["provider"]: c for c in channels}
+
+            async def refresh_survivors(gateway, since):
+                survivors = [item for item in outcomes if item["status"] == "connected"]
+                if not survivors:
+                    return
+                states = (
+                    await _connected([item["provider"] for item in survivors], since)
+                    if gateway.get("healthy")
+                    else {}
+                )
+                await current()
+                for item in survivors:
+                    state = states.get(item["provider"])
+                    if state is True:
+                        continue
+                    code = (
+                        "readiness_unknown"
+                        if gateway.get("healthy") and state is None
+                        else "gateway_unavailable"
+                    )
+                    await acknowledge(by_provider[item["provider"]], False, code)
+                    item.update(status="failed", error=code)
+                    # Applied revision means values were installed, not that
+                    # this gateway generation is connected. Failed platform
+                    # status forces an explicit retry despite that local marker.
+
             for channel in pending:
                 provider = channel["provider"]
                 await current()
@@ -318,10 +359,12 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                 webhook = None
                 try:
                     if provider == "telegram":
-                        await asyncio.to_thread(_prepare_telegram, channel)
+                        _validate_telegram_settings(channel)
                         webhook = await asyncio.to_thread(
                             _snapshot_webhook, channel["bot_token"]
                         )
+                        changed = True
+                        await asyncio.to_thread(_prepare_telegram, channel)
                     changed = wrote = True
                     await asyncio.to_thread(
                         adapter.install_channel, assignment, channel
@@ -350,6 +393,9 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         else {}
                     )
                     await current()
+                    # Every restart replaces the generation supporting earlier
+                    # success, including providers skipped as already applied.
+                    await refresh_survivors(gateway, since)
                     if not gateway.get("healthy") or states.get(provider) is False:
                         raise ChannelSetupError("gateway_unavailable")
                     if states.get(provider) is not True:
@@ -377,55 +423,64 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         provider,
                         type(exc).__name__,
                     )
-                    if wrote:
-                        await current()
-                        await asyncio.to_thread(adapter.restore_channel, snapshot)
-                    if restarted:
-                        recovery_since = time.time()
-                        recovery, _ = await _run_gateway_for_managed_setup(hermes)
-                    else:
-                        recovery = {"healthy": True}
-                    if released:
-                        await current()
-                        await asyncio.to_thread(
-                            _restore_webhook, channel["bot_token"], webhook
-                        )
                     code = (
                         exc.code
                         if isinstance(exc, ChannelSetupError)
                         else "invalid_credentials"
                     )
+                    # Publish the failure before recovery: a secondary transport
+                    # or restoration error must not swallow the original result.
                     await acknowledge(channel, False, code)
-                    outcomes.append(
-                        {"provider": provider, "status": "failed", "error": code}
-                    )
-                    if not recovery.get("healthy"):
+                    outcome = {"provider": provider, "status": "failed", "error": code}
+                    outcomes.append(outcome)
+                    recovery = {"healthy": False}
+                    recovery_since = time.time()
+                    recovery_fenced = False
+                    try:
+                        if wrote:
+                            await current()
+                            await asyncio.to_thread(adapter.restore_channel, snapshot)
+                        if restarted:
+                            recovery_since = time.time()
+                            recovery, _ = await _run_gateway_for_managed_setup(hermes)
+                        if released:
+                            await current()
+                            await asyncio.to_thread(
+                                _restore_webhook, channel["bot_token"], webhook
+                            )
+                    except Exception as recovery_error:
+                        if isinstance(
+                            recovery_error, (AssignmentChanged, AssignmentUnavailable)
+                        ) or getattr(recovery_error, "status_code", None) in {
+                            401,
+                            403,
+                            404,
+                            409,
+                        }:
+                            recovery_fenced = True
+                            raise
+                        logger.warning(
+                            "Channel recovery failed: provider=%s exception_type=%s",
+                            provider,
+                            type(recovery_error).__name__,
+                        )
+                        recovery_code = (
+                            recovery_error.code
+                            if isinstance(recovery_error, ChannelSetupError)
+                            else "setup_failed"
+                        )
+                        await acknowledge(channel, False, recovery_code)
+                        outcome.update(error=recovery_code)
+                        raise
+                    finally:
+                        # Also runs when webhook restoration fails or the
+                        # gateway cannot recover. Never retain stale success.
+                        if restarted and not recovery_fenced:
+                            await refresh_survivors(recovery, recovery_since)
+                    if restarted and not recovery.get("healthy"):
                         raise RuntimeError(
                             "Channel activation and gateway recovery failed."
                         )
-                    # Prior providers keep their values; verify their state after
-                    # the recovery restart rather than reporting stale success.
-                    survivors = [
-                        item for item in outcomes if item["status"] == "connected"
-                    ]
-                    if restarted and survivors:
-                        recovered = await _connected(
-                            [item["provider"] for item in survivors], recovery_since
-                        )
-                        for item in survivors:
-                            if recovered.get(item["provider"]) is not True:
-                                old = next(
-                                    c
-                                    for c in channels
-                                    if c["provider"] == item["provider"]
-                                )
-                                code = (
-                                    "readiness_unknown"
-                                    if recovered.get(item["provider"]) is None
-                                    else "gateway_unavailable"
-                                )
-                                await acknowledge(old, False, code)
-                                item.update(status="failed", error=code)
                     continue
                 await acknowledge(channel, True)
                 await asyncio.to_thread(

@@ -866,7 +866,7 @@ def test_runtime_state_evidence_rejects_retrying_telegram() -> None:
     assert result is False
 
 
-def test_runtime_state_evidence_rejects_missing_telegram_row() -> None:
+def test_runtime_state_evidence_treats_missing_telegram_row_as_unknown() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         state = Path(tmp) / "gateway_state.json"
         state.write_text(
@@ -885,7 +885,7 @@ def test_runtime_state_evidence_rejects_missing_telegram_row() -> None:
             service_main_pid=123,
             since_unix=1000.0,
         )
-    assert result is False
+    assert result is None
 
 
 def test_runtime_state_evidence_ignores_malformed_json() -> None:
