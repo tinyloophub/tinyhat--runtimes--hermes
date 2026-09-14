@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
+from hermes_runtime import agent_desktops
 
 SYSTEM_COMMANDS = {"codex": "codex", "claude_code": "claude", "hermes": "hermes", "openclaw": "openclaw"}
 INVENTORY_SCHEMA = "tinyhat.agent-systems.v1"
@@ -56,6 +57,7 @@ async def inventory() -> dict[str, Any]:
     desktop_ready = all(shutil.which(command) for command in ("tigervncserver", "vncpasswd", "startxfce4", "xfce4-terminal", "dbus-launch"))
     browser_ready = any(shutil.which(command) for command in ("google-chrome-stable", "google-chrome", "chromium", "chromium-browser"))
     result = {"schema": INVENTORY_SCHEMA, "desktop_ready": bool(desktop_ready and browser_ready), **dict(zip(SYSTEM_COMMANDS, probes))}
+    result["desktop_apps"] = agent_desktops.inventory()
     # This is public build provenance, never credentials or machine identity.
     try:
         manifest = Path("/opt/tinyhat-agent-image/manifest.json").read_bytes()
@@ -147,6 +149,7 @@ def apply_context(ctx: Any, value: Any, *, home: Path | None = None) -> None:
         '[Desktop Entry]\nVersion=1.0\nType=Application\nName=Tinyhat Agent\n'
         'Comment=Open ' + context["system"] + '\nExec="' + desktop_exec + '"\n'
         'Icon=utilities-terminal\nTerminal=true\nCategories=Development;\n', 0o755)
+    agent_desktops.write_launchers(directory, context["system"])
     ctx.agent_api_context_ready = True
 
 

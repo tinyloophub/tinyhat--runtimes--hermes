@@ -715,6 +715,51 @@ assignment. This explicit mode skips Telegram gateway inspection/reconciliation;
 it does not invent a bot identity or mark model login complete. The platform
 continues to own Guacamole transport and its short-lived access credentials.
 
+## Linux coding-agent desktop apps
+
+Image builders explicitly run `python3 -m hermes_runtime.agent_desktops --install`
+before publishing a new image. It installs the official ChatGPT desktop app
+(Codex mode) and Claude Desktop from their vendors on Ubuntu 24.04/26.04 or
+Debian 13, amd64/arm64. Anthropic's apt signing fingerprint is checked before
+registering its repository. Installed packages are preserved on repeated runs.
+This installer never runs on heartbeat, assignment or an ordinary runtime update.
+
+Inventory adds `desktop_apps` with installation presence, not authentication.
+An assigned Codex/Claude Computer gets its matching desktop shortcut alongside
+the existing Tinyhat Agent CLI shortcut. On current root-owned XFCE sessions,
+the launcher supplies Electron's required root flag; normal users retain the
+app's default sandbox. Nothing copies or reads provider credentials.
+
+For an explicit repair on a compatible older Computer:
+
+```sh
+PYTHONPATH=/opt/tinyhat-hermes-runtime python3 -m hermes_runtime.agent_desktops --install --system codex
+```
+
+Use `--system claude_code` for Claude or `--system hermes` / `--system openclaw` to remove Tinyhat-managed
+coding-app desktop icons. Without `--system`, installation writes no desktop
+shortcuts; assignment selects the matching icon. User-created icons are preserved.
+This repair is an explicit operator shell action, not an admin runtime command;
+the platform rollout path is a fresh image bake.
+
+Both vendors register apt sources. ChatGPT's official package installs its signed
+OpenAI apt source; Anthropic's source is registered by this installer. An operator's
+subsequent `apt upgrade` can update these apps independently of the runtime.
+Downloaded ChatGPT bytes are identified by a local SHA-256 digest under
+`/var/lib/tinyhat/agent-desktop-install/`, alongside installed package versions and
+architecture. The digest records the download; it is not an independently verified
+vendor checksum. Package name/architecture checks are format checks, not proof of
+authenticity. The initial ChatGPT download relies on the vendor's HTTPS endpoint.
+
+Claude Chat and Code are the intended desktop modes. The installer skips optional
+Cowork VM dependencies; Cowork is not enabled or verified on these Computers.
+
+Complete CLI and desktop sign-in separately through each provider's supported
+browser flow. Verify real responses in both; installation and cached login
+status do not prove working model access. Hermes channel authentication remains
+independent. See the official [ChatGPT Linux instructions](https://learn.chatgpt.com/docs/linux/linux-app)
+and [Claude Linux instructions](https://code.claude.com/docs/en/desktop-linux).
+
 ## Computer timing metadata
 
 Use `~/tinyhat/computer.json` for timings; `~/.config/tinyhat/computer.json`
