@@ -780,7 +780,8 @@ emails. It preserves the owner's model and settings for other channels.
 adapter methods to keep prior provider values in memory while activating each
 provider independently. A confirmed failure restores only that provider and
 restarts the previous configuration; successful sibling channels keep their
-values and are rechecked after recovery. An unreadable snapshot aborts before
+values and are rechecked after each restart. Unknown evidence does not downgrade
+an unchanged connected sibling. An unreadable snapshot aborts before
 installation. A healthy gateway with unknown provider evidence is left running,
 reported as `readiness_unknown`, and requires an explicit retry. Missing readiness
 never becomes an automatic restart loop. For Telegram, the observed managed-bot
@@ -798,3 +799,8 @@ an explicit owner/admin retry.
 For Telegram this command also installs the existing network fallback and quick
 commands. The plugin persists `TINYHAT_SETTINGS_MINIAPP_URL`; the runtime sets the
 bot menu and command priority. The destination remains owner-authenticated.
+
+Unsupported pending providers are reported as `setup_failed` while supported
+providers continue. A failed acknowledgement does not skip recovery; recovery
+still requires a fresh ownership check before changing local state. The platform
+allows 30 minutes for this command; provider probes use 20-second budgets.

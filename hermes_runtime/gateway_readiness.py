@@ -132,7 +132,8 @@ def _gateway_argv_tail(argv: Any) -> list[str] | None:
         if (
             token == "gateway/run.py"
             or token.endswith("/gateway/run.py")
-            or token.rsplit("/", 1)[-1] in {"hermes-gateway", "hermes-gateway.exe"}
+            or token.rsplit("/", 1)[-1]
+            in {"hermes-gateway", "hermes-gateway.exe"}
         ):
             return [
                 *selectors,
@@ -304,7 +305,8 @@ def _gateway_argv_belongs_to_home(argv: list[str], expected_home: Path) -> bool:
 
     profile_name = (
         expected_home.name
-        if expected_home.parent.name == "profiles" and expected_home.name != "default"
+        if expected_home.parent.name == "profiles"
+        and expected_home.name != "default"
         else None
     )
     if profile_name is None:
@@ -319,7 +321,9 @@ def _gateway_argv_belongs_to_home(argv: list[str], expected_home: Path) -> bool:
 def _read_proc_state_and_start_time(pid: int) -> tuple[str, int] | None:
     """Return Linux ``/proc`` state and field-22 process-start ticks."""
     try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        raw = Path(f"/proc/{pid}/stat").read_text(
+            encoding="utf-8", errors="replace"
+        )
     except OSError:
         return None
     end = raw.rfind(")")
@@ -423,7 +427,9 @@ def _live_process_identity(pid: int) -> tuple[int, list[str], float] | None:
             )
             ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
             started_at_unix = (
-                time.time() - uptime_seconds + (proc_start_ticks / ticks_per_second)
+                time.time()
+                - uptime_seconds
+                + (proc_start_ticks / ticks_per_second)
             )
         except (OSError, ValueError, IndexError):
             return None
@@ -499,7 +505,8 @@ def gateway_runtime_generation_same(
     ):
         return False
     return all(
-        first.get(field) == second.get(field) for field in ("pid", "start_time", "argv")
+        first.get(field) == second.get(field)
+        for field in ("pid", "start_time", "argv")
     )
 
 
@@ -559,7 +566,8 @@ def gateway_runtime_generation_active(
         return None
     live_start, live_argv, _started_at_unix = live
     return bool(
-        live_start == expected_start and _gateway_argv_tail(live_argv) == expected_argv
+        live_start == expected_start
+        and _gateway_argv_tail(live_argv) == expected_argv
     )
 
 
@@ -795,7 +803,9 @@ async def probe_functional_readiness(
     # A service restart must be tied to the new systemd invocation. An
     # unfiltered foreground log can still receive bytes from the old process
     # during shutdown, so it is not valid evidence for a systemd generation.
-    log_result = None if invocation_id else _log_telegram_evidence(log_path, log_offset)
+    log_result = (
+        None if invocation_id else _log_telegram_evidence(log_path, log_offset)
+    )
     state_result = (
         _runtime_state_telegram_evidence(
             runtime_state_path or (hermes_home() / "gateway_state.json"),

@@ -274,11 +274,32 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                 },
             )
             channels = []
+            unsupported = []
             for channel in config.get("channels") or []:
                 if channel.get("provider") not in SUPPORTED_PROVIDERS:
                     if channel.get("status") != "connected":
-                        raise RuntimeError(
-                            "Update the runtime to configure this channel."
+                        # A newer platform can offer providers this runtime
+                        # does not understand. Do not block supported siblings.
+                        try:
+                            await acknowledge(channel, False, "setup_failed")
+                        except Exception as report_error:
+                            if getattr(report_error, "status_code", None) in {
+                                401,
+                                403,
+                                404,
+                                409,
+                            }:
+                                raise
+                            logger.warning(
+                                "Unsupported channel acknowledgement failed: exception_type=%s",
+                                type(report_error).__name__,
+                            )
+                        unsupported.append(
+                            {
+                                "provider": channel.get("provider"),
+                                "status": "failed",
+                                "error": "setup_failed",
+                            }
                         )
                     continue
                 if not channel.get("revision"):
@@ -294,42 +315,44 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     or applied != channel["revision"]
                 ):
                     pending.append(channel)
-            if not pending:
+            if not pending and not unsupported:
                 return {
                     "schema": SCHEMA,
                     "changed": False,
                     "prepared": True,
-                    "channels": [],
+                    "channels": [
+                        {"provider": c["provider"], "status": "connected"}
+                        for c in channels
+                    ],
                 }
             hermes = find_hermes_binary()
             if hermes is None:
                 raise RuntimeError("Hermes is not installed on this Computer.")
-            outcomes = [
+            outcomes = unsupported + [
                 {"provider": c["provider"], "status": "connected"}
                 for c in channels
                 if c not in pending
             ]
             by_provider = {c["provider"]: c for c in channels}
 
-            async def refresh_survivors(gateway, since):
+            async def refresh_survivors(gateway):
                 survivors = [item for item in outcomes if item["status"] == "connected"]
                 if not survivors:
                     return
                 states = (
-                    await _connected([item["provider"] for item in survivors], since)
+                    await _connected([item["provider"] for item in survivors], 0)
                     if gateway.get("healthy")
                     else {}
                 )
                 await current()
                 for item in survivors:
                     state = states.get(item["provider"])
-                    if state is True:
+                    # Unchanged settings are not a fresh installation. Require
+                    # the live process generation but do not demand a rewritten
+                    # provider timestamp or erase success for missing evidence.
+                    if gateway.get("healthy") and state is not False:
                         continue
-                    code = (
-                        "readiness_unknown"
-                        if gateway.get("healthy") and state is None
-                        else "gateway_unavailable"
-                    )
+                    code = "gateway_unavailable"
                     await acknowledge(by_provider[item["provider"]], False, code)
                     item.update(status="failed", error=code)
                     # Applied revision means values were installed, not that
@@ -395,7 +418,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     await current()
                     # Every restart replaces the generation supporting earlier
                     # success, including providers skipped as already applied.
-                    await refresh_survivors(gateway, since)
+                    await refresh_survivors(gateway)
                     if not gateway.get("healthy") or states.get(provider) is False:
                         raise ChannelSetupError("gateway_unavailable")
                     if states.get(provider) is not True:
@@ -428,20 +451,29 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         if isinstance(exc, ChannelSetupError)
                         else "invalid_credentials"
                     )
-                    # Publish the failure before recovery: a secondary transport
-                    # or restoration error must not swallow the original result.
-                    await acknowledge(channel, False, code)
+                    # Reporting must not prevent local recovery. A confirmed
+                    # ownership rejection still stops all local mutation.
+                    report_error = None
+                    try:
+                        await acknowledge(channel, False, code)
+                    except Exception as failure:
+                        if getattr(failure, "status_code", None) in {
+                            401,
+                            403,
+                            404,
+                            409,
+                        }:
+                            raise
+                        report_error = failure
                     outcome = {"provider": provider, "status": "failed", "error": code}
                     outcomes.append(outcome)
                     recovery = {"healthy": False}
-                    recovery_since = time.time()
                     recovery_fenced = False
                     try:
                         if wrote:
                             await current()
                             await asyncio.to_thread(adapter.restore_channel, snapshot)
                         if restarted:
-                            recovery_since = time.time()
                             recovery, _ = await _run_gateway_for_managed_setup(hermes)
                         if released:
                             await current()
@@ -464,19 +496,16 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                             provider,
                             type(recovery_error).__name__,
                         )
-                        recovery_code = (
-                            recovery_error.code
-                            if isinstance(recovery_error, ChannelSetupError)
-                            else "setup_failed"
-                        )
-                        await acknowledge(channel, False, recovery_code)
-                        outcome.update(error=recovery_code)
+                        # Keep the original activation failure in platform state;
+                        # recovery diagnostics belong to this failed command.
                         raise
                     finally:
                         # Also runs when webhook restoration fails or the
                         # gateway cannot recover. Never retain stale success.
                         if restarted and not recovery_fenced:
-                            await refresh_survivors(recovery, recovery_since)
+                            await refresh_survivors(recovery)
+                    if report_error is not None:
+                        raise report_error
                     if restarted and not recovery.get("healthy"):
                         raise RuntimeError(
                             "Channel activation and gateway recovery failed."

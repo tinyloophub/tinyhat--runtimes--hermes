@@ -318,6 +318,69 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.latest_ack("telegram")["connected"])
         self.adapter.install_channel.assert_called_once()
 
+    async def test_unchanged_sibling_keeps_success_when_readiness_is_unknown(self):
+        self.add_telegram()
+        self.channel["status"] = "connected"
+        self.adapter.applied_revision.return_value = "rev1"
+        command._connected.side_effect = [{"telegram": True}, {"slack": None}]
+        result = await command.run(self.ctx, self.input)
+        self.assertEqual(
+            result["channels"][0], {"provider": "slack", "status": "connected"}
+        )
+        self.assertEqual(command._connected.call_args.args, (["slack"], 0))
+        self.adapter.restore_channel.assert_not_called()
+        self.assertTrue(self.latest_ack("telegram")["connected"])
+
+    async def test_failure_report_transport_error_does_not_skip_local_recovery(self):
+        self.add_telegram()
+        self.config["channels"] = [self.config["channels"][-1]]
+        command._connected.return_value = {"telegram": False}
+
+        async def report(path, payload):
+            if path.endswith("/applied"):
+                raise OSError("transport unavailable")
+            return {}
+
+        self.platform.post_json.side_effect = report
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.adapter.restore_channel.assert_called_once()
+        self.assertEqual(command._run_gateway_for_managed_setup.await_count, 2)
+        command._restore_webhook.assert_called_once()
+
+    async def test_unsupported_pending_provider_does_not_block_supported_sibling(self):
+        self.config["channels"].insert(
+            0,
+            {"provider": "future_provider", "revision": "future1", "status": "pending"},
+        )
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertEqual(self.latest_ack("future_provider")["error"], "setup_failed")
+        self.assertTrue(self.latest_ack("slack")["connected"])
+        self.adapter.record_applied.assert_called_once_with(
+            self.config["assignment"], "slack", "rev1"
+        )
+
+    async def test_unsupported_provider_report_rejection_preserves_supported_setup(
+        self,
+    ):
+        from hermes_runtime.client import PlatformError
+
+        self.config["channels"].insert(
+            0,
+            {"provider": "future_provider", "revision": "future1", "status": "pending"},
+        )
+
+        async def report(path, payload):
+            if payload.get("provider") == "future_provider":
+                raise PlatformError("unsupported provider", status_code=422)
+            return {}
+
+        self.platform.post_json.side_effect = report
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.assertTrue(self.latest_ack("slack")["connected"])
+
     async def test_webhook_recovery_failure_still_acknowledges_and_rechecks(self):
         self.add_telegram()
         command._connected.side_effect = [
@@ -332,14 +395,14 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await command.run(self.ctx, self.input)
         self.assertFalse(self.latest_ack("slack")["connected"])
-        self.assertEqual(self.latest_ack("telegram")["error"], "network_unavailable")
+        self.assertEqual(self.latest_ack("telegram")["error"], "gateway_unavailable")
 
     async def test_restore_failure_cannot_swallow_failed_acknowledgement(self):
         command._connected.return_value = {"slack": False}
         self.adapter.restore_channel.side_effect = ValueError("private-detail")
         with self.assertRaises(RuntimeError):
             await command.run(self.ctx, self.input)
-        self.assertEqual(self.latest_ack("slack")["error"], "setup_failed")
+        self.assertEqual(self.latest_ack("slack")["error"], "gateway_unavailable")
         self.assertNotIn("private-detail", str(self.platform.post_json.call_args_list))
 
     async def test_confirmed_rejection_during_recovery_is_not_masked(self):

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep unchanged connected channels on unknown readiness, recover despite failed status reporting, and configure supported providers even when a newer provider is unavailable.
+
 - Configure optional Telegram and Slack channels on an already owned Computer,
   including Slack without Telegram. Fetch assignment-scoped credentials from
   the platform and decrypt Slack credentials only on the destination Computer.
