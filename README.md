@@ -274,6 +274,7 @@ it.
 | `install_tinyhat_plugin` | `hermes_runtime/commands/install_tinyhat_plugin.py` | Installs the Tinyhat plugin after Hermes Agent is present, and skips reinstalling when the plugin already exists. | Resolves `TINYHAT_PLUGIN_REF` (default `channels/lts`) from `TINYHAT_PLUGIN_REPO_URL` (default `https://github.com/tinyhat-ai/tinyhat.git`), prepares that checkout, runs `hermes plugins install file://... --enable`, then runs `hermes plugins enable tinyhat`. Records repo/ref/commit in `.tinyhat-plugin-source.json`. Does not configure Telegram or read Tinyhat platform credentials. |
 | `update_tinyhat_plugin` | `hermes_runtime/commands/update_tinyhat_plugin.py` | Updates the Tinyhat plugin independently of the Tinyhat runtime. | Resolves the configured logical plugin ref, compares it with installed repo/ref/commit metadata, and reinstalls through `hermes plugins install file://... --enable --force` only when the target changed or the plugin is missing. `target_commit` or `target_sha` may pin the full checked commit while metadata keeps the logical channel/tag in `ref`; retries no-op when repo, logical ref, and commit already match. A long-running Hermes Telegram gateway may still need a Hermes restart to reload plugin commands. |
 | `configure_telegram` | `hermes_runtime/commands/configure_telegram.py` | Configures Hermes Agent to use the Telegram bot assigned to this Computer. | Calls the computer-authenticated Tinyhat setup endpoint while the agent has a short-lived setup grant, writes `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`, `TELEGRAM_HOME_CHANNEL`, and the platform OpenRouter key into Hermes env files, installs the Telegram quick commands documented below, configures OpenRouter `openai/gpt-4o-transcribe` command-provider STT with explicit sequential OpenRouter model fallbacks before local `small` faster-whisper, configures auxiliary vision through OpenRouter `google/gemini-2.5-flash` with up to three OpenRouter model fallbacks (override with `TINYHAT_HERMES_VISION_PROVIDER` / `TINYHAT_HERMES_VISION_MODEL` / `TINYHAT_HERMES_OPENROUTER_VISION_FALLBACK_MODELS`), preserves an explicit `TELEGRAM_FALLBACK_IPS` value or seeds Hermes' own last-resort endpoints so startup cannot hang in its unbounded system-DNS discovery task, clears Telegram webhook delivery for the bot, and starts `hermes gateway`. The token and OpenRouter key are not returned in the command result; when the runtime posts a successful command result, the platform marks the Computer/agent active and revokes the setup grant so the token cannot be fetched again. |
+| `configure_channels` | `hermes_runtime/commands/configure_channels.py` | Connects optional Telegram and Slack channels to an already-owned Computer. | Reads assignment-scoped platform configuration, publishes the Computer public key, decrypts Slack credentials locally, installs owner allowlists before tokens, and verifies each provider before acknowledgement. Already-applied revisions are a no-op. Keeps model, email, and user files. Requires a compatible Tinyhat plugin with the standard-library-only `capabilities/channels/runtime.py` adapter. |
 | `onboarding_greeting` | `hermes_runtime/commands/onboarding_greeting.py` | Lets the newly configured Hermes agent introduce itself in its own voice after setup. | Runs one local Hermes turn with only the `tinyhat-onboarding-greeting` skill preloaded, then delivers the bounded response through Hermes' configured Telegram home channel. The greeting stays on the Computer; the platform receives only delivery status and character count. |
 | `apply_config` | `hermes_runtime/commands/apply_config.py` | Applies Tinyhat runtime config changes after the settings Mini App saves a secret. | Fetches the latest computer-authenticated runtime secret map, writes the values into Hermes env files, reloads the updated keys into the runtime process, records Tinyhat-managed terminal aliases for every valid saved env name (`_HERMES_FORCE_<ENV_NAME>`), sends the owner a short notice, and restarts `hermes gateway` so Hermes loads added, updated, or removed secret env vars. Command results include only secret names and env-file paths, never secret values. |
 | `enroll_private_access` | `hermes_runtime/commands/enroll_private_access.py` | Connects a managed Computer to Tinyhat's private Tailscale network. | Pulls one short-lived enrollment key through the Computer-authenticated platform API, installs and starts Tailscale when needed, passes the key to `tailscale up` through a temporary `0600` file, deletes that file immediately, and returns only non-secret node state and its tailnet IP. The key never enters the command ledger or durable status. |
@@ -772,3 +773,44 @@ background restart of the same configuration.
 Email configuration deliberately enables the channel, suppresses gateway restart
 notifications, and forces final-only responses without reasoning or progress
 emails. It preserves the owner's model and settings for other channels.
+
+### Channel activation recovery
+
+`configure_channels` uses the plugin's `snapshot_channel` / `restore_channel`
+adapter methods to keep prior provider values in memory while activating each
+provider independently. A confirmed failure restores only that provider and
+restarts the previous configuration; successful sibling channels keep their
+values and are rechecked after each restart. Unknown evidence does not downgrade
+an unchanged connected sibling. An unreadable snapshot aborts before
+installation. A healthy gateway with unknown provider evidence is left running,
+reported as `readiness_unknown`, and requires an explicit retry. Missing readiness
+never becomes an automatic restart loop. For Telegram, the observed managed-bot
+webhook is restored on rollback, without dropping queued updates. Its private
+URL remains in memory and is never logged. Tinyhat managed webhook URLs carry
+their authentication; arbitrary custom-certificate webhook migrations are rejected.
+
+Recovery is not a transactional rollback of model or user files:
+model and email settings are never included in the snapshot. Confirmed ownership
+rejection stops the gateway. A transient platform failure before activation does
+not stop working chat. Missing per-provider state is `readiness_unknown`, distinct
+from a disconnected gateway; the platform records a failed channel and waits for
+an explicit owner/admin retry.
+
+For Telegram this command also installs the existing network fallback and quick
+commands. The plugin persists `TINYHAT_SETTINGS_MINIAPP_URL`; the runtime sets the
+bot menu and command priority. The destination remains owner-authenticated.
+
+Unsupported pending providers are reported as `setup_failed` while supported
+providers continue. Missing provider/revision fields and failed acknowledgements
+have distinct result codes; they do not block supported channels. An unsupported-only
+request is a no-op and does not require Hermes or restart its gateway.
+
+A failed acknowledgement does not skip recovery; recovery still requires a fresh
+ownership check. The platform owns the overall command timeout. New-provider
+probes use a 20-second budget; unchanged providers get a separate five-second
+window to refresh their evidence after a restart. An unchanged provider still
+connecting is unknown, not a confirmed failure. A survivor is downgraded only
+when every observation in that window is negative: Hermes can briefly report
+disconnected during a successful restart. Any unknown or converging evidence
+preserves its previous connected status. A later failure needs an explicit retry
+to refresh that status; this bounded check is not continuous channel monitoring.

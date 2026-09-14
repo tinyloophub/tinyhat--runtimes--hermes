@@ -592,6 +592,9 @@ def _runtime_state_telegram_evidence(
     since_unix: float,
     expected_start_time: int | None = None,
     expected_argv: list[str] | None = None,
+    provider: str = "telegram",
+    stale_is_unknown: bool = False,
+    connecting_is_unknown: bool = False,
 ) -> bool | None:
     """Return invocation-scoped Telegram state; ``None`` means unusable.
 
@@ -599,7 +602,8 @@ def _runtime_state_telegram_evidence(
     PID match binds it to the same MainPID systemd reported for the new
     generation. Requiring both the gateway and Telegram platform timestamps to
     be fresh prevents a new process from inheriting an old ``connected`` entry
-    during the first read/merge/write at startup.
+    during the first read/merge/write at startup. Survivor probes may treat a
+    fresh connecting state as unknown while an existing adapter reconnects.
     """
     if path is None or not service_main_pid or service_main_pid <= 0:
         return None
@@ -629,9 +633,9 @@ def _runtime_state_telegram_evidence(
 
     gateway_updated_at = _parse_iso_timestamp(payload.get("updated_at"))
     platforms = payload.get("platforms")
-    telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+    telegram = platforms.get(provider) if isinstance(platforms, dict) else None
     if not isinstance(telegram, dict):
-        return False
+        return None
     telegram_updated_at = _parse_iso_timestamp(telegram.get("updated_at"))
     # Heal supplies its restart time and heartbeat inspection converts the
     # current service's monotonic start time into this wall-clock domain. That
@@ -643,13 +647,46 @@ def _runtime_state_telegram_evidence(
         or gateway_updated_at < since_unix
         or telegram_updated_at < since_unix
     ):
-        return False
+        return None if stale_is_unknown else False
 
     gateway_state = str(payload.get("gateway_state") or "").strip().lower()
-    telegram_state = str(
-        telegram.get("state") or telegram.get("status") or ""
-    ).strip().lower()
+    telegram_state = (
+        str(telegram.get("state") or telegram.get("status") or "").strip().lower()
+    )
+    if connecting_is_unknown and telegram_state in {"connecting", "reconnecting"}:
+        return None
     return gateway_state == "running" and telegram_state == "connected"
+
+
+def connected_channel_states(
+    providers: list[str],
+    *,
+    since_unix: float,
+    stale_is_unknown: bool = False,
+    connecting_is_unknown: bool = False,
+) -> dict[str, bool | None]:
+    """Read provider readiness from the same live gateway generation."""
+    generation = read_gateway_runtime_generation()
+    if generation is None:
+        return {provider: None for provider in providers}
+    result = {
+        provider: _runtime_state_telegram_evidence(
+            hermes_home() / "gateway_state.json",
+            service_main_pid=generation["pid"],
+            since_unix=since_unix,
+            expected_start_time=generation["start_time"],
+            expected_argv=generation["argv"],
+            provider=provider,
+            stale_is_unknown=stale_is_unknown,
+            connecting_is_unknown=connecting_is_unknown,
+        )
+        for provider in providers
+    }
+    if not gateway_runtime_generation_same(
+        generation, read_gateway_runtime_generation()
+    ):
+        return {provider: None for provider in providers}
+    return result
 
 
 def gateway_status_reports_telegram_fatal(result: dict[str, Any] | None) -> bool:

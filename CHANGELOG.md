@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Preserve existing channels through temporary disconnects during a gateway restart;
+  downgrade only when the entire bounded observation window reports failure.
+
+- Keep unchanged connected channels on unknown readiness, recover despite failed status reporting, and configure supported providers even when a newer provider is unavailable.
+
+- Configure optional Telegram and Slack channels on an already owned Computer,
+  including Slack without Telegram. Fetch assignment-scoped credentials from
+  the platform and decrypt Slack credentials only on the destination Computer.
+- Reuse saved revisions without reinstalling Hermes or replacing model/email
+  settings. Report connected status only after the new gateway confirms each
+  provider, and preserve healthy channels during transient platform errors.
+- Recover failed providers independently, preserve the prior Telegram webhook
+  subscription, and re-check every connected provider after each restart. Unknown readiness is reported separately and requires an explicit
+  retry. Telegram setup includes network fallback, settings and quick commands.
+
 ## 0.0.65 - 2026-09-13
 
 - Leave fresh Hermes installations without a selected model so assignment can

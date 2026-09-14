@@ -13,6 +13,10 @@ from urllib import error, parse, request
 class PlatformError(RuntimeError):
     """The Tinyhat platform returned an error or malformed response."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class CachedGoogleIdentityToken:
     """Fetch and cache the VM identity token used for production platform calls."""
@@ -114,7 +118,8 @@ class PlatformClient:
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise PlatformError(
-                f"{method} {path} failed with HTTP {exc.code}: {detail}"
+                f"{method} {path} failed with HTTP {exc.code}: {detail}",
+                status_code=exc.code,
             ) from exc
         except error.URLError as exc:
             raise PlatformError(f"{method} {path} failed: {exc.reason}") from exc
