@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Preserve existing channels that are still reconnecting after a gateway restart;
-  only fresh terminal failures downgrade their previous connected status.
+- Preserve existing channels through temporary disconnects during a gateway restart;
+  downgrade only when the entire bounded observation window reports failure.
 
 - Keep unchanged connected channels on unknown readiness, recover despite failed status reporting, and configure supported providers even when a newer provider is unavailable.
 

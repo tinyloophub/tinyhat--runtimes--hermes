@@ -623,7 +623,7 @@ class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
 
                 with (
                     patch.object(
-                        command.time, "monotonic", side_effect=lambda: clock[0]
+                        command, "time", SimpleNamespace(monotonic=lambda: clock[0])
                     ),
                     patch.object(command.asyncio, "sleep", side_effect=sleep),
                     patch.object(
@@ -636,13 +636,75 @@ class SurvivorPollingTests(unittest.IsolatedAsyncioTestCase):
                     result = await command._connected(
                         ["telegram"], 1000, survivors=True
                     )
-                self.assertEqual(result, {"telegram": eventual})
+                self.assertEqual(result, {"telegram": True if eventual is True else None})
                 self.assertGreater(read.call_count, 1)
                 self.assertEqual(
                     clock[0],
                     3 if eventual is True else command.SURVIVOR_READY_TIMEOUT_SECONDS,
                 )
                 fallback.assert_not_awaited()
+
+    async def test_restart_transition_cannot_downgrade_survivor_at_deadline(self):
+        # Replay an observed connected -> disconnected -> connecting -> connected
+        # restart through the actual readiness parser at several window offsets.
+        from datetime import datetime, timezone
+
+        for offset in (0, 5, 10, 11, 12, 15, 20, 23):
+            with self.subTest(offset=offset), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "gateway_state.json"
+                clock = [float(offset)]
+
+                async def sleep(seconds):
+                    clock[0] += seconds
+
+                def probe(providers, **kwargs):
+                    elapsed = clock[0]
+                    value, updated = (
+                        ("connected", 999)
+                        if elapsed < 14.98
+                        else ("disconnected", 1014.98)
+                        if elapsed < 17.11
+                        else ("connecting", 1017.11)
+                        if elapsed < 27.80
+                        else ("connected", 1027.80)
+                    )
+                    stamp = datetime.fromtimestamp(updated, timezone.utc).isoformat()
+                    path.write_text(json.dumps({
+                        "pid": 123,
+                        "gateway_state": "running",
+                        "updated_at": stamp,
+                        "platforms": {"telegram": {"state": value, "updated_at": stamp}},
+                    }))
+                    return {"telegram": readiness._runtime_state_telegram_evidence(
+                        path, service_main_pid=123, provider="telegram", **kwargs
+                    )}
+
+                with (
+                    patch.object(command, "time", SimpleNamespace(monotonic=lambda: clock[0])),
+                    patch.object(command.asyncio, "sleep", side_effect=sleep),
+                    patch.object(readiness, "connected_channel_states", side_effect=probe),
+                ):
+                    result = await command._connected(["telegram"], 1000, survivors=True)
+                self.assertIsNot(result["telegram"], False)
+                self.assertLessEqual(clock[0] - offset, command.SURVIVOR_READY_TIMEOUT_SECONDS)
+
+    async def test_consistently_failed_survivor_is_still_reported_per_provider(self):
+        clock = [0.0]
+
+        async def sleep(seconds):
+            clock[0] += seconds
+
+        def probe(*args, **kwargs):
+            return {"telegram": False, "slack": None if clock[0] < 3 else False}
+
+        with (
+            patch.object(command, "time", SimpleNamespace(monotonic=lambda: clock[0])),
+            patch.object(command.asyncio, "sleep", side_effect=sleep),
+            patch.object(readiness, "connected_channel_states", side_effect=probe),
+        ):
+            result = await command._connected(["telegram", "slack"], 1000, survivors=True)
+        self.assertEqual(result, {"telegram": False, "slack": None})
+        self.assertEqual(clock[0], command.SURVIVOR_READY_TIMEOUT_SECONDS)
 
 
 class AdapterLoadingTests(unittest.TestCase):

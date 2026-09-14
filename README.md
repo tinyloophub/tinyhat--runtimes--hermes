@@ -809,6 +809,8 @@ A failed acknowledgement does not skip recovery; recovery still requires a fresh
 ownership check. The platform owns the overall command timeout. New-provider
 probes use a 20-second budget; unchanged providers get a separate five-second
 window to refresh their evidence after a restart. An unchanged provider still
-connecting is unknown, not a confirmed failure. Fresh terminal failures are reported;
-evidence that remains unknown preserves the previous connected status. A later
-failure needs an explicit retry to refresh that status.
+connecting is unknown, not a confirmed failure. A survivor is downgraded only
+when every observation in that window is negative: Hermes can briefly report
+disconnected during a successful restart. Any unknown or converging evidence
+preserves its previous connected status. A later failure needs an explicit retry
+to refresh that status; this bounded check is not continuous channel monitoring.

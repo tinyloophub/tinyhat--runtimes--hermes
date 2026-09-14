@@ -211,6 +211,7 @@ async def _connected(
     deadline = time.monotonic() + (
         SURVIVOR_READY_TIMEOUT_SECONDS if survivors else CHANNEL_READY_TIMEOUT_SECONDS
     )
+    consistently_failed = set(providers)
     while True:
         states = await asyncio.to_thread(
             connected_channel_states,
@@ -219,6 +220,13 @@ async def _connected(
             stale_is_unknown=survivors,
             connecting_is_unknown=survivors,
         )
+        if survivors:
+            # Hermes briefly writes disconnected during a successful restart.
+            # Only downgrade a survivor when every observation is negative;
+            # inherited/missing or converging evidence keeps it unconfirmed.
+            consistently_failed.intersection_update(
+                provider for provider in providers if states.get(provider) is False
+            )
         remaining = deadline - time.monotonic()
         if (
             not survivors
@@ -234,6 +242,16 @@ async def _connected(
             except (TimeoutError, OSError):
                 pass
         if all(states.values()) or time.monotonic() >= deadline:
+            if survivors:
+                return {
+                    provider: (
+                        None
+                        if states.get(provider) is False
+                        and provider not in consistently_failed
+                        else states.get(provider)
+                    )
+                    for provider in providers
+                }
             return states
         await asyncio.sleep(1)
 
