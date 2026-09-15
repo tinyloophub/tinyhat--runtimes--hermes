@@ -566,6 +566,108 @@ def test_worker_restarts_gateway_after_successful_device_auth() -> None:
     )
 
 
+def test_reconnect_runs_fresh_cli_flows_even_when_saved_status_is_logged_in() -> None:
+    """Exercise the real PTY adapters, not just mocked worker success values."""
+    for failure in ("", "codex", "hermes", "model", "cached"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls = root / "calls"
+            script = "\n".join([
+                f"#!{sys.executable}",
+                "import pathlib, sys",
+                f"calls = pathlib.Path({str(calls)!r})",
+                "name = pathlib.Path(sys.argv[0]).name",
+                "args = sys.argv[1:]",
+                "with calls.open('a') as f: f.write(name + ' ' + ' '.join(args) + '\\n')",
+                f"failure = {failure!r}",
+                "if name == 'codex':",
+                "    if args == ['login', 'status']: print('Logged in using ChatGPT')",
+                "    elif args == ['login', '--device-auth']:",
+                "        sys.exit(1 if failure == 'codex' else 0)",
+                "    else: sys.exit(9)",
+                "elif args[:2] == ['auth', 'status']:",
+                "    print('openai-codex: logged in')",
+                "elif args == ['model', '--no-browser']:",
+                "    print('Select provider:\\n  1. OpenAI (Codex CLI)', flush=True)",
+                "    input()",
+                "    print('Existing Codex credentials found in Hermes auth store.\\nUse existing credentials? [Y/n]:', flush=True)",
+                "    assert input().strip() == 'n'",
+                "    print('Found existing Codex CLI credentials\\nImport these credentials?', flush=True)",
+                "    assert input().strip() == 'n'",
+                "    if failure == 'hermes': sys.exit(1)",
+                "    if failure != 'cached': print('Open https://auth.openai.com/codex/device and enter code ABCD-EFGH', flush=True)",
+                "    if failure == 'model': sys.exit(1)",
+                "    print('Select default model:', flush=True)",
+                "    input()",
+                "    print('Default model set to: gpt-5.5', flush=True)",
+                "else: sys.exit(9)",
+            ]) + "\n"
+            for name in ("codex", "hermes"):
+                binary = root / name
+                binary.write_text(script)
+                binary.chmod(0o755)
+            sent: list[str] = []
+            restart = Mock(return_value={"healthy": True})
+            with (
+                patch.dict(os.environ, {"HOME": tmp}),
+                patch.object(codex_auth, "find_hermes_binary", return_value=root / "hermes"),
+                patch.object(codex_auth, "find_codex_binary", return_value=root / "codex"),
+                patch.object(codex_auth, "AUTH_TIMEOUT_SECONDS", 5),
+                patch.object(codex_auth, "_configure_multimedia_after_auth", return_value={"ok": True}),
+                patch.object(codex_auth, "_restart_gateway_after_auth", restart),
+                patch.object(codex_auth, "_telegram_send", side_effect=lambda text, **kwargs: sent.append(text) or {"ok": True}),
+            ):
+                result = codex_auth.worker()
+                status = codex_auth._read_status()
+            invoked = calls.read_text().splitlines()
+            assert invoked[0] == "codex login --device-auth", (failure, invoked)
+            assert result == (1 if failure else 0), (failure, invoked)
+            assert status["state"] == ("failed" if failure else "connected")
+            if failure == "codex":
+                assert "hermes model --no-browser" not in invoked
+            else:
+                assert invoked.count("hermes model --no-browser") == 1
+            assert not any(line.startswith("hermes auth add") for line in invoked)
+            if failure:
+                restart.assert_not_called()
+                assert "Ready ✅" not in sent
+            else:
+                restart.assert_called_once()
+                assert "Ready ✅" in sent
+
+
+def test_reconnect_selects_new_login_in_both_official_credential_menus() -> None:
+    for numbered in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "hermes"
+            prompt = ("1. Use existing credentials\n2. Reauthenticate (new OAuth login)"
+                      if numbered else "→ (●) Use existing credentials\n(○) Reauthenticate (new OAuth login)")
+            expected = "2" if numbered else "\x1b[B"
+            binary.write_text(
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                "print('Select provider: 1. OpenAI (Codex CLI)', flush=True)\n"
+                "input()\n"
+                f"print('OpenAI Codex credentials:\\n' + {prompt!r}, flush=True)\n"
+                f"assert input() == {expected!r}\n"
+                "print('Open https://auth.openai.com/codex/device and enter code ABCD-EFGH', flush=True)\n"
+                "print('Select default model:', flush=True)\n"
+                "input()\n"
+                "print('Default model set to: gpt-5.5', flush=True)\n"
+            )
+            binary.chmod(0o755)
+            with (
+                patch.dict(os.environ, {"HOME": tmp}),
+                patch.object(codex_auth, "AUTH_TIMEOUT_SECONDS", 5),
+                patch.object(codex_auth, "_telegram_send", return_value={"ok": True}) as send,
+            ):
+                result = codex_auth._run_config_switch(binary, reconnect=True)
+            assert result["ok"], result
+            assert result["device_auth_requested"]
+            assert send.call_count == 2
+            assert "ABCD-EFGH" not in result["output"]
+
+
 def test_completion_message_keeps_multimedia_failure_actionable() -> None:
     assert codex_auth._completion_message(
         switch={"ok": True},
@@ -638,85 +740,6 @@ def test_worker_stops_when_codex_cli_auth_fails_before_touching_hermes_auth() ->
     config_switch.assert_not_called()
     gateway_restart.assert_not_called()
     assert any("Codex CLI auth did not complete" in text for text in sent)
-
-
-def test_worker_uses_openai_codex_model_provider_after_fallback_auth_alias() -> None:
-    switch_calls: list[Path] = []
-    multimedia_config = Mock(return_value={"ok": True, "commands": []})
-
-    def fake_auth_once(_hermes_bin: Path, provider: str) -> tuple[int, bool]:
-        if provider == "openai-codex":
-            return 1, False
-        return 0, True
-
-    def fake_switch(hermes_bin: Path) -> dict[str, object]:
-        switch_calls.append(hermes_bin)
-        if len(switch_calls) == 1:
-            return {"ok": False, "model_provider": "openai-codex"}
-        return {
-            "ok": True,
-            "model_provider": "openai-codex",
-            "model_default": "gpt-5.5",
-        }
-
-    with tempfile.TemporaryDirectory() as tmp:
-        old_env = os.environ.copy()
-        os.environ.update({"HOME": tmp})
-        try:
-            with (
-                patch(
-                    "hermes_runtime.telegram_codex_auth.find_hermes_binary",
-                    return_value=Path("/usr/local/bin/hermes"),
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth.find_codex_binary",
-                    return_value=Path("/usr/local/bin/codex"),
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._ensure_codex_cli_auth",
-                    return_value=(0, False, {"ok": True}),
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._run_auth_once",
-                    side_effect=fake_auth_once,
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._run_config_switch",
-                    side_effect=fake_switch,
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._restart_gateway_after_auth",
-                    return_value={"healthy": True, "started": True},
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._configure_multimedia_after_auth",
-                    multimedia_config,
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._auth_status",
-                    return_value={"ok": True, "provider": "codex-oauth"},
-                ),
-                patch(
-                    "hermes_runtime.telegram_codex_auth._telegram_send",
-                    return_value={"ok": True},
-                ),
-            ):
-                exit_code = codex_auth.worker()
-                status = codex_auth._read_status()
-        finally:
-            os.environ.clear()
-            os.environ.update(old_env)
-
-    assert exit_code == 0
-    assert switch_calls == [Path("/usr/local/bin/hermes"), Path("/usr/local/bin/hermes")]
-    multimedia_config.assert_called_once_with(
-        Path("/usr/local/bin/hermes"),
-        codex_chat_model="gpt-5.5",
-    )
-    assert status is not None
-    assert status["provider"] == "codex-oauth"
-    assert status["model_provider"] == "openai-codex"
-    assert status["multimedia_config"]["ok"] is True
 
 
 def test_status_reports_connected_state_without_exposing_tokens() -> None:

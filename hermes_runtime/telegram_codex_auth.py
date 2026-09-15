@@ -457,7 +457,7 @@ def _extract_selected_model(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
+def _run_config_switch(hermes_bin: Path, *, reconnect: bool = False) -> dict[str, Any]:
     started = time.monotonic()
     command = [str(hermes_bin), "model", "--no-browser"]
     master_fd, slave_fd = pty.openpty()
@@ -479,9 +479,12 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
     sent_cli_import = False
     sent_model = False
     timed_out = False
+    saw_material = False
+    device_code: str | None = None
+    timeout = AUTH_TIMEOUT_SECONDS if reconnect else MODEL_PICKER_TIMEOUT_SECONDS
     try:
         while True:
-            if time.monotonic() - started > MODEL_PICKER_TIMEOUT_SECONDS:
+            if time.monotonic() - started > timeout:
                 timed_out = True
                 process.terminate()
                 break
@@ -503,6 +506,19 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
                     break
 
             clean = _terminal_text(output)
+            if reconnect and not saw_material:
+                material = _extract_auth_material(clean)
+                if material.get("url") and material.get("code"):
+                    saw_material = True
+                    device_code = str(material["code"])
+                    delivery = _send_auth_material(material, "Hermes Codex")
+                    _write_status({
+                        "state": "device_code_sent" if delivery.get("ok") else "delivery_failed",
+                        "provider": PRIMARY_PROVIDER,
+                        "auth_pid": process.pid,
+                        "has_url": True,
+                        "has_code": True,
+                    })
             if not sent_provider and "Select provider:" in clean and "OpenAI" in clean:
                 choice = _provider_menu_choice(clean)
                 if choice is not None:
@@ -524,7 +540,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
                 and "Found existing Codex CLI credentials" in clean
                 and "Import these credentials?" in clean
             ):
-                _send_model_picker_key(master_fd, "y\n")
+                _send_model_picker_key(master_fd, "n\n" if reconnect else "y\n")
                 sent_cli_import = True
                 sent_credentials = True
             elif (
@@ -532,12 +548,20 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
                 and "Existing Codex credentials found in Hermes auth store." in clean
                 and "Use existing credentials?" in clean
             ):
-                _send_enter(master_fd)
+                _send_model_picker_key(master_fd, "n\n" if reconnect else "\n")
                 sent_credentials = True
             elif not sent_credentials and "OpenAI Codex credentials:" in clean:
-                # The device-code command has just completed; keep Hermes'
-                # existing Codex credential and continue its formal picker.
-                _send_enter(master_fd)
+                if reconnect:
+                    # Wait for the menu, rather than its earlier status heading.
+                    if "Reauthenticate (new OAuth login)" not in clean:
+                        continue
+                    if re.search(r"2\.\s+Reauthenticate", clean):
+                        _send_model_picker_key(master_fd, "2\n")
+                    else:
+                        _send_arrows(master_fd, 1)
+                        _send_enter(master_fd)
+                else:
+                    _send_enter(master_fd)
                 sent_credentials = True
             elif not sent_model and "Select default model:" in clean:
                 # Hermes places its recommended Codex model first.
@@ -562,13 +586,20 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
     else:
         returncode = process.returncode
     selected_model = _extract_selected_model(output)
+    safe_output = _redact_sensitive_text(_terminal_text(output)[-4000:])
+    if device_code:
+        safe_output = safe_output.replace(device_code, "[redacted-device-code]")
     return {
         "command": command,
         "source": "hermes model",
         "model_provider": MODEL_PROVIDER,
         "model_default": selected_model,
-        "ok": returncode == 0 and not timed_out and bool(selected_model),
+        "ok": (
+            returncode == 0 and not timed_out and bool(selected_model)
+            and (not reconnect or saw_material)
+        ),
         "returncode": returncode,
+        "device_auth_requested": saw_material,
         "timed_out": timed_out,
         "selections": {
             "provider": sent_provider,
@@ -577,7 +608,7 @@ def _run_config_switch(hermes_bin: Path) -> dict[str, Any]:
             "cli_import": sent_cli_import,
             "model": sent_model,
         },
-        "output": _redact_sensitive_text(_terminal_text(output)[-4000:]),
+        "output": safe_output,
         "duration_ms": int((time.monotonic() - started) * 1000),
     }
 
@@ -908,11 +939,10 @@ def _run_codex_cli_login_once(codex_bin: Path) -> tuple[int, bool]:
 
 
 def _ensure_codex_cli_auth(codex_bin: Path) -> tuple[int, bool, dict[str, Any]]:
-    """Ensure the official Codex CLI is logged in before Hermes switches."""
+    """Obtain a fresh grant for this explicitly requested reconnect."""
 
-    status = _codex_cli_status(codex_bin)
-    if status.get("ok"):
-        return 0, False, status
+    # `login status` also succeeds for revoked credentials. It cannot decide
+    # whether to skip the device flow when the user asks to reconnect.
     returncode, saw_material = _run_codex_cli_login_once(codex_bin)
     return returncode, saw_material, _codex_cli_status(codex_bin)
 
@@ -965,84 +995,49 @@ def worker() -> int:
         )
         return codex_returncode or 1
 
-    switch = _run_config_switch(hermes_bin)
-    if switch.get("ok"):
-        multimedia = _configure_multimedia_after_auth(
-            hermes_bin,
-            codex_chat_model=str(switch.get("model_default") or ""),
-        )
-        restart_notice = _send_auth_restart_notice()
-        gateway = _restart_gateway_after_auth(hermes_bin)
-        status = _auth_status(hermes_bin)
-        codex_status = _codex_cli_status(codex_bin)
-        _write_status(
-            {
-                "state": "connected",
-                "provider": PRIMARY_PROVIDER,
-                "model_provider": MODEL_PROVIDER,
-                "codex_cli_status": codex_status,
-                "config_switch": switch,
-                "multimedia_config": multimedia,
-                "gateway_restart_notice": restart_notice,
-                "gateway_restart": gateway,
-                "auth_status": status,
-                "message": "OpenAI Codex auth connected.",
-            }
-        )
-        _telegram_send(_completion_message(switch=switch, gateway=gateway, multimedia=multimedia))
-        return 0
-
-    last_returncode = 1
-    for provider in (PRIMARY_PROVIDER, FALLBACK_PROVIDER):
-        try:
-            last_returncode, saw_material = _run_auth_once(hermes_bin, provider)
-        except Exception as exc:  # noqa: BLE001 - worker must report to Telegram.
-            _append_log(f"{provider} failed: {exc}\n")
-            last_returncode = 1
-            saw_material = False
-        if last_returncode == 0:
-            switch = _run_config_switch(hermes_bin)
-            multimedia = _configure_multimedia_after_auth(
-                hermes_bin,
-                codex_chat_model=str(switch.get("model_default") or ""),
-            )
-            restart_notice = _send_auth_restart_notice()
-            gateway = _restart_gateway_after_auth(hermes_bin)
-            status = _auth_status(hermes_bin)
-            codex_status = _codex_cli_status(codex_bin)
-            _write_status(
-                {
-                    "state": "connected",
-                    "provider": provider,
-                    "model_provider": MODEL_PROVIDER,
-                    "codex_cli_status": codex_status,
-                    "config_switch": switch,
-                    "multimedia_config": multimedia,
-                    "gateway_restart_notice": restart_notice,
-                    "gateway_restart": gateway,
-                    "auth_status": status,
-                    "message": "OpenAI Codex auth connected.",
-                }
-            )
-            _telegram_send(
-                _completion_message(switch=switch, gateway=gateway, multimedia=multimedia)
-            )
-            return 0
-        if saw_material:
-            break
-
-    _write_status(
-        {
+    # The official picker must replace Hermes' grant, rather than import the
+    # CLI grant or append another pool entry behind the revoked credential.
+    _write_status({"state": "starting", "provider": PRIMARY_PROVIDER,
+                   "message": "Starting a fresh Hermes Codex sign-in."})
+    try:
+        switch = _run_config_switch(hermes_bin, reconnect=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        switch = {"ok": False, "message": str(exc)}
+    if not switch.get("ok"):
+        _write_status({
             "state": "failed",
-            "provider": provider,
-            "returncode": last_returncode,
-            "message": "OpenAI Codex auth did not complete.",
-        }
+            "provider": PRIMARY_PROVIDER,
+            "config_switch": switch,
+            "message": "OpenAI Codex sign-in or model activation did not complete.",
+        })
+        _telegram_send(
+            "OpenAI Codex sign-in or model activation did not complete. "
+            "Send /codex_auth_log to see the latest output, then run /codex_auth to try again."
+        )
+        return 1
+
+    multimedia = _configure_multimedia_after_auth(
+        hermes_bin,
+        codex_chat_model=str(switch.get("model_default") or ""),
     )
-    _telegram_send(
-        "OpenAI Codex auth did not complete. Send /codex_auth_log to see the latest auth output, then run /codex_auth to try again."
-    )
-    return last_returncode or 1
+    restart_notice = _send_auth_restart_notice()
+    gateway = _restart_gateway_after_auth(hermes_bin)
+    status = _auth_status(hermes_bin)
+    codex_status = _codex_cli_status(codex_bin)
+    _write_status({
+        "state": "connected",
+        "provider": PRIMARY_PROVIDER,
+        "model_provider": MODEL_PROVIDER,
+        "codex_cli_status": codex_status,
+        "config_switch": switch,
+        "multimedia_config": multimedia,
+        "gateway_restart_notice": restart_notice,
+        "gateway_restart": gateway,
+        "auth_status": status,
+        "message": "OpenAI Codex auth connected.",
+    })
+    _telegram_send(_completion_message(switch=switch, gateway=gateway, multimedia=multimedia))
+    return 0
 
 
 def start() -> str:
