@@ -28,7 +28,7 @@ from typing import Any
 from urllib import error, parse, request
 
 from hermes_runtime.codex_limits import find_codex_binary
-from hermes_runtime.hermes_cli import find_hermes_binary
+from hermes_runtime.hermes_cli import find_hermes_binary, root_user_manager_env
 
 STATE_SCHEMA = "tinyhat_hermes_codex_auth_v1"
 PRIMARY_PROVIDER = "openai-codex"
@@ -704,9 +704,21 @@ def _restart_gateway_after_auth(hermes_bin: Path) -> dict[str, Any]:
     """Restart Hermes so the freshly written auth/config is used for chat."""
 
     try:
-        from hermes_runtime.commands.configure_telegram import _run_gateway
+        from hermes_runtime.commands import heal_hermes
 
-        return asyncio.run(_run_gateway(hermes_bin))
+        result = asyncio.run(heal_hermes.run(None, {
+            "kind": "heal_hermes",
+            "spec": {"restart": True, "reason": "codex_auth_reconnect"},
+        }))
+        restart = result.get("restart") or {}
+        return {
+            **result,
+            "healthy": bool(
+                result.get("healthy") and result.get("healed")
+                and restart.get("verified") and restart.get("functionally_verified")
+            ),
+            "started": bool(restart.get("performed")),
+        }
     except Exception as exc:  # noqa: BLE001 - auth worker reports best-effort status.
         return {
             "healthy": False,
@@ -769,9 +781,10 @@ def _completion_message(
         return "Ready ✅"
     if switch.get("ok"):
         return (
-            "OpenAI Codex auth is connected ✅\n\n"
-            "I switched Hermes to OpenAI Codex, but I could not confirm the Telegram gateway restart. "
-            "Send /codex_auth_status if replies look stale."
+            "OpenAI sign-in completed, but the gateway restart could not be verified. "
+            "Replies may still use the previous credentials or model. "
+            "You do not need to sign in again; send /codex_auth_status "
+            "and ask your Computer administrator to restart the gateway."
         )
     return (
         "OpenAI Codex auth finished, but I could not switch Hermes to the Codex provider automatically. "
@@ -1033,7 +1046,7 @@ def worker() -> int:
     status = _auth_status(hermes_bin)
     codex_status = _codex_cli_status(codex_bin)
     _write_status({
-        "state": "connected",
+        "state": "connected" if gateway.get("healthy") else "failed",
         "provider": PRIMARY_PROVIDER,
         "model_provider": MODEL_PROVIDER,
         "codex_cli_status": codex_status,
@@ -1042,10 +1055,50 @@ def worker() -> int:
         "gateway_restart_notice": restart_notice,
         "gateway_restart": gateway,
         "auth_status": status,
-        "message": "OpenAI Codex auth connected.",
+        "message": (
+            "OpenAI Codex auth connected." if gateway.get("healthy")
+            else "OpenAI sign-in completed, but the gateway restart was not verified."
+        ),
     })
     _telegram_send(_completion_message(switch=switch, gateway=gateway, multimedia=multimedia))
-    return 0
+    return 0 if gateway.get("healthy") else 1
+
+
+def _launch_worker_service() -> None:
+    """Run outside the gateway cgroup so its restart cannot kill this worker.
+
+    A new session/process group does not escape a systemd service. The user
+    manager also supplies a clean environment instead of inheriting Hermes'
+    in-gateway context. Forward only this worker's documented configuration.
+    """
+    worker_env = {**os.environ, **root_user_manager_env()}
+    prefix = os.getenv("TINYHAT_RUNTIME_PREFIX") or "/opt/tinyhat-hermes-runtime"
+    worker_env["PYTHONPATH"] = f"{prefix}:{os.getenv('PYTHONPATH') or ''}"
+    command = [
+        "systemd-run", "--user", "--quiet", "--collect",
+        "--property=Type=exec", "--property=UMask=0077",
+        f"--property=StandardOutput=append:{_log_path().resolve()}",
+        "--property=StandardError=inherit",
+    ]
+    for name in (
+        "PATH", "PYTHONPATH", "HERMES_HOME", "HERMES_ENV_FILE",
+        "HERMES_PROJECT_DIR", "HERMES_BIN", "CODEX_BIN", "CODEX_HOME",
+        "TINYHAT_RUNTIME_PREFIX", "TINYHAT_RUNTIME_STATE_DIR",
+        "TINYHAT_CODEX_AUTH_STATE_DIR", "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_HOME_CHANNEL", "TELEGRAM_ALLOWED_USERS",
+    ):
+        if name in worker_env:
+            # systemd-run reads the value from its environment; credentials
+            # never become command-line arguments.
+            command.append(f"--setenv={name}")
+    command.extend([sys.executable, "-m", "hermes_runtime.telegram_codex_auth", "worker"])
+    result = subprocess.run(
+        command, env=worker_env, stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        detail = _redact_sensitive_text(result.stderr or result.stdout)[-1000:]
+        raise RuntimeError(f"Could not start the independent auth worker: {detail}")
 
 
 def start() -> str:
@@ -1058,6 +1111,17 @@ def start() -> str:
     if not _claim_start_lock():
         return (
             "OpenAI Codex auth is already starting. I will send the auth link and completion message here."
+        )
+
+    if sys.platform == "linux":
+        try:
+            _launch_worker_service()
+        except Exception:
+            _release_start_lock()
+            raise
+        return (
+            "I am starting OpenAI Codex auth now. "
+            "I will send the authorization link and code here in a moment."
         )
 
     script = (

@@ -432,7 +432,9 @@ def test_start_spawns_worker_without_waiting_for_device_flow() -> None:
         old_env = os.environ.copy()
         os.environ.update({"HOME": tmp})
         try:
-            with patch("hermes_runtime.telegram_codex_auth.subprocess.Popen", FakePopen):
+            with patch.object(codex_auth.sys, "platform", "darwin"), patch(
+                "hermes_runtime.telegram_codex_auth.subprocess.Popen", FakePopen
+            ):
                 message = codex_auth.start()
         finally:
             os.environ.clear()
@@ -460,7 +462,9 @@ def test_start_uses_start_lock_to_avoid_duplicate_workers() -> None:
         old_env = os.environ.copy()
         os.environ.update({"HOME": tmp})
         try:
-            with patch("hermes_runtime.telegram_codex_auth.subprocess.Popen", FakePopen):
+            with patch.object(codex_auth.sys, "platform", "darwin"), patch(
+                "hermes_runtime.telegram_codex_auth.subprocess.Popen", FakePopen
+            ):
                 first = codex_auth.start()
                 second = codex_auth.start()
         finally:
@@ -831,3 +835,92 @@ def test_log_redacts_token_like_values() -> None:
 
     assert "sk-secretvalue" not in output
     assert "[redacted]" in output
+def test_linux_start_isolates_worker_from_gateway_service() -> None:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+        'HOME': tmp,
+        'TINYHAT_CODEX_AUTH_STATE_DIR': str(Path(tmp) / 'auth'),
+        '_HERMES_GATEWAY': '1',
+        'TELEGRAM_BOT_TOKEN': 'private-test-token',
+        'HERMES_ENV_FILE': str(Path(tmp) / '.env'),
+    }):
+        launched = Mock(return_value=subprocess.CompletedProcess([], 0, '', ''))
+        with (
+            patch.object(codex_auth.sys, 'platform', 'linux'),
+            patch.object(codex_auth.subprocess, 'run', launched),
+            patch.object(codex_auth.subprocess, 'Popen') as popen,
+        ):
+            message = codex_auth.start()
+        assert 'starting OpenAI Codex auth' in message
+        popen.assert_not_called()
+        command = launched.call_args.args[0]
+        assert command[:4] == ['systemd-run', '--user', '--quiet', '--collect']
+        assert '--property=Type=exec' in command
+        assert '--property=UMask=0077' in command
+        assert '--setenv=HERMES_ENV_FILE' in command
+        assert '--setenv=TELEGRAM_BOT_TOKEN' in command
+        assert not any('_HERMES_GATEWAY' in arg for arg in command)
+        assert not any('private-test-token' in arg for arg in command)
+        assert command[-3:] == ['-m', 'hermes_runtime.telegram_codex_auth', 'worker']
+        assert launched.call_args.kwargs['timeout'] == 10
+
+
+def test_linux_start_failure_releases_lock_without_unsafe_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+        'HOME': tmp, 'TINYHAT_CODEX_AUTH_STATE_DIR': str(Path(tmp) / 'auth'),
+    }):
+        with (
+            patch.object(codex_auth.sys, 'platform', 'linux'),
+            patch.object(codex_auth.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'user manager unavailable')),
+            patch.object(codex_auth.subprocess, 'Popen') as popen,
+        ):
+            try:
+                codex_auth.start()
+            except RuntimeError as exc:
+                assert 'user manager unavailable' in str(exc)
+            else:
+                raise AssertionError('launch failure must not report auth starting')
+        popen.assert_not_called()
+        assert not codex_auth._start_lock_path().exists()
+
+
+def test_auth_restart_requires_a_verified_new_gateway() -> None:
+    from unittest.mock import AsyncMock
+    from hermes_runtime.commands import heal_hermes, configure_telegram
+    for verified in (False, True):
+        healing = AsyncMock(return_value={
+            'healthy': True, 'healed': verified,
+            'restart': {'performed': verified, 'verified': verified, 'functionally_verified': verified},
+        })
+        legacy = AsyncMock(return_value={'healthy': True, 'stopped': False, 'started': True})
+        with patch.object(heal_hermes, 'run', healing), patch.object(configure_telegram, '_run_gateway', legacy):
+            result = codex_auth._restart_gateway_after_auth(Path('/usr/local/bin/hermes'))
+        assert result['healthy'] is verified
+        legacy.assert_not_called()
+        healing.assert_awaited_once()
+        command = healing.call_args.args[1]
+        assert command['kind'] == 'heal_hermes'
+        assert command['spec']['restart'] is True
+
+
+def test_worker_reports_failed_when_gateway_restart_is_unverified() -> None:
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+        'HOME': tmp, 'TINYHAT_CODEX_AUTH_STATE_DIR': str(Path(tmp) / 'auth'),
+    }):
+        sent = []
+        with (
+            patch.object(codex_auth, 'find_hermes_binary', return_value=Path('/bin/hermes')),
+            patch.object(codex_auth, 'find_codex_binary', return_value=Path('/bin/codex')),
+            patch.object(codex_auth, '_ensure_codex_cli_auth', return_value=(0, True, {'ok': True})),
+            patch.object(codex_auth, '_run_config_switch', return_value={'ok': True, 'model_default': 'gpt-5.5'}),
+            patch.object(codex_auth, '_configure_multimedia_after_auth', return_value={'ok': True}),
+            patch.object(codex_auth, '_restart_gateway_after_auth', return_value={'healthy': False, 'started': False}),
+            patch.object(codex_auth, '_auth_status', return_value={'ok': True}),
+            patch.object(codex_auth, '_telegram_send', side_effect=lambda message, **kw: sent.append(message) or {'ok': True}),
+        ):
+            result = codex_auth.worker()
+        assert result == 1
+        status = codex_auth._read_status()
+        assert status['state'] == 'failed'
+        assert 'restart' in status['message'].lower()
+        assert 'Ready ✅' not in sent
+        assert 'sign in again' in sent[-1]
