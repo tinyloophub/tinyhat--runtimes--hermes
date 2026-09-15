@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Request fresh Codex CLI and Hermes sign-ins on `/codex_auth` reconnects.
+  Cached login status and model selection could previously accept revoked
+  credentials and report success. Stop if model activation fails. Preserve
+  the private auth log so owners can retrieve the second prompt or inspect
+  a Hermes login error when Telegram delivery fails.
+
 ## 0.0.68 - 2026-09-15
 
 - Report verified Slack app/workspace identifiers to compatible platform APIs
