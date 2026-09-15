@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Report verified Slack app/workspace identifiers to compatible platform APIs
+  so owners can open their bot conversation directly. Existing connections can
+  discover missing links without rewriting settings or restarting Hermes.
+  Requires the companion plugin's `slack_identity` adapter; older stacks keep
+  their existing channel behavior.
+
 ## 0.0.67 - 2026-09-14
 
 - Add an explicit image-bake installer for the official Linux ChatGPT (Codex)

@@ -297,6 +297,45 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     try:
         config = await current()
         with channel_adapter() as adapter:
+
+            async def report_slack_identity(channel):
+                if (
+                    channel["provider"] != "slack"
+                    or not channel.get("identity_reporting_supported")
+                    or channel.get("chat_url")
+                    or not callable(getattr(adapter, "slack_identity", None))
+                ):
+                    return
+                await current()
+                try:
+                    identity = await asyncio.to_thread(adapter.slack_identity)
+                except Exception as exc:
+                    logger.warning(
+                        "Slack chat link discovery failed: exception_type=%s",
+                        type(exc).__name__,
+                    )
+                    return
+                await current()
+                try:
+                    await ctx.platform.post_json(
+                        path + "/slack/identity",
+                        {
+                            "assignment": assignment,
+                            "revision": channel["revision"],
+                            "workspace_id": identity["workspace_id"],
+                            "app_id": identity["app_id"],
+                        },
+                    )
+                except Exception as exc:
+                    if getattr(exc, "status_code", None) in {401, 403}:
+                        raise
+                    # Link discovery must not restart or disconnect a working
+                    # channel. A later configure call retries missing metadata.
+                    logger.warning(
+                        "Slack chat link report failed: exception_type=%s",
+                        type(exc).__name__,
+                    )
+
             key = await asyncio.to_thread(adapter.prepare_key, assignment)
             await ctx.platform.post_json(
                 path + "/key",
@@ -364,6 +403,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     or applied != channel["revision"]
                 ):
                     pending.append(channel)
+                else:
+                    await report_slack_identity(channel)
             if not pending:
                 return {
                     "schema": SCHEMA,
@@ -578,6 +619,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     adapter.record_applied, assignment, provider, channel["revision"]
                 )
                 outcomes.append({"provider": provider, "status": "connected"})
+                await report_slack_identity(channel)
             if any(
                 item["status"] == "failed" and item["provider"] in SUPPORTED_PROVIDERS
                 for item in outcomes
