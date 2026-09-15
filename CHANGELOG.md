@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.68 - 2026-09-15
 
 - Report verified Slack app/workspace identifiers to compatible platform APIs
   so owners can open their bot conversation directly. Existing connections can
   discover missing links without rewriting settings or restarting Hermes.
-  Requires the companion plugin's `slack_identity` adapter; older stacks keep
+  Requires Tinyhat plugin 0.32.18 and compatible channel APIs; older stacks keep
   their existing channel behavior.
 
 ## 0.0.67 - 2026-09-14
