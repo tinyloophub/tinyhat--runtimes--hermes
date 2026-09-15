@@ -668,6 +668,42 @@ def test_reconnect_selects_new_login_in_both_official_credential_menus() -> None
             assert "ABCD-EFGH" not in result["output"]
 
 
+def test_reconnect_log_recovers_hermes_prompt_and_login_errors() -> None:
+    for has_prompt in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "hermes"
+            output = ("Open https://auth.openai.com/codex/device and enter code ABCD-EFGH\n"
+                      if has_prompt else "") + "Login failed: device authorization HTTP 429"
+            binary.write_text(
+                f"#!{sys.executable}\n"
+                "import sys\n"
+                "print('Select provider: 1. OpenAI (Codex CLI)', flush=True)\n"
+                "input()\n"
+                f"print({output!r}, flush=True)\n"
+                "sys.exit(1)\n"
+            )
+            binary.chmod(0o755)
+            with (
+                patch.dict(os.environ, {"TINYHAT_CODEX_AUTH_STATE_DIR": str(Path(tmp) / "state")}),
+                patch.object(codex_auth, "AUTH_TIMEOUT_SECONDS", 5),
+                patch.object(codex_auth, "_telegram_send", return_value={"ok": False, "description": "temporary delivery failure"}),
+            ):
+                result = codex_auth._run_config_switch(binary, reconnect=True)
+                log = codex_auth._read_log()
+                status = codex_auth._read_status()
+                assert codex_auth._log_path().stat().st_mode & 0o777 == 0o600
+            assert not result["ok"]
+            assert "Login failed: device authorization HTTP 429" in log
+            if has_prompt:
+                assert "ABCD-EFGH" in log  # The owner can request a resend.
+                assert "ABCD-EFGH" not in result["output"]
+                assert status["state"] == "delivery_failed"
+                assert "Hermes Codex auth code" in status["message"]
+                assert not status["telegram_delivery"]["ok"]
+            else:
+                assert not result["device_auth_requested"]
+
+
 def test_completion_message_keeps_multimedia_failure_actionable() -> None:
     assert codex_auth._completion_message(
         switch={"ok": True},

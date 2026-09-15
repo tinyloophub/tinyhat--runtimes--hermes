@@ -501,6 +501,10 @@ def _run_config_switch(hermes_bin: Path, *, reconnect: bool = False) -> dict[str
                         break
                     raise
                 if chunk:
+                    if reconnect:
+                        # Keep the same bounded, private resend/debug log as
+                        # the CLI device flow; status output stays redacted.
+                        _append_log(chunk)
                     output = (output + chunk)[-24_000:]
                 else:
                     break
@@ -518,6 +522,10 @@ def _run_config_switch(hermes_bin: Path, *, reconnect: bool = False) -> dict[str
                         "auth_pid": process.pid,
                         "has_url": True,
                         "has_code": True,
+                        **({
+                            "message": "The Hermes Codex auth code was found, but Telegram delivery failed.",
+                            "telegram_delivery": delivery,
+                        } if not delivery.get("ok") else {}),
                     })
             if not sent_provider and "Select provider:" in clean and "OpenAI" in clean:
                 choice = _provider_menu_choice(clean)
