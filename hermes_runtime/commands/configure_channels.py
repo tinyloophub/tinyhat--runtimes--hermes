@@ -306,10 +306,17 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                     or not callable(getattr(adapter, "slack_identity", None))
                 ):
                     return
+                await current()
                 try:
-                    await current()
                     identity = await asyncio.to_thread(adapter.slack_identity)
-                    await current()
+                except Exception as exc:
+                    logger.warning(
+                        "Slack chat link discovery failed: exception_type=%s",
+                        type(exc).__name__,
+                    )
+                    return
+                await current()
+                try:
                     await ctx.platform.post_json(
                         path + "/slack/identity",
                         {
@@ -320,14 +327,12 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                         },
                     )
                 except Exception as exc:
-                    if isinstance(
-                        exc, (AssignmentChanged, AssignmentUnavailable)
-                    ) or getattr(exc, "status_code", None) in {401, 403, 404, 409}:
+                    if getattr(exc, "status_code", None) in {401, 403}:
                         raise
                     # Link discovery must not restart or disconnect a working
                     # channel. A later configure call retries missing metadata.
                     logger.warning(
-                        "Slack chat link discovery failed: exception_type=%s",
+                        "Slack chat link report failed: exception_type=%s",
                         type(exc).__name__,
                     )
 
@@ -613,8 +618,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                 await asyncio.to_thread(
                     adapter.record_applied, assignment, provider, channel["revision"]
                 )
-                await report_slack_identity(channel)
                 outcomes.append({"provider": provider, "status": "connected"})
+                await report_slack_identity(channel)
             if any(
                 item["status"] == "failed" and item["provider"] in SUPPORTED_PROVIDERS
                 for item in outcomes

@@ -141,6 +141,52 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.install_channel.assert_not_called()
         command._run_gateway_for_managed_setup.assert_not_awaited()
 
+    async def test_optional_report_rejections_preserve_new_and_existing_channels(self):
+        for existing in (False, True):
+            for status_code in (404, 409, 500):
+                with self.subTest(existing=existing, status_code=status_code):
+                    self.channel.update(
+                        status="connected" if existing else "pending",
+                        identity_reporting_supported=True,
+                    )
+                    self.adapter.applied_revision.return_value = "rev1" if existing else None
+                    self.adapter.slack_identity = Mock(
+                        return_value={"workspace_id": "T12345678", "app_id": "A12345678"}
+                    )
+                    failure = RuntimeError("private response")
+                    failure.status_code = status_code
+
+                    async def post(path, payload):
+                        if path.endswith("/slack/identity"):
+                            raise failure
+                        return {}
+
+                    self.platform.post_json.side_effect = post
+                    with patch("hermes_runtime.commands.stop_hermes.run", AsyncMock()) as stop:
+                        result = await command.run(self.ctx, self.input)
+                    self.assertEqual(result["channels"], [{"provider": "slack", "status": "connected"}])
+                    self.assertEqual(result["changed"], not existing)
+                    stop.assert_not_awaited()
+
+    async def test_identity_report_auth_rejection_still_fences_new_channel(self):
+        self.channel["identity_reporting_supported"] = True
+        self.adapter.slack_identity = Mock(
+            return_value={"workspace_id": "T12345678", "app_id": "A12345678"}
+        )
+        failure = RuntimeError("private response")
+        failure.status_code = 401
+
+        async def post(path, payload):
+            if path.endswith("/slack/identity"):
+                raise failure
+            return {}
+
+        self.platform.post_json.side_effect = post
+        with patch("hermes_runtime.commands.stop_hermes.run", AsyncMock()) as stop:
+            with self.assertRaises(RuntimeError):
+                await command.run(self.ctx, self.input)
+        stop.assert_awaited_once()
+
     async def test_existing_link_or_older_platform_skips_identity_discovery(self):
         self.channel.update(
             status="connected",
