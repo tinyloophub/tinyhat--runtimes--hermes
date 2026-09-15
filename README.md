@@ -337,6 +337,13 @@ near the top while Hermes keeps its default commands.
 | `/codex_auth_log` | Shows the recent bounded auth log if the device-code output needs to be resent or debugged. |
 | `/codex_limits` | Reads the current OpenAI Codex account limits through `codex app-server --listen stdio://` and shows the remaining primary and weekly windows as progress bars, reset times, plan type, credits, and reset-credit count when Codex returns them. |
 
+On Linux, reconnect runs in a separate systemd user service so it survives
+the gateway restart. The user manager must be available; failure to launch
+the worker does not fall back to a child of the gateway. Completion requires
+a verified new gateway process and fresh connected Telegram state. If
+sign-in succeeds but restart verification fails, `/codex_auth_status` remains
+failed and asks for an administrator restart instead of another sign-in.
+
 The Telegram command menu uses underscores because Telegram clients and the Bot
 API do not reliably handle hyphenated slash commands. The runtime also installs
 `codex-auth` as a best-effort Hermes quick-command alias for typed chat input,
