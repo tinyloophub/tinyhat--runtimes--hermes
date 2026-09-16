@@ -346,7 +346,7 @@ fi
             apt_calls = apt_args.read_text(encoding="utf-8")
             self.assertIn("DPkg::Lock::Timeout=300", apt_calls)
             self.assertIn(
-                "install -y --no-install-recommends ca-certificates curl git gh "
+            "install -y --no-install-recommends ca-certificates curl git gh sudo "
                 "xz-utils build-essential ffmpeg ripgrep xclip wl-clipboard",
                 apt_calls,
             )

@@ -97,6 +97,7 @@ RECOMMENDED_DEBIAN_PACKAGES=(
   curl
   git
   gh
+  sudo
   xz-utils
   build-essential
   ffmpeg
