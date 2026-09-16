@@ -203,7 +203,7 @@ def test_ensure_messaging_dependencies_installs_project_extra() -> None:
     package_spec = shlex.quote(f"{project_dir}[messaging,voice]")
     assert (
         f"{python_bin} -m pip install -e {package_spec} "
-        "ddgs==9.14.4 edge-tts==7.2.7 jmapc==0.3.0 aiohttp==3.13.5"
+        "ddgs==9.14.4 edge-tts==7.2.7 jmapc==0.3.0 aiohttp==3.14.1"
         in script
     )
     assert "--python" not in script
