@@ -11,8 +11,6 @@ import re
 import sys
 from types import ModuleType
 
-import aiohttp
-
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
 from hermes_runtime.runtime_env import env_file_candidates, read_env_values
 
@@ -80,6 +78,10 @@ class Transports:
             ) from None
 
     async def start(self):
+        # The control process uses only the standard library. Provider I/O
+        # runs in the separate receiver's Hermes environment.
+        import aiohttp
+
         self.draining = False
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession(
@@ -162,6 +164,8 @@ class Transports:
                 await asyncio.sleep(5)
 
     async def slack(self):
+        import aiohttp
+
         owners = set(self.values.get("SLACK_ALLOWED_USERS", "").split(","))
         while not self.draining:
             try:
