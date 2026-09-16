@@ -182,9 +182,17 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class BrowserBoundaryTests(unittest.TestCase):
+    def test_signin_prefers_existing_computer_browser_profile(self):
+        with (
+            patch.object(signin.shutil, "which", side_effect=lambda name: "/usr/local/bin/tinyhat-browser" if name == "tinyhat-browser" else "/usr/bin/chrome"),
+            patch.object(signin.subprocess, "Popen") as launch,
+        ):
+            signin.open_browser("https://claude.ai/oauth/authorize")
+            self.assertEqual(launch.call_args.args[0], ["/usr/local/bin/tinyhat-browser", "--new-window", "https://claude.ai/oauth/authorize"])
+
     def test_only_official_provider_urls_open_without_shell(self):
         with (
-            patch.object(signin.shutil, "which", return_value="/usr/bin/chrome"),
+            patch.object(signin.shutil, "which", side_effect=lambda name: None if name == "tinyhat-browser" else "/usr/bin/chrome"),
             patch.object(signin.subprocess, "Popen") as launch,
         ):
             for url in [

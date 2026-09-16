@@ -84,7 +84,8 @@ def open_browser(url):
         or parsed.password
     ):
         raise ValueError("Expected an official provider login URL.")
-    browser = next(
+    launcher = shutil.which("tinyhat-browser")
+    browser = launcher or next(
         (
             shutil.which(name)
             for name in (
@@ -100,7 +101,7 @@ def open_browser(url):
     if not browser:
         raise RuntimeError("The Computer browser is not installed.")
     subprocess.Popen(
-        [browser, "--no-sandbox", "--new-window", url],
+        [browser, *([] if launcher else ["--no-sandbox"]), "--new-window", url],
         env=desktop_env(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
