@@ -71,7 +71,7 @@ async def rpc(ctx, action, **values):
     path = directory(ctx)
     prepare_socket_directory(path)
     reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(socket_path(path)), 5
+        asyncio.open_unix_connection(socket_path(path), limit=2**20), 5
     )
     try:
         writer.write(
@@ -183,7 +183,7 @@ async def start_native(ctx, framework):
             await asyncio.sleep(0.1)
         else:
             raise RuntimeError("Previous receiver has not stopped after an update.")
-    except (TimeoutError, OSError):
+    except (asyncio.TimeoutError, OSError):
         pass
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2]))
     process = await asyncio.create_subprocess_exec(
@@ -208,7 +208,7 @@ async def start_native(ctx, framework):
             status = await rpc(ctx, "status")
             if status.get("channels") and all(status["channels"].values()):
                 return status
-        except (TimeoutError, OSError):
+        except (asyncio.TimeoutError, OSError):
             pass
         await asyncio.sleep(1)
     raise RuntimeError("Native channels did not become ready.")
@@ -231,7 +231,7 @@ async def request_switch(ctx, framework):
         elif current.get("status") in {"failed", "starting", "suspended"}:
             from hermes_runtime.commands.start_hermes import run
 
-            result = await run(ctx, {"kind": "start_hermes", "_framework_switch": True})
+            result = await run(ctx, {"kind": "start_hermes"})
             if not result.get("healthy"):
                 raise RuntimeError("Hermes did not become ready.")
         save(ctx, {"active": framework, "desired": framework, "status": "running"})
@@ -245,6 +245,9 @@ async def reconcile(ctx):
     old, target = current["active"], current["desired"]
     if old == target:
         if current.get("status") == "suspended":
+            if not current.get("resume_on_assignment") or getattr(ctx, "platform_state", "") not in {"assigned", "active"}:
+                return
+            await request_switch(ctx, target)
             return
         if target != "hermes":
             live = await start_native(ctx, target)
@@ -291,10 +294,8 @@ async def reconcile(ctx):
         result = await run_process(
             [str(binary), "gateway", "stop", *manager_args], timeout_seconds=600
         )
-        if not result.get("ok"):
-            raise RuntimeError(
-                "Hermes could not stop safely; framework was not changed."
-            )
+        # A crashed or already stopped receiver may make stop return nonzero.
+        # The authoritative guard is the subsequent confirmed stopped status.
         from hermes_runtime.commands.stop_hermes import _gateway_status_is_stopped
 
         status = await run_process(
@@ -319,7 +320,7 @@ async def reconcile(ctx):
     if target == "hermes":
         from hermes_runtime.commands.start_hermes import run
 
-        result = await run(ctx, {"kind": "start_hermes", "_framework_switch": True})
+        result = await run(ctx, {"kind": "start_hermes"})
         if not result.get("healthy"):
             raise RuntimeError("Hermes did not become ready.")
     else:
@@ -327,10 +328,10 @@ async def reconcile(ctx):
     save(ctx, {"active": target, "desired": target, "status": "running"})
 
 
-async def suspend(ctx):
+async def suspend(ctx, *, resume_on_assignment=False):
     """Fence native work before parking or revoking an assignment."""
     current = mode(ctx)
-    save(ctx, {**current, "desired": current["active"], "status": "suspended"})
+    save(ctx, {**current, "desired": current["active"], "status": "suspended", "resume_on_assignment": resume_on_assignment})
     if current["active"] == "hermes":
         return
     try:
@@ -365,7 +366,7 @@ def schedule(ctx):
         async with configuration_lock(ctx):
             if getattr(ctx, "platform_state", "") not in {"assigned", "active"}:
                 if selected(ctx) != "hermes":
-                    await suspend(ctx)
+                    await suspend(ctx, resume_on_assignment=True)
                 return
             try:
                 await reconcile(ctx)

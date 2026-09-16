@@ -62,9 +62,17 @@ async def run_command(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     from hermes_runtime.channel_agent.control import selected, snapshot, suspend, mode
     if hasattr(ctx, "state_dir") and kind == "stop_hermes":
         await suspend(ctx)
+    if hasattr(ctx, "state_dir") and kind == "start_hermes" and selected(ctx) != "hermes":
+        from hermes_runtime.channel_agent.control import request_switch
+        return await request_switch(ctx, selected(ctx))
     if hasattr(ctx, "state_dir") and (selected(ctx) != "hermes" or mode(ctx)["desired"] != "hermes") and kind in {
         "start_hermes", "heal_hermes", "configure_telegram", "activate_codex_auth_models",
     }:
         return dict(changed=False, reason="native_framework_selected", **snapshot(ctx))
     module = import_module(module_name)
-    return await module.run(ctx, command)
+    result = await module.run(ctx, command)
+    if hasattr(ctx, "state_dir") and kind == "start_hermes" and result.get("healthy") and selected(ctx) == "hermes":
+        from hermes_runtime.channel_agent.control import save
+
+        save(ctx, {"active": "hermes", "desired": "hermes", "status": "running"})
+    return result

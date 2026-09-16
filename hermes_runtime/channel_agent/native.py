@@ -12,7 +12,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from hermes_runtime.hermes_cli import run_process
+from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 
 ROUTE_SCHEMA = {
     "type": "object",
@@ -39,10 +39,10 @@ def child_env():
 
 async def probe(framework):
     command = {"codex": "codex", "claude_code": "claude", "hermes": "hermes"}[framework]
-    binary = shutil.which(command)
+    binary = find_hermes_binary() if framework == "hermes" else shutil.which(command)
     if not binary:
         return {"installed": False, "authenticated": False}
-    version = await run_process([binary, "--version"], timeout_seconds=15)
+    version = await run_process([str(binary), "--version"], timeout_seconds=15)
     if framework == "hermes":
         return {"installed": bool(version.get("ok")), "authenticated": True}
     args = (
@@ -69,7 +69,7 @@ async def terminate(process):
             os.killpg(process.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), 5)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
             await process.wait()

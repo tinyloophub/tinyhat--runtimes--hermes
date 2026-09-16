@@ -90,6 +90,16 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.state.route("2", {"task_id": task}, "claude_code")
 
+    def test_full_inbox_signals_capacity_without_acknowledging_provider_cursor(self):
+        for index in range(500):
+            self.state.ingest(str(index), {"text": "pending"})
+        with self.assertRaises(BufferError):
+            self.state.ingest("new", {"text": "later"}, cursor=("offset", 501))
+        self.assertIsNone(self.state.setting("offset"))
+        self.state.event_state("0", "done")
+        self.assertTrue(self.state.ingest("new", {"text": "later"}, cursor=("offset", 501)))
+        self.assertEqual(self.state.setting("offset"), 501)
+
     def test_crash_does_not_reexecute_dispatched_work_or_repeat_uncertain_output(self):
         self.state.ingest("1", {"text": "send"})
         task = self.state.route("1", {"title": "Send"}, "codex")
@@ -586,10 +596,6 @@ class NativeApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent.send.await_args.args[0]["result"]["action"], "decline")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ConfigurationTests(unittest.IsolatedAsyncioTestCase):
     async def test_busy_native_task_blocks_credential_file_changes(self):
         from hermes_runtime.commands import apply_config
@@ -610,3 +616,7 @@ class ConfigurationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "busy"):
                 await apply_config.run(ctx, {"spec": {}})
             write.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

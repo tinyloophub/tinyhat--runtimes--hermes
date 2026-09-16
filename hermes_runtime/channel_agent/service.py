@@ -348,20 +348,22 @@ class Service:
             while not self.shutdown.is_set():
                 self.publish()
                 # One router is independent of two concurrent native workers.
-                for row in self.state.queued():
+                for row in self.state.queued(ready_only=True):
                     if len(self.workers) >= 2:
                         break
                     try:
                         task_id = await self.route(row)
                         self.error = None
-                        if task_id not in self.workers:
+                        if task_id and task_id not in self.workers:
                             self.workers[task_id] = asyncio.create_task(
                                 self.work(row, task_id)
                             )
+                    except ValueError:
+                        self.error = "routing_decision_invalid"
+                        self.state.route_failed(row["id"], permanent=True)
                     except Exception:
                         self.error = "routing_unavailable"
-                        await asyncio.sleep(30)
-                        break
+                        self.state.route_failed(row["id"])
                 await asyncio.sleep(1)
         finally:
             publisher.cancel()

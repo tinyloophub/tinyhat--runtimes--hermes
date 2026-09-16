@@ -37,6 +37,11 @@ class State:
                 id TEXT PRIMARY KEY, task_id TEXT NOT NULL, request TEXT NOT NULL,
                 decision TEXT, created REAL NOT NULL);
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(events)")}
+        for name, definition in (("route_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                                 ("retry_at", "REAL NOT NULL DEFAULT 0")):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
         self.db.commit()
 
     def setting(self, key, default=None):
@@ -63,7 +68,7 @@ class State:
                     "SELECT 1 FROM events WHERE id=?", (key,)
                 ).fetchone()
             ):
-                raise RuntimeError(
+                raise BufferError(
                     "Channel inbox is full; leave the provider update unacknowledged."
                 )
             inserted = self.db.execute(
@@ -77,13 +82,22 @@ class State:
                 )
         return bool(inserted)
 
-    def queued(self):
+    def queued(self, *, ready_only=False):
         return [
             dict(row)
             for row in self.db.execute(
-                "SELECT * FROM events WHERE state='queued' ORDER BY received LIMIT 30"
+                "SELECT * FROM events WHERE state='queued' AND (?=0 OR retry_at<=?) ORDER BY received LIMIT 30",
+                (int(ready_only), time.time()),
             )
         ]
+
+    def route_failed(self, event_id, *, permanent=False):
+        with self.db:
+            self.db.execute(
+                "UPDATE events SET route_attempts=route_attempts+1,retry_at=?,"
+                "state=CASE WHEN ? OR route_attempts>=2 THEN 'failed' ELSE 'queued' END WHERE id=?",
+                (time.time() + 30, permanent, event_id),
+            )
 
     def task(self, task_id):
         row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
