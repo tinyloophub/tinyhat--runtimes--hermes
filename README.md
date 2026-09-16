@@ -55,6 +55,14 @@ three CLIs. Existing Computers can install a missing CLI without overwriting an
 existing installation or copying account credentials. The native provider's
 supported login stays in its normal home on that Computer.
 
+`signin_agent_framework` acknowledges the background login worker first. Its
+`signin.status` remains `opening` until the provider CLI has launched the
+Computer browser, then becomes `waiting`, `authenticated`, or `failed`. Clients
+should wait for `waiting` before entering the desktop for credential entry.
+Both installed CLIs also get **Sign in to Codex** / **Sign in to Claude Code**
+desktop shortcuts. They run the same browser flow without a terminal; desktop
+app authentication remains a separate provider-owned login.
+
 The private `hermes_runtime.channel_agent.bridge` command serves session lists
 and approvals on demand over the Computer's authenticated access tunnel.
 Session titles, native IDs, messages, summaries and approval requests stay on

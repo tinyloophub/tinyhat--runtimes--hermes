@@ -107,6 +107,7 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch.object(signin.subprocess, "Popen") as launch,
         ):
+            launch.side_effect = lambda *args, **kwargs: signin.save(self.ctx, "codex", "opening")
             result = await signin.start(self.ctx, "codex")
             args = launch.call_args.args[0]
             self.assertIn("hermes_runtime.channel_agent.signin", args)
@@ -187,6 +188,7 @@ class BrowserBoundaryTests(unittest.TestCase):
             patch.object(signin.shutil, "which", side_effect=lambda name: "/usr/local/bin/tinyhat-browser" if name == "tinyhat-browser" else "/usr/bin/chrome"),
             patch.object(signin.subprocess, "Popen") as launch,
         ):
+            launch.return_value.wait.return_value = 0
             signin.open_browser("https://claude.ai/oauth/authorize")
             self.assertEqual(launch.call_args.args[0], ["/usr/local/bin/tinyhat-browser", "--new-window", "https://claude.ai/oauth/authorize"])
 
@@ -195,6 +197,7 @@ class BrowserBoundaryTests(unittest.TestCase):
             patch.object(signin.shutil, "which", side_effect=lambda name: None if name == "tinyhat-browser" else "/usr/bin/chrome"),
             patch.object(signin.subprocess, "Popen") as launch,
         ):
+            launch.return_value.wait.return_value = 0
             for url in [
                 "https://evil.test/login",
                 "javascript:alert(1)",
