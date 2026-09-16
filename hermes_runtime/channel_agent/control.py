@@ -103,8 +103,6 @@ def snapshot(ctx):
         "schema": "tinyhat.channel-agent.v1",
         **current,
         "frameworks": getattr(ctx, "channel_framework_inventory", {}),
-        "tasks": [],
-        "approvals": [],
         "channels": {},
     }
     if current["active"] != "hermes":
@@ -114,7 +112,7 @@ def snapshot(ctx):
                 result.update(
                     {
                         key: status[key]
-                        for key in ("tasks", "approvals", "channels", "queued")
+                        for key in ("channels",)
                     }
                 )
                 if time.time() - status["updated_at"] > 20 or (
@@ -124,10 +122,8 @@ def snapshot(ctx):
                     result["status"] = "unavailable"
         except (OSError, ValueError, KeyError):
             result["status"] = "starting"
-    # Leave room for the rest of the 32 KiB platform heartbeat. Recent tasks
-    # are ordered active-first; their complete records remain on the Computer.
-    while result["tasks"] and len(json.dumps(result).encode()) > 12 * 1024:
-        result["tasks"].pop()
+    # Session data is fetched only through the private on-demand bridge. It
+    # never enters heartbeat telemetry or persisted runtime-command results.
     return result
 
 

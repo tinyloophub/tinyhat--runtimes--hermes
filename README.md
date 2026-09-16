@@ -42,18 +42,23 @@ commands through the existing runtime command queue:
 
 | Command | Behavior |
 | --- | --- |
-| `channels_status` | Refresh CLI installation/login status and report selected framework, channels, tasks, and pending approvals. |
+| `channels_status` | Refresh CLI installation/login status and report selected framework and channel health. No session content enters telemetry. |
 | `channels_use_hermes` | Stop native intake, finish committed native work, then start Hermes through its supported CLI. |
 | `channels_use_codex` | Verify the Computer's Codex login, stop the previous receiver, then use Codex App Server sessions. |
 | `channels_use_claude_code` | Verify Claude Code login, stop the previous receiver, then use native resumable Claude sessions. |
 | `install_agent_framework` | Install a missing official CLI; `spec.framework` selects it. This does not sign in or select it. |
-| `channels_approve` | Resolve an owner-visible native approval by `spec.approval_id` and `spec.decision` (`allow` or `deny`). |
 
 Every command also carries the current `spec.assignment`. The Computer checks
 that binding against the platform before acting. New images already install all
 three CLIs. Existing Computers can install a missing CLI without overwriting an
 existing installation or copying account credentials. The native provider's
 supported login stays in its normal home on that Computer.
+
+The private `hermes_runtime.channel_agent.bridge` command serves session lists
+and approvals on demand over the Computer's authenticated access tunnel.
+Session titles, native IDs, messages, summaries and approval requests stay on
+the Computer; they are never included in heartbeat or runtime-command results.
+Telegram `/sessions` opens the owner's authenticated live session page.
 
 The Tinyhat plugin must include `tinyhat-route-message`, `tinyhat-respond`, and
 the provider method catalog. The receiver uses its own private SQLite inbox,

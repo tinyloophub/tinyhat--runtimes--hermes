@@ -290,7 +290,7 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rpc.await_args.args[1], "halt")
         self.assertNotEqual(control.directory(self.ctx), old_path)
         self.assertEqual(control.selected(self.ctx), "hermes")
-        self.assertEqual(control.snapshot(self.ctx)["tasks"], [])
+        self.assertNotIn("tasks", control.snapshot(self.ctx))
 
     async def test_missing_login_does_not_stop_or_change_current_receiver(self):
         with (

@@ -29,10 +29,6 @@ async def run(ctx, command):
     if kind == "channels_status":
         await control.inventory(ctx)
         return control.snapshot(ctx)
-    if kind == "channels_approve":
-        return await control.rpc(
-            ctx, "approve", approval_id=spec["approval_id"], decision=spec["decision"]
-        )
     if kind == "install_agent_framework":
         framework = spec.get("framework")
         if framework not in control.FRAMEWORKS:

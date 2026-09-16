@@ -43,7 +43,8 @@ class Service:
         ).read_text()
 
     def snapshot(self):
-        tasks = self.state.tasks()
+        tasks = [{key: value for key, value in task.items() if key != "summary"}
+                 for task in self.state.tasks()]
         approvals = [
             dict(row)
             for row in self.state.db.execute(
@@ -52,7 +53,7 @@ class Service:
         ]
         for approval in approvals:
             # The owner sees the proposed action, but channel tokens never
-            # travel back through heartbeat metadata or the web UI.
+            # travel back through the on-demand session view.
             text = approval["request"]
             for name, value in self.transports.values.items():
                 if len(value) >= 8 and re.search(
@@ -89,7 +90,7 @@ class Service:
     async def approval(self, task_id, request):
         encoded = json.dumps(request)
         # Never ask the owner to approve a truncated command. Keep the full
-        # proposal within the heartbeat budget; larger requests are denied and
+        # proposal within the bounded live view; larger requests are denied and
         # can be handled through the native app on the Computer instead.
         if (
             len(encoded) > 1800
@@ -250,6 +251,16 @@ class Service:
         event = json.loads(row["payload"])
         if row["task_id"]:
             return row["task_id"]
+        if event.get("provider") == "telegram" and re.fullmatch(r"/sessions(?:@[A-Za-z0-9_]+)?", event.get("text", "").strip(), re.I):
+            from hermes_runtime.channel_agent.transports import plugin_module
+
+            button = await asyncio.to_thread(plugin_module("capabilities.channels.sessions").button)
+            await self.transports.action("command:" + row["id"], event, {
+                "method": "sendMessage", "action_id": "sessions-link",
+                "params": {"text": "Your sessions", "reply_markup": {"inline_keyboard": [[button]]}},
+            })
+            self.state.event_state(row["id"], "done")
+            return None
         explicit = event.get("task_id")
         if explicit:
             task = self.state.task(explicit)
