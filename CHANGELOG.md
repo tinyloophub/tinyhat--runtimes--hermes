@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.0.70 - 2026-09-16
+
+- Native channel selection and browser sign-in require the compatible Computer
+  framework APIs in [tinyloophub/tinyloop#1342](https://github.com/tinyloophub/tinyloop/pull/1342)
+  and Tinyhat plugin 0.32.19. Deploy the compatible platform before enabling
+  these features. Hermes remains the default; publishing or promoting the
+  release does not update existing Computers or sign in to provider accounts.
+  New fleet images must be baked and verified against the final release commit.
 
 - Open official provider sign-in through the Computer browser profile without a
   terminal. Keep OAuth output and account credentials local.
