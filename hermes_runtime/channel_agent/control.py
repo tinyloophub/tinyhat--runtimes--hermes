@@ -14,6 +14,7 @@ from pathlib import Path
 
 from hermes_runtime.agent_systems import _write_atomic
 from hermes_runtime.channel_agent.native import probe
+from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.revision import installed_revision
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
 from hermes_runtime.openrouter_stt import hermes_python
@@ -68,8 +69,9 @@ def save(ctx, value):
 
 async def rpc(ctx, action, **values):
     path = directory(ctx)
+    prepare_socket_directory(path)
     reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(path / "agent.sock"), 5
+        asyncio.open_unix_connection(socket_path(path)), 5
     )
     try:
         writer.write(
@@ -176,7 +178,7 @@ async def start_native(ctx, framework):
             return status
         await rpc(ctx, "stop")
         for _ in range(100):
-            if not (path / "agent.sock").exists():
+            if not socket_path(path).exists():
                 break
             await asyncio.sleep(0.1)
         else:
@@ -261,7 +263,7 @@ async def reconcile(ctx):
             return
         await rpc(ctx, "stop")
         for _ in range(50):
-            if not (directory(ctx) / "agent.sock").exists():
+            if not socket_path(directory(ctx)).exists():
                 break
             await asyncio.sleep(0.1)
         else:
@@ -336,7 +338,7 @@ async def suspend(ctx):
     except (FileNotFoundError, ConnectionRefusedError):
         return
     for _ in range(100):
-        if not (directory(ctx) / "agent.sock").exists():
+        if not socket_path(directory(ctx)).exists():
             return
         await asyncio.sleep(0.1)
     raise RuntimeError("Native receiver has not stopped.")

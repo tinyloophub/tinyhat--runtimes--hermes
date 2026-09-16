@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep native channel control sockets on the Computer's local filesystem so
+  persistent mounted state and long state-directory paths support handoffs.
 - Select Hermes, Codex, or Claude Code for owner Telegram, Slack, and email
   conversations using assignment-scoped runtime commands. Missing native CLIs
   can be installed separately; account sign-in remains on the Computer.

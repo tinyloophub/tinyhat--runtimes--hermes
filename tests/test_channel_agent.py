@@ -5,6 +5,7 @@ Usage: python -m unittest discover -s tests -p test_channel_agent.py -v
 
 import asyncio
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,9 +14,41 @@ from unittest.mock import AsyncMock, patch
 
 from hermes_runtime.channel_agent import control
 from hermes_runtime.channel_agent.native import Codex
+from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.service import Service
 from hermes_runtime.channel_agent.state import State
 from hermes_runtime.channel_agent.transports import Transports
+
+
+class SocketPathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ipc_stays_off_persistent_mount_and_supports_long_state_paths(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / ("mounted-computer-state-" * 12)
+            path = socket_path(state)
+            self.assertNotIn(str(state), str(path))
+            self.assertLess(len(str(path).encode()), 104)
+            prepare_socket_directory(state)
+            server = await asyncio.start_unix_server(lambda r, w: w.close(), path=path)
+            try:
+                _, writer = await asyncio.open_unix_connection(path)
+                writer.close()
+                await writer.wait_closed()
+                self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            finally:
+                server.close()
+                await server.wait_closed()
+                shutil.rmtree(path.parent)
+
+    async def test_socket_directory_cannot_redirect_through_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / "state"
+            parent = socket_path(state).parent
+            parent.symlink_to(root)
+            try:
+                with self.assertRaises(RuntimeError):
+                    prepare_socket_directory(state)
+            finally:
+                parent.unlink()
 
 
 class StateTests(unittest.TestCase):

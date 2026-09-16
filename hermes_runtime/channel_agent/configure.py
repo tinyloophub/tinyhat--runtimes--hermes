@@ -31,7 +31,7 @@ async def stop_for_configuration(ctx):
         )
     await control.rpc(ctx, "stop")
     for _ in range(100):
-        if not (control.directory(ctx) / "agent.sock").exists():
+        if not control.socket_path(control.directory(ctx)).exists():
             break
         await asyncio.sleep(0.1)
     else:

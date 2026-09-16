@@ -17,6 +17,7 @@ from pathlib import Path
 
 from hermes_runtime.agent_systems import _write_atomic
 from hermes_runtime.channel_agent import native
+from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.revision import installed_revision
 from hermes_runtime.channel_agent.state import State
 from hermes_runtime.channel_agent.transports import Transports
@@ -30,7 +31,7 @@ class Service:
         self.workers, self.capabilities = {}, {}
         self.draining = False
         self.shutdown = asyncio.Event()
-        self.socket_path = self.directory / "agent.sock"
+        self.socket_path = socket_path(self.directory)
         self.control = (self.directory / "control").read_text().strip()
         self.transports = Transports(self.state, self.state.ingest, self.stop_task)
         self.error = None
@@ -333,6 +334,7 @@ class Service:
         lock = (self.directory / "receiver.lock").open("a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.state.recover()
+        prepare_socket_directory(self.directory)
         self.socket_path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(
             self.connection, path=self.socket_path, limit=2**20
