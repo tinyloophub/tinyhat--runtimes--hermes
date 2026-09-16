@@ -26,6 +26,19 @@ class AgentSystemsTests(TestCase):
         flag.start()
         self.addCleanup(flag.stop)
 
+    def test_assignment_is_not_ready_until_both_signin_shortcuts_are_written(self):
+        ctx = SimpleNamespace(agent_systems_inventory=INVENTORY)
+        with tempfile.TemporaryDirectory() as directory, patch.object(agent_systems.shutil, "which", side_effect=lambda name: "/bin/" + name):
+            home = Path(directory)
+            with patch.object(agent_systems.agent_desktops, "write_signin_launchers", side_effect=OSError("not writable")):
+                with self.assertRaises(OSError):
+                    agent_systems.apply_context(ctx, CONTEXT, home=home)
+            self.assertFalse(agent_systems.acknowledgement(ctx)["ready"])
+            agent_systems.apply_context(ctx, CONTEXT, home=home)
+            for label in ("Codex", "Claude Code"):
+                self.assertIn("Terminal=false", (home / "Desktop" / f"Sign in to {label}.desktop").read_text())
+            self.assertTrue(agent_systems.acknowledgement(ctx)["ready"])
+
     def test_public_cli_inventory_never_calls_auth_or_gateway(self):
         async def process(args, **kwargs):
             self.assertEqual(args[1:], ["--version"])

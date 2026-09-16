@@ -77,17 +77,23 @@ def status(ctx, framework=None):
 
 
 def save(ctx, framework, state):
-    _write_atomic(
-        directory(ctx, framework) / "state.json",
-        json.dumps(
-            {
+    root = directory(ctx, framework)
+    root.mkdir(parents=True, exist_ok=True)
+    # Authentication may complete while a retry probes the same provider.
+    # Both the worker and that probe can publish state, independently of
+    # the worker's long-lived sign-in lock.
+    with (root / "state.lock").open("a") as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _write_atomic(
+            root / "state.json",
+            json.dumps({
                 "framework": framework,
                 "status": state,
                 "updated_at": time.time(),
-            }
-        ),
-        0o600,
-    )
+            }),
+            0o600,
+        )
 
 
 def desktop_env():

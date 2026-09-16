@@ -19,22 +19,23 @@ waiting. Neither provider had account credentials. The public statuses were:
 
 Repeated starts and both desktop shortcuts reused the existing workers and
 browser receipts. Codex Browser Use confirmed both official login pages.
-The screenshots exclude OAuth URLs. No credentials were entered, so this
+The screenshots contain no OAuth parameters or credentials. No credentials were entered, so this
 proves login readiness rather than completed provider authentication.
 
-![Codex login while Claude is still waiting](codex.png)
+![Codex login while Claude is still waiting](codex.jpg)
 
-![The independent Claude login remains available](claude.png)
+![The independent Claude login remains available](claude.jpg)
 
 Regression verification:
 
 ```text
 python -m unittest discover -s tests -v
-Ran 657 tests — OK
+Ran 659 tests — OK
 ```
 
 Focused tests cover same-provider reuse, an in-flight pre-upgrade worker,
 independent worker locks and receipts, concurrent provider selections,
-browser-launch failure, and fragmented
+concurrent worker/probe state updates, startup acknowledgement after shortcut
+creation, browser-launch failure, and fragmented
 provider login links. No upstream Hermes Agent behavior or channel receiver
 is changed by this fix.

@@ -15,6 +15,16 @@ from hermes_runtime import agent_desktops
 from hermes_runtime.channel_agent import control, signin
 
 class LoginBrowserTests(unittest.TestCase):
+    def test_worker_and_authenticated_retry_can_publish_state_concurrently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ctx = SimpleNamespace(state_dir=Path(directory))
+            with ThreadPoolExecutor(max_workers=3) as workers:
+                updates = [workers.submit(signin.save, ctx, "codex", state)
+                           for state in ["waiting", "authenticated"] * 20]
+                for update in updates:
+                    update.result(timeout=5)
+            self.assertIn(signin.status(ctx, "codex")["status"], {"waiting", "authenticated"})
+
     def test_concurrent_provider_choices_preserve_both_login_states(self):
         with tempfile.TemporaryDirectory() as directory:
             ctx = SimpleNamespace(state_dir=Path(directory))
