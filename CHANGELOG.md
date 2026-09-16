@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.71 - 2026-09-16
+
+- Match aiohttp 3.14.1 required by the pinned upstream Hermes messaging extra.
+  The previous 3.13.5 pin caused dependency resolution to fail during fresh
+  installation and image creation. Both installation and readiness checks now
+  use the compatible version. Upstream Hermes remains on the same commit.
+
 ## 0.0.70 - 2026-09-16
 
 - Native channel selection and browser sign-in require the compatible Computer
