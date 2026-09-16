@@ -74,5 +74,5 @@ async def run_command(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     if hasattr(ctx, "state_dir") and kind == "start_hermes" and result.get("healthy") and selected(ctx) == "hermes":
         from hermes_runtime.channel_agent.control import save
 
-        save(ctx, {"active": "hermes", "desired": "hermes", "status": "running"})
+        save(ctx, dict(active="hermes", desired="hermes", status="running"))
     return result
