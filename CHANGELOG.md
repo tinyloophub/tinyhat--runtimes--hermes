@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Settle background CLI probes before the control process restarts, while
+  leaving native channel workers and their running jobs alive.
 - Keep native channel control sockets on the Computer's local filesystem so
   persistent mounted state and long state-directory paths support handoffs.
 - Select Hermes, Codex, or Claude Code for owner Telegram, Slack, and email

@@ -1108,6 +1108,53 @@ class CommandTests(TestCase):
 
         asyncio.run(scenario())
 
+    def test_restart_reaps_background_probe_before_returning(self) -> None:
+        from hermes_runtime.hermes_cli import run_process
+
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                marker = Path(tmp) / "probe.pid"
+                captured = []
+
+                async def heartbeat(ctx):
+                    code = (
+                        "import os,time; from pathlib import Path; "
+                        f"Path({str(marker)!r}).write_text(str(os.getpid())); "
+                        "time.sleep(60)"
+                    )
+                    ctx.channel_reconcile_task = asyncio.create_task(
+                        run_process([sys.executable, "-c", code], timeout_seconds=90)
+                    )
+                    captured.append(ctx.channel_reconcile_task)
+                    for _ in range(100):
+                        if marker.exists():
+                            break
+                        await asyncio.sleep(.01)
+                    self.assertTrue(marker.exists(), "probe must actually be running")
+                    ctx.restart_requested = True
+
+                with (
+                    patch.dict(os.environ, {
+                        "TINYHAT_PLATFORM_URL": "http://platform.test",
+                        "TINYHAT_LOCAL_DEV_TOKEN": "dev-token",
+                        "TINYHAT_RUNTIME_STATE_DIR": tmp,
+                    }, clear=True),
+                    patch("hermes_runtime.main._safe_activate_staged_on_startup", return_value=None),
+                    patch("hermes_runtime.main._restore_private_access_on_startup"),
+                    patch("hermes_runtime.main._heartbeat_once", heartbeat),
+                ):
+                    try:
+                        self.assertEqual(await asyncio.wait_for(run(), 3), 0)
+                        self.assertTrue(captured[0].done(), "restart must settle its probes")
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(int(marker.read_text()), 0)
+                    finally:
+                        for task in captured:
+                            task.cancel()
+                        await asyncio.gather(*captured, return_exceptions=True)
+
+        asyncio.run(scenario())
+
     def test_heartbeat_interval_is_fast_until_assigned(self) -> None:
         ctx = SimpleNamespace(platform_state="ready")
         with patch.dict(os.environ, {}, clear=True):
