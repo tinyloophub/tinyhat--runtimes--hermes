@@ -337,6 +337,29 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HandoffTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inventory_reports_only_a_valid_configured_hermes_model(self):
+        ctx = SimpleNamespace()
+        with (
+            patch.object(control, "selected", return_value="hermes"),
+            patch.object(
+                control,
+                "probe",
+                new=AsyncMock(return_value={"installed": True, "authenticated": True}),
+            ),
+            patch.object(
+                control, "find_hermes_binary", return_value=Path("/bin/hermes")
+            ),
+            patch.object(control, "run_process", new_callable=AsyncMock) as run,
+        ):
+            for output, expected in [
+                ("openai/gpt-5.4\n", "openai/gpt-5.4"),
+                ("notice\nopenai/gpt-5.4\n", None),
+            ]:
+                with self.subTest(output=output):
+                    run.return_value = {"ok": True, "stdout": output}
+                    await control.inventory(ctx)
+                    self.assertEqual(ctx.hermes_channel_model, expected)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.ctx = SimpleNamespace(state_dir=Path(self.temp.name))

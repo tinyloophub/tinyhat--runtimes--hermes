@@ -4,7 +4,10 @@ A disposable Linux Computer was created through the platform, signed in to
 Codex using its official browser flow, and connected to a standing Telegram
 test bot. This local integration combined the native-channel fix with the
 separately reviewed browser sign-in fix in [PR #179](https://github.com/tinyloophub/tinyhat--runtimes--hermes/pull/179)
-and the updated Tinyhat response skill. It is not production rollout proof.
+and the Tinyhat response skill at [revision b43670f](https://github.com/tinyhat-ai/tinyhat/blob/b43670f540ee9e9cfd832af3bc481dc0587ad544/skills/tinyhat-respond/SKILL.md).
+It is not production rollout proof. Later review fixes clarify empty drafts
+and uncertain receipts; those edge cases are checked against the provider
+contract, not represented by these earlier screenshots.
 
 - Text: sent a phrase, edited that same message, and recalled it after resuming
   the original native task. The send/edit receipts used the same message ID.

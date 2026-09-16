@@ -17,11 +17,13 @@
   voice messages through the configured speech-to-text service before native
   routing. The configured provider may receive audio; the platform does not
   receive session contents. Support Slack owner image/audio attachments too.
+- Reclaim old attachment cache files as it fills, preserving queued/running
+  message inputs and current uploads. A full cache no longer disables media
+  intake permanently.
 - Report the model returned by the native agent and the configured Hermes
   model in framework health metadata, without sending sessions to the platform.
 - Install sudo on minimal Debian/Ubuntu Computers so desktop preparation can
   run through the standard private-access gateway.
-
 - Expose an optional bounded Telegram typing lease to native agents. Bind Slack
   streams to the incoming thread and recipient; the response skill chooses
   when to show status, stream, edit, or remain silent.

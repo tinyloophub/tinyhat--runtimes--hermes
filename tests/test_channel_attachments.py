@@ -1,6 +1,7 @@
 """Owner-only media intake and native image delivery."""
 
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,77 @@ from hermes_runtime.channel_agent.native import Codex
 
 
 class AttachmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_full_cache_recovers_without_evicting_active_media(self):
+        from hermes_runtime.channel_agent import attachments
+        from hermes_runtime.channel_agent.state import State
+
+        async def chunks(_size):
+            yield b"next"
+
+        context = AsyncMock()
+        context.__aenter__.return_value = SimpleNamespace(
+            status=200, content=SimpleNamespace(iter_chunked=chunks)
+        )
+        with tempfile.TemporaryDirectory() as root:
+            state = State(Path(root) / "state")
+            media = Path(root) / "media"
+            media.mkdir()
+            active, old, pending = [
+                media / name for name in ("active.jpg", "old.jpg", "busy.part")
+            ]
+            for path in (active, old, pending):
+                path.write_bytes(b"12345678")
+            os.utime(active, (1, 1))
+            os.utime(old, (2, 2))
+            state.ingest("owner-event", {"attachments": [{"path": str(active)}]})
+            state.event_state("owner-event", "running")
+            transport = SimpleNamespace(
+                state=state, session=SimpleNamespace(get=Mock(return_value=context))
+            )
+            try:
+                with patch.object(attachments, "MAX_CACHE_BYTES", 24), patch.object(
+                    attachments, "MAX_FILE_BYTES", 4
+                ):
+                    path = await attachments.download(
+                        transport,
+                        media,
+                        "new-photo",
+                        ".jpg",
+                        "https://example.test/photo",
+                    )
+                    self.assertEqual(path.read_bytes(), b"next")
+                    self.assertFalse(old.exists())
+                    self.assertTrue(active.exists())
+                    self.assertTrue(pending.exists())
+                    # A second image from this same message must keep its first.
+                    second = await attachments.download(
+                        transport,
+                        media,
+                        "next-photo",
+                        ".jpg",
+                        "https://example.test/photo",
+                        protected=[path],
+                    )
+                    self.assertTrue(path.exists())
+                    self.assertEqual(second.read_bytes(), b"next")
+                    # Finished turns and abandoned partials become reclaimable.
+                    state.event_state("owner-event", "done")
+                    os.utime(pending, (0, 0))
+                    third = await attachments.download(
+                        transport,
+                        media,
+                        "third-photo",
+                        ".jpg",
+                        "https://example.test/photo",
+                        protected=[path, second],
+                    )
+                    self.assertTrue(path.exists())
+                    self.assertTrue(second.exists())
+                    self.assertFalse(pending.exists())
+                    self.assertEqual(third.read_bytes(), b"next")
+            finally:
+                state.close()
+
     async def test_voice_transcription_is_private_cached_and_delivered_as_owner_text(
         self,
     ):

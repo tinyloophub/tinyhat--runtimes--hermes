@@ -99,13 +99,15 @@ class Service:
         async def deny(_request):
             return False
 
-        agent = native.Codex(cwd=self.directory, approve=deny)
+        root = self.directory / "workspaces" / "router"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        agent = native.Codex(cwd=root, approve=deny)
         try:
             await agent.start()
             resolved = await agent.request(
                 "thread/start",
                 {
-                    "cwd": str(self.directory),
+                    "cwd": str(root),
                     "ephemeral": True,
                     "approvalPolicy": "never",
                     "sandbox": "read-only",

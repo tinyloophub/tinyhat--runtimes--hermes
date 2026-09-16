@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -16,15 +18,50 @@ MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_CACHE_BYTES = 256 * 1024 * 1024
 
 
-async def download(transports, directory, key, suffix, url, *, headers=None):
+def reserve_cache(transports, directory, protected):
+    """Reclaim old media without deleting a queued/running turn's inputs."""
+    keep = {Path(path).stem for path in protected}
+    state = getattr(transports, "state", None)
+    if state is not None:
+        for row in state.db.execute(
+            "SELECT payload FROM events WHERE state IN ('queued','running')"
+        ):
+            keep.update(
+                Path(item["path"]).stem
+                for item in json.loads(row[0]).get("attachments", [])
+            )
+    files = [(path, path.stat()) for path in directory.iterdir() if path.is_file()]
+    cached = sum(stat.st_size for _, stat in files)
+    # Recent temporary files can belong to a download or the bounded 240s STT
+    # process. Abandoned files become reclaimable after that operation window.
+    keep.update(
+        path.stem
+        for path, stat in files
+        if path.suffix in {".part", ".transcribing"}
+        and time.time() - stat.st_mtime < 300
+    )
+    for path, stat in sorted(files, key=lambda item: item[1].st_mtime):
+        if cached + MAX_FILE_BYTES <= MAX_CACHE_BYTES:
+            return
+        if path.stem not in keep:
+            path.unlink(missing_ok=True)
+            cached -= stat.st_size
+    if cached + MAX_FILE_BYTES > MAX_CACHE_BYTES:
+        raise ValueError(
+            "Message attachment storage is busy. Try again after active work finishes."
+        )
+
+
+async def download(
+    transports, directory, key, suffix, url, *, headers=None, protected=()
+):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / (hashlib.sha256(key.encode()).hexdigest() + suffix)
     if path.is_file():
+        path.touch()
         return path
-    cached = sum(p.stat().st_size for p in directory.iterdir() if p.is_file())
-    if cached + MAX_FILE_BYTES > MAX_CACHE_BYTES:
-        raise ValueError("Message attachment storage is full.")
+    reserve_cache(transports, directory, protected)
     temporary = path.with_suffix(".part")
     try:
         async with transports.session.get(
@@ -118,6 +155,8 @@ async def telegram_media(event, transports, directory):
             + remote
         )
         path = await download(transports, directory, media["file_id"], suffix, url)
+    else:
+        path.touch()
     result = {**event, "attachments": [{"kind": kind, "path": str(path)}]}
     if kind == "voice":
         result["text"] = (
@@ -184,6 +223,7 @@ async def slack_media(event, transports, directory):
             suffix,
             url,
             headers={"Authorization": "Bearer " + transports.values["SLACK_BOT_TOKEN"]},
+            protected=[item["path"] for item in result["attachments"]],
         )
         kind = "image" if mime in images else "voice"
         result["attachments"].append({"kind": kind, "path": str(path)})
