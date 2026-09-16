@@ -30,10 +30,11 @@ Regression verification:
 
 ```text
 python -m unittest discover -s tests -v
-Ran 656 tests — OK
+Ran 657 tests — OK
 ```
 
 Focused tests cover same-provider reuse, an in-flight pre-upgrade worker,
-independent worker locks and receipts, browser-launch failure, and fragmented
+independent worker locks and receipts, concurrent provider selections,
+browser-launch failure, and fragmented
 provider login links. No upstream Hermes Agent behavior or channel receiver
 is changed by this fix.

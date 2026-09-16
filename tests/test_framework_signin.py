@@ -15,6 +15,22 @@ from hermes_runtime import agent_desktops
 from hermes_runtime.channel_agent import control, signin
 
 class LoginBrowserTests(unittest.TestCase):
+    def test_concurrent_provider_choices_preserve_both_login_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ctx = SimpleNamespace(state_dir=Path(directory))
+            for framework in signin.COMMANDS:
+                signin.save(ctx, framework, "waiting")
+            with ThreadPoolExecutor(max_workers=4) as workers:
+                choices = [workers.submit(signin.select, ctx, framework)
+                           for framework in list(signin.COMMANDS) * 20]
+                for choice in choices:
+                    choice.result(timeout=5)
+            self.assertIn(signin.status(ctx)["framework"], signin.COMMANDS)
+            for framework in signin.COMMANDS:
+                self.assertEqual(signin.status(ctx, framework), {
+                    "framework": framework, "status": "waiting",
+                })
+
     def test_cli_hook_and_fallback_share_one_browser_launch(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(signin, "launch_browser") as launch:
             receipt = Path(directory) / "opened"

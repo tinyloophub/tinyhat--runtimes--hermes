@@ -42,7 +42,14 @@ def directory(ctx, framework):
 
 def select(ctx, framework):
     directory(ctx, framework)  # Validate before persisting a path component.
-    _write_atomic(control.directory(ctx) / "signin-selected", framework, 0o600)
+    root = control.directory(ctx)
+    root.mkdir(parents=True, exist_ok=True)
+    # Desktop shortcuts and runtime commands may choose different providers
+    # concurrently. Serialize the shared pointer, not their login workers.
+    with (root / "signin-selected.lock").open("a") as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _write_atomic(root / "signin-selected", framework, 0o600)
 
 
 def status(ctx, framework=None):
