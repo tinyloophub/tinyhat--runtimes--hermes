@@ -13,6 +13,8 @@ def installed_revision():
     paths += [
         root / "capabilities/channels/methods.json",
         root / "capabilities/mail/ingress.py",
+        root / "capabilities/mail/owner.py",
+        root / "capabilities/channels/sessions.py",
     ]
     for path in paths:
         digest.update(path.name.encode())
