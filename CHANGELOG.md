@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Keep Codex and Claude Code browser sign-ins independent. An unfinished login
+  for one provider no longer blocks the other. Repeated requests for the same
+  provider reuse its worker, and each provider has its own browser receipt.
+  Report both sign-in states without exposing login URLs or credentials.
+
 ## 0.0.72 - 2026-09-16
 
 - Use Tinyhat plugin 0.32.20 for the updated native channel response skills.

@@ -34,9 +34,29 @@ MODULE = "hermes_runtime.channel_agent.signin"
 STATES = {"opening", "waiting", "authenticated", "failed"}
 
 
-def status(ctx):
+def directory(ctx, framework):
+    if framework not in COMMANDS:
+        raise ValueError("Choose Codex or Claude Code to sign in.")
+    return control.directory(ctx) / ("signin-" + framework)
+
+
+def select(ctx, framework):
+    directory(ctx, framework)  # Validate before persisting a path component.
+    _write_atomic(control.directory(ctx) / "signin-selected", framework, 0o600)
+
+
+def status(ctx, framework=None):
     try:
-        value = json.loads((control.directory(ctx) / "signin.json").read_text())
+        if framework is None:
+            try:
+                framework = (control.directory(ctx) / "signin-selected").read_text()
+            except OSError:
+                pass
+        path = directory(ctx, framework) / "state.json" if framework else None
+        # Keep an in-flight pre-upgrade login visible until its old worker exits.
+        value = json.loads((path if path and path.exists() else control.directory(ctx) / "signin.json").read_text())
+        if framework and value.get("framework") != framework:
+            return None
         if value.get("framework") not in COMMANDS or value.get("status") not in STATES:
             return None
         if (
@@ -51,7 +71,7 @@ def status(ctx):
 
 def save(ctx, framework, state):
     _write_atomic(
-        control.directory(ctx) / "signin.json",
+        directory(ctx, framework) / "state.json",
         json.dumps(
             {
                 "framework": framework,
@@ -174,14 +194,13 @@ async def start(ctx, framework):
     target = await probe(framework)
     if not target["installed"]:
         raise RuntimeError("Install the framework first.")
+    select(ctx, framework)
     if target["authenticated"]:
         save(ctx, framework, "authenticated")
         await control.inventory(ctx)
         return control.snapshot(ctx)
-    current = status(ctx)
+    current = status(ctx, framework)
     if current and current["status"] in {"opening", "waiting"}:
-        if current["framework"] != framework:
-            raise RuntimeError("Finish the current provider sign-in first.")
         return control.snapshot(ctx)
     started = time.time()
     # The detached worker owns a flock so retries cannot start competing OAuth
@@ -209,7 +228,7 @@ async def start(ctx, framework):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         try:
-            saved = json.loads((control.directory(ctx) / "signin.json").read_text())
+            saved = json.loads((directory(ctx, framework) / "state.json").read_text())
             if saved.get("framework") == framework and saved.get("updated_at", 0) >= started:
                 if saved.get("status") == "failed":
                     raise RuntimeError("Could not start provider sign-in.")
@@ -223,9 +242,9 @@ async def start(ctx, framework):
 async def run(ctx, framework, binding):
     if framework not in COMMANDS or control.assignment(ctx) != binding:
         raise ValueError("Computer assignment changed.")
-    directory = control.directory(ctx)
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock = os.open(directory / "signin.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    path = directory(ctx, framework)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = os.open(path / "signin.lock", os.O_CREAT | os.O_RDWR, 0o600)
     process = None
     output = None
     try:
@@ -257,9 +276,9 @@ async def run(ctx, framework, binding):
             await asyncio.sleep(2)
         else:
             raise RuntimeError("Open the Computer desktop to continue.")
-        receipt = directory / "signin-browser-opened"
+        receipt = path / "signin-browser-opened"
         receipt.unlink(missing_ok=True)
-        launcher = directory / "signin-browser"
+        launcher = path / "signin-browser"
         _write_atomic(
             launcher,
             "#!/bin/sh\nexec "
@@ -274,7 +293,7 @@ async def run(ctx, framework, binding):
         env = desktop_env()
         env["BROWSER"] = str(launcher)
         # Some CLI browser launchers use xdg-open instead of BROWSER.
-        shim = directory / "signin-bin"
+        shim = path / "signin-bin"
         shim.mkdir(mode=0o700, exist_ok=True)
         _write_atomic(shim / "xdg-open", launcher.read_text(), 0o700)
         env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
@@ -330,12 +349,12 @@ def main():
         open_browser(args.open_browser, args.browser_receipt)
     elif args.framework and (args.assignment or args.desktop):
         ctx = SimpleNamespace(state_dir=Path(args.state_dir))
+        # Desktop shortcuts share the API's idempotent start path. A second
+        # click reuses the same provider worker, including during an upgrade.
         asyncio.run(
-            run(
-                ctx,
-                args.framework,
-                control.assignment(ctx) if args.desktop else args.assignment,
-            )
+            start(ctx, args.framework)
+            if args.desktop
+            else run(ctx, args.framework, args.assignment)
         )
     else:
         parser.error("A framework and current assignment are required.")
