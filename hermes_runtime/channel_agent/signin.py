@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -68,7 +70,7 @@ def desktop_env():
     return env
 
 
-def open_browser(url):
+def open_browser(url, receipt=None):
     parsed = urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -77,6 +79,7 @@ def open_browser(url):
             "auth.openai.com",
             "chatgpt.com",
             "claude.ai",
+            "claude.com",
             "console.anthropic.com",
             "platform.claude.com",
         }
@@ -84,6 +87,21 @@ def open_browser(url):
         or parsed.password
     ):
         raise ValueError("Expected an official provider login URL.")
+    if receipt:
+        # The CLI hook and printed-link fallback can race. Only one should
+        # create the browser window for this login attempt.
+        with Path(str(receipt) + ".lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            if Path(receipt).exists():
+                return
+            launch_browser(url)
+            _write_atomic(Path(receipt), "opened\n", 0o600)
+    else:
+        launch_browser(url)
+
+
+def launch_browser(url):
     launcher = shutil.which("tinyhat-browser")
     browser = launcher or next(
         (
@@ -100,7 +118,7 @@ def open_browser(url):
     )
     if not browser:
         raise RuntimeError("The Computer browser is not installed.")
-    subprocess.Popen(
+    process = subprocess.Popen(
         [browser, *([] if launcher else ["--no-sandbox"]), "--new-window", url],
         env=desktop_env(),
         stdin=subprocess.DEVNULL,
@@ -108,6 +126,46 @@ def open_browser(url):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    # Chrome may hand off to an existing window or remain as the browser process.
+    # A failed launch must never become a "waiting for credentials" status.
+    try:
+        code = process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        code = None
+    if code not in (None, 0):
+        raise RuntimeError("The Computer browser could not open.")
+
+
+def display_probe():
+    # Minimal XFCE images include xset, but not the optional xdpyinfo package.
+    if shutil.which("xdpyinfo"):
+        return ["xdpyinfo"]
+    if shutil.which("xset"):
+        return ["xset", "q"]
+    raise RuntimeError("The Computer desktop tools are not installed.")
+
+
+async def open_printed_login(stream, receipt):
+    """Handle the official CLI's browser fallback without retaining its output."""
+    buffer = ""
+    while chunk := await stream.read(4096):
+        if receipt.exists():
+            buffer = ""
+            continue
+        buffer = (buffer + chunk.decode("utf-8", "replace"))[-65536:]
+        # Both CLIs print their official login link when automatic opening is
+        # unavailable. Exclude ANSI/OSC escapes as well as ordinary whitespace.
+        # A prompt need not end with a newline. Require a delimiter so a URL
+        # split across reads is never opened while incomplete.
+        for url in re.findall(r'https://[^\s\x00-\x20\x7f<>"\']+(?=[\s\x00-\x20\x7f<>"\'])', buffer):
+            # Give the CLI's BROWSER/xdg-open hook a chance to finish first.
+            await asyncio.sleep(1)
+            if receipt.exists():
+                break
+            try:
+                await asyncio.to_thread(open_browser, url, receipt)
+            except ValueError:
+                continue  # Ignore documentation or other non-provider links.
 
 
 async def start(ctx, framework):
@@ -117,8 +175,15 @@ async def start(ctx, framework):
     if not target["installed"]:
         raise RuntimeError("Install the framework first.")
     if target["authenticated"]:
+        save(ctx, framework, "authenticated")
         await control.inventory(ctx)
         return control.snapshot(ctx)
+    current = status(ctx)
+    if current and current["status"] in {"opening", "waiting"}:
+        if current["framework"] != framework:
+            raise RuntimeError("Finish the current provider sign-in first.")
+        return control.snapshot(ctx)
+    started = time.time()
     # The detached worker owns a flock so retries cannot start competing OAuth
     # callbacks. It outlives the short runtime command and is assignment-fenced.
     subprocess.Popen(
@@ -139,7 +204,20 @@ async def start(ctx, framework):
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    return control.snapshot(ctx)
+    # Do not settle the command until the worker has started. Its public state
+    # has no provider output, URL or credentials; the browser receipt comes later.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            saved = json.loads((control.directory(ctx) / "signin.json").read_text())
+            if saved.get("framework") == framework and saved.get("updated_at", 0) >= started:
+                if saved.get("status") == "failed":
+                    raise RuntimeError("Could not start provider sign-in.")
+                return control.snapshot(ctx)
+        except (OSError, ValueError, TypeError):
+            pass
+        await asyncio.sleep(0.1)
+    raise RuntimeError("Could not start provider sign-in.")
 
 
 async def run(ctx, framework, binding):
@@ -149,6 +227,7 @@ async def run(ctx, framework, binding):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = os.open(directory / "signin.lock", os.O_CREAT | os.O_RDWR, 0o600)
     process = None
+    output = None
     try:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -162,7 +241,7 @@ async def run(ctx, framework, binding):
                 return
             save(ctx, framework, "opening")
             check = await asyncio.create_subprocess_exec(
-                "xdpyinfo",
+                *display_probe(),
                 env=desktop_env(),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -178,6 +257,8 @@ async def run(ctx, framework, binding):
             await asyncio.sleep(2)
         else:
             raise RuntimeError("Open the Computer desktop to continue.")
+        receipt = directory / "signin-browser-opened"
+        receipt.unlink(missing_ok=True)
         launcher = directory / "signin-browser"
         _write_atomic(
             launcher,
@@ -185,6 +266,8 @@ async def run(ctx, framework, binding):
             + shlex.quote(sys.executable)
             + " -m "
             + MODULE
+            + " --browser-receipt "
+            + shlex.quote(str(receipt))
             + ' --open-browser "$@"\n',
             0o700,
         )
@@ -199,15 +282,19 @@ async def run(ctx, framework, binding):
             *COMMANDS[framework],
             env=env,
             stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        if process.stdout is not None:
+            output = asyncio.create_task(open_printed_login(process.stdout, receipt))
         deadline = time.monotonic() + 900
         while time.monotonic() < deadline and process.returncode is None:
+            if output is not None and output.done():
+                output.result()
             if control.assignment(ctx) != binding:
                 return
-            save(ctx, framework, "waiting")
+            save(ctx, framework, "waiting" if receipt.exists() else "opening")
             try:
                 await asyncio.wait_for(process.wait(), 2)
             except asyncio.TimeoutError:
@@ -221,6 +308,10 @@ async def run(ctx, framework, binding):
         if control.assignment(ctx) == binding:
             save(ctx, framework, "failed")
     finally:
+        if output is not None:
+            output.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await output
         if process is not None:
             await terminate(process)
         os.close(lock)
@@ -229,18 +320,21 @@ async def run(ctx, framework, binding):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-browser")
+    parser.add_argument("--browser-receipt")
+    parser.add_argument("--desktop", action="store_true")
     parser.add_argument("--framework", choices=COMMANDS)
     parser.add_argument("--assignment")
-    parser.add_argument("--state-dir")
+    parser.add_argument("--state-dir", default=os.getenv("TINYHAT_RUNTIME_STATE_DIR", "/var/lib/tinyhat-hermes-runtime"))
     args = parser.parse_args()
     if args.open_browser:
-        open_browser(args.open_browser)
-    elif args.framework and args.assignment and args.state_dir:
+        open_browser(args.open_browser, args.browser_receipt)
+    elif args.framework and (args.assignment or args.desktop):
+        ctx = SimpleNamespace(state_dir=Path(args.state_dir))
         asyncio.run(
             run(
-                SimpleNamespace(state_dir=Path(args.state_dir)),
+                ctx,
                 args.framework,
-                args.assignment,
+                control.assignment(ctx) if args.desktop else args.assignment,
             )
         )
     else:

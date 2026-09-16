@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,6 +39,7 @@ def write_launchers(home: Path, system: str) -> None:
         if other_system != system and entry.is_file():
             if b"X-Tinyhat-Managed=true\n" in entry.read_bytes():
                 entry.unlink()
+    write_signin_launchers(home)
     app = DESKTOP_APPS.get(system)
     if app is None or not shutil.which(app[0]):
         return
@@ -59,6 +62,31 @@ def write_launchers(home: Path, system: str) -> None:
         f'Exec="{desktop_exec}"\nIcon={icon}\nTerminal=false\nCategories=Development;\n',
         0o755,
     )
+
+
+def write_signin_launchers(home: Path) -> None:
+    """Give both native CLIs an official browser-login shortcut, without terminals."""
+    from hermes_runtime.agent_systems import _write_atomic
+
+    for framework, cli, label, icon in (
+        ("codex", "codex", "Sign in to Codex", "chatgpt"),
+        ("claude_code", "claude", "Sign in to Claude Code", "claude-desktop"),
+    ):
+        if not shutil.which(cli):
+            continue
+        launcher = home / ".local/bin" / ("tinyhat-signin-" + framework)
+        command = ["env", "PYTHONPATH=" + str(Path(__file__).resolve().parent.parent),
+                   sys.executable, "-m", "hermes_runtime.channel_agent.signin",
+                   "--desktop", "--framework", framework]
+        _write_atomic(launcher, "#!/bin/sh\nexec " + shlex.join(command) + "\n", 0o700)
+        desktop_exec = str(launcher).replace("\\", "\\\\").replace('"', '\\"')
+        _write_atomic(
+            home / "Desktop" / (label + ".desktop"),
+            "[Desktop Entry]\nVersion=1.0\nType=Application\nX-Tinyhat-Managed=true\n"
+            f"Name={label}\nComment=Open the official account sign-in\n"
+            f'Exec="{desktop_exec}"\nIcon={icon}\nTerminal=false\nCategories=Development;\n',
+            0o755,
+        )
 
 
 def main() -> None:

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Open native Codex and Claude Code sign-in on minimal desktops that provide
+  `xset` but not `xdpyinfo`. Report browser readiness only after a successful
+  launch, and acknowledge the background worker before settling the command.
+- Support the current Claude CLI's official `claude.com` login URL and its
+  printed-link fallback without storing or exposing provider output.
+- Add desktop sign-in shortcuts for both installed coding frameworks. They
+  open the provider's official login in the Computer browser without a terminal.
+
 ## 0.0.71 - 2026-09-16
 
 - Match aiohttp 3.14.1 required by the pinned upstream Hermes messaging extra.
