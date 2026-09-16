@@ -30,6 +30,55 @@ This process only does the platform-visible work needed to manage a Computer:
 - report command results back to the platform;
 - stage updates and activate them on runtime restart.
 
+The optional channel receiver runs beside this heartbeat process. It hands
+authenticated owner updates to the selected native agent; it does not implement
+the agent's reasoning or impose a reply per incoming message.
+
+### Choosing a channel framework
+
+Hermes remains the default. Owners can select `hermes`, `codex`, or `claude_code`
+through compatible Computer APIs. The platform sends these assignment-fenced
+commands through the existing runtime command queue:
+
+| Command | Behavior |
+| --- | --- |
+| `channels_status` | Refresh CLI installation/login status and report selected framework, channels, tasks, and pending approvals. |
+| `channels_use_hermes` | Stop native intake, finish committed native work, then start Hermes through its supported CLI. |
+| `channels_use_codex` | Verify the Computer's Codex login, stop the previous receiver, then use Codex App Server sessions. |
+| `channels_use_claude_code` | Verify Claude Code login, stop the previous receiver, then use native resumable Claude sessions. |
+| `install_agent_framework` | Install a missing official CLI; `spec.framework` selects it. This does not sign in or select it. |
+| `channels_approve` | Resolve an owner-visible native approval by `spec.approval_id` and `spec.decision` (`allow` or `deny`). |
+
+Every command also carries the current `spec.assignment`. The Computer checks
+that binding against the platform before acting. New images already install all
+three CLIs. Existing Computers can install a missing CLI without overwriting an
+existing installation or copying account credentials. The native provider's
+supported login stays in its normal home on that Computer.
+
+The Tinyhat plugin must include `tinyhat-route-message`, `tinyhat-respond`, and
+the provider method catalog. The receiver uses its own private SQLite inbox,
+native session IDs, and scoped local MCP tools. One router selects a task using
+recent messages, task summaries, and provider reply/thread context; two separate
+tasks can run concurrently. Updates to the same task wait for its current turn.
+Response skills decide whether to send, edit, stream, or stay quiet. CLI final
+text never becomes an automatic channel reply.
+
+Provider credentials stay outside prompts and tools. Telegram and Slack accept
+only the configured owner, and email reuses the plugin's authenticated-owner
+ingress. Sending is bound to the incoming conversation; edits require a message
+receipt belonging to the task. Delivery failures with an unknown outcome remain
+uncertain instead of being automatically sent again. This is not an exactly-once
+guarantee across providers or a security sandbox against the Computer's owner.
+
+Native switching drains active work. Hermes switching uses its public gateway
+stop/status/uninstall commands and refuses to start a competing receiver unless
+stopping is confirmed. An in-flight Hermes turn is not transferred to a native
+session. Native sessions remain resumable when switching back to that framework;
+sessions from different frameworks are not interchangeable. A receiver that
+survives an update drains before loading changed transport code. Crash recovery
+marks dispatched but incomplete turns interrupted and never silently replays
+their side effects.
+
 For local development this runs in Docker with `--restart unless-stopped`. On a
 production Linux Computer the same runtime should run under a process manager
 such as systemd with restart enabled and a high enough priority that Hermes can

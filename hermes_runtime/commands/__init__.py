@@ -45,6 +45,12 @@ COMMAND_MODULES = {
     "stage_update": "hermes_runtime.commands.stage_update",
     "activate_update": "hermes_runtime.commands.activate_update",
     "restart_runtime_service": "hermes_runtime.commands.restart_runtime_service",
+    "channels_status": "hermes_runtime.commands.channel_agent",
+    "channels_use_hermes": "hermes_runtime.commands.channel_agent",
+    "channels_use_codex": "hermes_runtime.commands.channel_agent",
+    "channels_use_claude_code": "hermes_runtime.commands.channel_agent",
+    "install_agent_framework": "hermes_runtime.commands.channel_agent",
+    "channels_approve": "hermes_runtime.commands.channel_agent",
 }
 
 
@@ -53,5 +59,12 @@ async def run_command(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     module_name = COMMAND_MODULES.get(kind)
     if module_name is None:
         raise ValueError(f"unsupported command: {kind}")
+    from hermes_runtime.channel_agent.control import selected, snapshot, suspend, mode
+    if hasattr(ctx, "state_dir") and kind == "stop_hermes":
+        await suspend(ctx)
+    if hasattr(ctx, "state_dir") and (selected(ctx) != "hermes" or mode(ctx)["desired"] != "hermes") and kind in {
+        "start_hermes", "heal_hermes", "configure_telegram", "activate_codex_auth_models",
+    }:
+        return dict(changed=False, reason="native_framework_selected", **snapshot(ctx))
     module = import_module(module_name)
     return await module.run(ctx, command)

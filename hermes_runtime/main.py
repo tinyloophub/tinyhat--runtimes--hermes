@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_runtime import __version__, private_access
+from hermes_runtime.channel_agent import control as channel_control
 from hermes_runtime.client import (
     CachedGoogleIdentityToken,
     PlatformClient,
@@ -237,6 +238,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
         "capabilities": {
             "check_and_stage_updates": True,
             "agent_api": agent_systems.enabled(),
+            "channel_frameworks": True,
         },
         "current_version": ctx.current_version(),
         "current_commit_sha": current_commit_sha,
@@ -264,6 +266,7 @@ def _heartbeat_metrics(ctx: RuntimeContext, *, status: str) -> dict[str, Any]:
             "failure": getattr(ctx, "email_setup_failure", None),
             "gateway_attempts": getattr(ctx, "email_gateway_attempts", 0),
         }
+    runtime["channel_agent"] = channel_control.snapshot(ctx)
     metrics = {"runtime_generation": "tiny_runtime", "hermes_runtime": runtime}
     inventory = getattr(ctx, "agent_systems_inventory", None)
     if inventory is not None:
@@ -585,6 +588,13 @@ async def _inspect_gateway_state(
 
 
 async def _refresh_gateway_state(ctx: RuntimeContext) -> None:
+    if channel_control.selected(ctx) != "hermes":
+        live = channel_control.snapshot(ctx)
+        channels = live.get("channels", {})
+        ready = live.get("status") == "running" and bool(channels) and all(channels.values())
+        ctx.gateway_state = _gateway_state_payload(status="running" if ready else "starting",
+            ready=ready, reason="native_channel_framework", details={"framework": live["active"]})
+        return
     if getattr(ctx, "agent_api_context", None) is not None:
         ctx.gateway_state = None
         return
@@ -642,6 +652,9 @@ def _maybe_start_gateway_reconcile(ctx: RuntimeContext) -> None:
     ``heal_hermes`` with ``spec.restart=true``).
     """
     _consume_gateway_reconcile_task(ctx)
+    channel_mode = channel_control.mode(ctx)
+    if channel_mode["active"] != "hermes" or channel_mode["desired"] != "hermes":
+        return
     if getattr(ctx, "agent_api_context", None) is not None:
         return
     if ctx.gateway_reconciled or ctx.gateway_reconcile_task is not None:
@@ -959,6 +972,7 @@ async def _heartbeat_once(ctx: RuntimeContext) -> None:
     envelope = response.get("command")
     if not isinstance(envelope, dict) or not envelope:
         email_onboarding.schedule(ctx)
+        channel_control.schedule(ctx)
         return
     command = envelope.get("command") if envelope.get("type") else envelope
     if isinstance(command, dict) and command:

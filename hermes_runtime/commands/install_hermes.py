@@ -97,6 +97,7 @@ from hermes_runtime.commands.configure_telegram import (
     local_stt_model,
 )
 from hermes_runtime.day_one_capabilities import (
+    AIOHTTP_VERSION,
     BASELINE_ID,
     BROWSER_CLOUD_PROVIDER,
     BROWSER_ENGINE,
@@ -165,10 +166,10 @@ async def _probe_messaging_dependencies(project_dir: Path) -> dict[str, Any]:
             (
                 "import importlib.metadata\n"
                 "import importlib.util\n"
-                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts','jmapc')\n"
+                "modules=('telegram','telegram.ext','faster_whisper','ddgs','edge_tts','jmapc','aiohttp')\n"
                 "missing=[name for name in modules if importlib.util.find_spec(name) is None]\n"
                 f"expected={{'ddgs':'{DDGS_VERSION}','edge-tts':'{EDGE_TTS_VERSION}',"
-                f"'jmapc':'{JMAP_CLIENT_VERSION}'}}\n"
+                f"'jmapc':'{JMAP_CLIENT_VERSION}','aiohttp':'{AIOHTTP_VERSION}'}}\n"
                 "wrong=[]\n"
                 "for package, version in expected.items():\n"
                 "    try:\n"
@@ -346,7 +347,8 @@ async def _ensure_messaging_dependencies() -> dict[str, Any]:
                 f"{shlex.quote(package_spec)} "
                 f"{shlex.quote(f'ddgs=={DDGS_VERSION}')} "
                 f"{shlex.quote(f'edge-tts=={EDGE_TTS_VERSION}')} "
-                f"{shlex.quote(f'jmapc=={JMAP_CLIENT_VERSION}')}"
+                f"{shlex.quote(f'jmapc=={JMAP_CLIENT_VERSION}')} "
+                f"{shlex.quote(f'aiohttp=={AIOHTTP_VERSION}')}"
             ),
             timeout_seconds=900,
             env={"PIP_DISABLE_PIP_VERSION_CHECK": "1"},
