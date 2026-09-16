@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.0.72 - 2026-09-16
+
+- Use Tinyhat plugin 0.32.20 for the updated native channel response skills.
+  The compatible Computer framework APIs remain required. Browser readiness
+  and current-model display use [tinyloophub/tinyloop#1346](https://github.com/tinyloophub/tinyloop/pull/1346).
+  Channel promotion does not update existing Computers; new fleet images must
+  be baked and verified against this final release.
 
 - Open native Codex and Claude Code sign-in on minimal desktops that provide
   `xset` but not `xdpyinfo`. Report browser readiness only after a successful
