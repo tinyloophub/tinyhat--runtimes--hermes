@@ -47,6 +47,7 @@ commands through the existing runtime command queue:
 | `channels_use_codex` | Verify the Computer's Codex login, stop the previous receiver, then use Codex App Server sessions. |
 | `channels_use_claude_code` | Verify Claude Code login, stop the previous receiver, then use native resumable Claude sessions. |
 | `install_agent_framework` | Install a missing official CLI; `spec.framework` selects it. This does not sign in or select it. |
+| `signin_agent_framework` | Start the official Codex or Claude Code login in the Computer's browser, with the CLI running invisibly in the background. |
 
 Every command also carries the current `spec.assignment`. The Computer checks
 that binding against the platform before acting. New images already install all

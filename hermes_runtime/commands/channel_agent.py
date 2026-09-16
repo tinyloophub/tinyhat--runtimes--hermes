@@ -29,6 +29,10 @@ async def run(ctx, command):
     if kind == "channels_status":
         await control.inventory(ctx)
         return control.snapshot(ctx)
+    if kind == "signin_agent_framework":
+        from hermes_runtime.channel_agent.signin import start
+
+        return await start(ctx, spec.get("framework"))
     if kind == "install_agent_framework":
         framework = spec.get("framework")
         if framework not in control.FRAMEWORKS:

@@ -122,6 +122,9 @@ def snapshot(ctx):
                     result["status"] = "unavailable"
         except (OSError, ValueError, KeyError):
             result["status"] = "starting"
+    from hermes_runtime.channel_agent.signin import status as signin_status
+
+    result["signin"] = signin_status(ctx) if hasattr(ctx, "state_dir") else None
     # Session data is fetched only through the private on-demand bridge. It
     # never enters heartbeat telemetry or persisted runtime-command results.
     return result

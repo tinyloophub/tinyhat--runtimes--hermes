@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from hermes_runtime.channel_agent import bridge, control
+from hermes_runtime.channel_agent import bridge, control, signin
 from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.state import State
 from hermes_runtime.channel_agent.service import Service
@@ -87,6 +87,38 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
             await server.wait_closed()
             shutil.rmtree(socket_path(path).parent)
 
+    async def test_signin_requires_installation_and_does_not_expose_cli_output(self):
+        with (
+            patch.object(
+                signin,
+                "probe",
+                AsyncMock(return_value={"installed": False, "authenticated": False}),
+            ),
+            patch.object(signin.subprocess, "Popen") as launch,
+        ):
+            with self.assertRaises(RuntimeError):
+                await signin.start(self.ctx, "codex")
+            launch.assert_not_called()
+        with (
+            patch.object(
+                signin,
+                "probe",
+                AsyncMock(return_value={"installed": True, "authenticated": False}),
+            ),
+            patch.object(signin.subprocess, "Popen") as launch,
+        ):
+            result = await signin.start(self.ctx, "codex")
+            args = launch.call_args.args[0]
+            self.assertIn("hermes_runtime.channel_agent.signin", args)
+            self.assertNotIn("terminal", " ".join(args))
+            self.assertEqual(
+                launch.call_args.kwargs["stdout"], signin.subprocess.DEVNULL
+            )
+            self.assertNotIn("url", result)
+            self.assertEqual(
+                launch.call_args.kwargs["env"]["PYTHONPATH"],
+                str(Path(signin.__file__).resolve().parents[2]),
+            )
 
     async def test_sessions_command_sends_one_button_without_creating_native_task(self):
         state = State(control.directory(self.ctx))
@@ -119,6 +151,14 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
         finally:
             state.close()
 
+    async def test_expired_flow_is_failed_not_connected(self):
+        path = control.directory(self.ctx) / "signin.json"
+        path.write_text(
+            json.dumps({"framework": "codex", "status": "waiting", "updated_at": 1})
+        )
+        self.assertEqual(
+            signin.status(self.ctx), {"framework": "codex", "status": "failed"}
+        )
 
     async def test_explicit_suspend_is_not_undone_by_assigned_heartbeat(self):
         self.ctx.platform_state = "active"
@@ -141,3 +181,38 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(control.mode(self.ctx)["status"], "running")
 
 
+class BrowserBoundaryTests(unittest.TestCase):
+    def test_only_official_provider_urls_open_without_shell(self):
+        with (
+            patch.object(signin.shutil, "which", return_value="/usr/bin/chrome"),
+            patch.object(signin.subprocess, "Popen") as launch,
+        ):
+            for url in [
+                "https://evil.test/login",
+                "javascript:alert(1)",
+                "https://auth.openai.com@evil.test/",
+                "https://user:pw@claude.ai/",
+            ]:
+                with self.assertRaises(ValueError):
+                    signin.open_browser(url)
+            launch.assert_not_called()
+            signin.open_browser("https://auth.openai.com/oauth/authorize?state=private")
+            self.assertEqual(launch.call_args.args[0][0], "/usr/bin/chrome")
+            self.assertNotIn("shell", launch.call_args.kwargs)
+            self.assertEqual(launch.call_args.kwargs["env"]["DISPLAY"], ":1")
+
+    def test_poison_event_retry_does_not_block_next_event_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(Path(directory))
+            state.ingest("bad", {"text": "bad"})
+            state.ingest("good", {"text": "good"})
+            state.route_failed("bad")
+            self.assertEqual(
+                [row["id"] for row in state.queued(ready_only=True)], ["good"]
+            )
+            state.close()
+            state = State(Path(directory))
+            state.route_failed("bad")
+            state.route_failed("bad")
+            self.assertEqual([row["id"] for row in state.queued()], ["good"])
+            state.close()

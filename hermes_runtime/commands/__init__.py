@@ -49,6 +49,7 @@ COMMAND_MODULES = {
     "channels_use_hermes": "hermes_runtime.commands.channel_agent",
     "channels_use_codex": "hermes_runtime.commands.channel_agent",
     "channels_use_claude_code": "hermes_runtime.commands.channel_agent",
+    "signin_agent_framework": "hermes_runtime.commands.channel_agent",
     "install_agent_framework": "hermes_runtime.commands.channel_agent",
 }
 
