@@ -30,6 +30,61 @@ This process only does the platform-visible work needed to manage a Computer:
 - report command results back to the platform;
 - stage updates and activate them on runtime restart.
 
+The optional channel receiver runs beside this heartbeat process. It hands
+authenticated owner updates to the selected native agent; it does not implement
+the agent's reasoning or impose a reply per incoming message.
+
+### Choosing a channel framework
+
+Hermes remains the default. Owners can select `hermes`, `codex`, or `claude_code`
+through compatible Computer APIs. The platform sends these assignment-fenced
+commands through the existing runtime command queue:
+
+| Command | Behavior |
+| --- | --- |
+| `channels_status` | Refresh CLI installation/login status and report selected framework and channel health. No session content enters telemetry. |
+| `channels_use_hermes` | Stop native intake, finish committed native work, then start Hermes through its supported CLI. |
+| `channels_use_codex` | Verify the Computer's Codex login, stop the previous receiver, then use Codex App Server sessions. |
+| `channels_use_claude_code` | Verify Claude Code login, stop the previous receiver, then use native resumable Claude sessions. |
+| `install_agent_framework` | Install a missing official CLI; `spec.framework` selects it. This does not sign in or select it. |
+| `signin_agent_framework` | Start the official Codex or Claude Code login in the Computer's browser, with the CLI running invisibly in the background. |
+
+Every command also carries the current `spec.assignment`. The Computer checks
+that binding against the platform before acting. New images already install all
+three CLIs. Existing Computers can install a missing CLI without overwriting an
+existing installation or copying account credentials. The native provider's
+supported login stays in its normal home on that Computer.
+
+The private `hermes_runtime.channel_agent.bridge` command serves session lists
+and approvals on demand over the Computer's authenticated access tunnel.
+Session titles, native IDs, messages, summaries and approval requests stay on
+the Computer; they are never included in heartbeat or runtime-command results.
+Telegram `/activity` opens the owner's authenticated live session page.
+
+The Tinyhat plugin must include `tinyhat-route-message`, `tinyhat-respond`, and
+the provider method catalog. The receiver uses its own private SQLite inbox,
+native session IDs, and scoped local MCP tools. One router selects a task using
+recent messages, task summaries, and provider reply/thread context; two separate
+tasks can run concurrently. Updates to the same task wait for its current turn.
+Response skills decide whether to send, edit, stream, or stay quiet. CLI final
+text never becomes an automatic channel reply.
+
+Provider credentials stay outside prompts and tools. Telegram and Slack accept
+only the configured owner, and email reuses the plugin's authenticated-owner
+ingress. Sending is bound to the incoming conversation; edits require a message
+receipt belonging to the task. Delivery failures with an unknown outcome remain
+uncertain instead of being automatically sent again. This is not an exactly-once
+guarantee across providers or a security sandbox against the Computer's owner.
+
+Native switching drains active work. Hermes switching uses its public gateway
+stop/status/uninstall commands and refuses to start a competing receiver unless
+stopping is confirmed. An in-flight Hermes turn is not transferred to a native
+session. Native sessions remain resumable when switching back to that framework;
+sessions from different frameworks are not interchangeable. A receiver that
+survives an update drains before loading changed transport code. Crash recovery
+marks dispatched but incomplete turns interrupted and never silently replays
+their side effects.
+
 For local development this runs in Docker with `--restart unless-stopped`. On a
 production Linux Computer the same runtime should run under a process manager
 such as systemd with restart enabled and a high enough priority that Hermes can
@@ -251,6 +306,11 @@ whitelist tied together.
 
 ## Command whitelist
 
+In native mode, `stop_hermes` suspends the receiver and `start_hermes` resumes
+that selected framework. Park/unpark uses a separate resumable suspension.
+The private sessions bridge assumes the managed installation prefix and state
+directory; custom installations must provide the corresponding paths.
+
 Every platform command is implemented as a file under
 `hermes_runtime/commands/`. If a command is not listed here, the runtime rejects
 it.
@@ -285,8 +345,8 @@ it.
 | `import_openclaw_state` | `hermes_runtime/commands/import_openclaw_state.py` | Imports compatible OpenClaw state after an in-place Tinyhat Computer migration. | Runs Hermes' public `hermes claw migrate` CLI against the OpenClaw source directory (`/var/lib/tinyhat-openclaw` by default, override with `TINYHAT_HERMES_OPENCLAW_MIGRATION_SOURCE` or command `spec.source`). Uses `--preset full --overwrite --yes` by default and imports the OpenClaw token/API-key env block only when `spec.include_private_values=true` (or the older `spec.migrate_secrets=true`) is explicitly passed, mapping that safe platform flag to Hermes' `--migrate-secrets`. Returns the bounded Hermes migration stdout/stderr and source path; no secret values are returned. |
 | `activate_codex_auth_models` | `hermes_runtime/commands/activate_codex_auth_models.py` | Activates OpenAI Codex model settings after an in-place migration imports existing auth. | Checks for existing Hermes Codex auth-store credentials or Codex CLI auth, then asks Hermes through its formal `hermes model --no-browser` picker to switch to the OpenAI Codex provider and default model. It reuses the same multimedia helper as `/codex_auth`: image understanding uses the selected Codex chat model with OpenRouter fallback, while voice transcription stays on OpenRouter STT with local faster-whisper fallback. If no existing auth is found, the command skips cleanly and never starts a device-code flow. It can restart `hermes gateway` only when `spec.restart_gateway=true`; the migration path runs it before gateway start. |
 | `import_legacy_tinyhat_secrets` | `hermes_runtime/commands/import_legacy_tinyhat_secrets.py` | Imports old platform-readable Tinyhat runtime secrets after an OpenClaw Computer becomes Hermes. | Fetches the existing computer-authenticated `/runtime-secrets` map, writes those names into Hermes env files with the same managed block used by `apply_config`, reloads terminal passthrough helpers, and restarts `hermes gateway` when needed. Results include only secret names, counts, env-file paths, and restart status; values stay masked. |
-| `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Starts Hermes Agent messaging again on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start`. It detects a failed/start-limited gateway unit by exit code — `systemctl is-failed hermes-gateway.service` exits 0 exactly when the unit is failed — probing the system manager first and then the user manager, and runs `reset-failed` on the manager that reports the failure before starting (retrying the start once when the failure only appears after the first attempt). When running as root without `XDG_RUNTIME_DIR`, the user-manager calls best-effort inject the root user-bus environment, recorded in the result's `reset_failed` summary alongside the targeted manager. When Hermes reports that the gateway service is missing, it runs `hermes gateway install` and starts service mode before using the foreground local/Docker fallback. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
-| `stop_hermes` | `hermes_runtime/commands/stop_hermes.py` | Stops Hermes Agent messaging before Tinyhat parks or reassigns a Telegram bot. | Runs `hermes gateway stop`, checks gateway status, and terminates the foreground `hermes gateway run` process used by local/Docker fallback mode. It does not stop the Tinyhat runtime service, change Telegram webhooks, remove credentials, or unassign the Computer. |
+| `start_hermes` | `hermes_runtime/commands/start_hermes.py` | Resumes messaging through the selected framework on an already-configured Computer. | Runs `hermes gateway status` and, only if the gateway is not already healthy, runs `hermes gateway start`. It detects a failed/start-limited gateway unit by exit code — `systemctl is-failed hermes-gateway.service` exits 0 exactly when the unit is failed — probing the system manager first and then the user manager, and runs `reset-failed` on the manager that reports the failure before starting (retrying the start once when the failure only appears after the first attempt). When running as root without `XDG_RUNTIME_DIR`, the user-manager calls best-effort inject the root user-bus environment, recorded in the result's `reset_failed` summary alongside the targeted manager. When Hermes reports that the gateway service is missing, it runs `hermes gateway install` and starts service mode before using the foreground local/Docker fallback. It does not fetch bot tokens, write credentials, change Telegram webhooks, stop Tinyhat runtime, or unassign the Computer. |
+| `stop_hermes` | `hermes_runtime/commands/stop_hermes.py` | Stops and suspends the selected receiver until an explicit start or framework selection. | Runs `hermes gateway stop`, checks gateway status, and terminates the foreground `hermes gateway run` process used by local/Docker fallback mode. It does not stop the Tinyhat runtime service, change Telegram webhooks, remove credentials, or unassign the Computer. |
 | `heal_hermes` | `hermes_runtime/commands/heal_hermes.py` | Repairs an already-configured Hermes Computer whose messaging gateway stopped while the Tinyhat runtime still heartbeats. | Verifies Hermes is installed, confirms Tinyhat-managed Telegram env names are present without returning values, preserves or seeds `TELEGRAM_FALLBACK_IPS` before reload so a restart cannot hang in Hermes' unbounded system-DNS discovery task, and reloads env files. By default it reuses the durable `start_hermes` path (start-only; no-op on a healthy gateway); the exact legacy admin reason `admin_heal_hermes` also defaults a missing restart field to true, while explicit `restart=false` and assignment-time reconciliation stay start-only. With `spec.restart=true`, it identifies the single systemd manager that owns `hermes-gateway.service`, records its generation, tries the official `hermes gateway restart` within a bounded grace slice, and narrowly force-cycles only that proven unit when the same old generation remains. If systemd does not own the gateway, it first proves Hermes' exact live kind/PID/process-start/argv generation, uses bounded documented `gateway stop` plus the supervisor-neutral `start_hermes` path, and requires a changed active generation. If documented stop leaves that exact process stuck on Linux, it uses pidfd-scoped TERM/KILL only after revalidating the same profile, process start, and argv before each signal; other platforms, ambiguous identity, and reused PIDs fail closed without signaling. A healthy gateway without exact identity fails closed. Restart requests set `healthy`/`healed` only after healthy gateway status and fresh connected Telegram evidence; start-only repair reports the durable start/status observation in `healthy`, keeps `healed=false`, and explicitly labels a new start unverified. Restart proof prefers Hermes' atomic `gateway_state.json`; systemd binds it to the new MainPID/invocation, while non-systemd and foreground modes also require matching process-start and profile-preserving argv. A Tinyhat-owned detached gateway may fall back only to log bytes appended after its persisted generation boundary. Missing or stale restart evidence never reports success. The `restart` result preserves its request, deadline, method, fallback, and verification metadata; restart-only evidence and milestone fields are populated when that transaction runs. Its before/after generation fields contain only allowlisted identity metadata and never raw process arguments. Assigned heartbeats classify the gateway as `serving`, `serving_unverified`, `draining_restarting`, `non_serving`, or `unknown` while retaining the existing `ready` boolean/nullable field. Exact non-systemd and foreground generation proof lets healthy gateways reach `serving`; ambiguous or stale owners remain unverified. The runtime never initiates recurring restarts; recovery policy remains platform-owned. |
 | `codex_limits` | `hermes_runtime/commands/codex_limits.py` | Shows the OpenAI Codex subscription windows and credits visible to the user's Codex auth on this Computer. | Starts the Codex CLI installed during provisioning with `codex app-server --listen stdio://`, initializes the app-server, calls `account/rateLimits/read`, writes the last structured JSON response to `codex/last_limits.json` under the runtime state directory, and returns a readable summary. It does not read or return OpenAI auth tokens, parse terminal logs, or call the normal OpenAI REST API. |
 | `stage_update` | `hermes_runtime/commands/stage_update.py` | Downloads or prepares a target runtime version without changing the running process. | Writes `staged/VERSION`, `staged/metadata.json`, a staged `staged/runtime/hermes_runtime` package, and the import-safe bootstrap when the target release has one. When `target_sha` is present, downloads that immutable commit instead of a movable tag/channel. Does not switch versions until `activate_update`. |

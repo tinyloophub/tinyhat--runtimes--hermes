@@ -262,6 +262,10 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     Restore confirmed failures, retain healthy-but-unverified configuration,
     and fail the command honestly. Model, email and files are not replaced.
     """
+    from hermes_runtime.channel_agent.control import selected
+    if selected(ctx) != "hermes":
+        from hermes_runtime.channel_agent.configure import configure_native
+        return await configure_native(ctx, command)
     path = api_path(ctx)
     assignment = str((command.get("spec") or {}).get("assignment") or "")
     if not assignment:

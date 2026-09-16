@@ -164,6 +164,13 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     secrets = _clean_secret_map(payload)
     secret_names = sorted(secrets)
 
+    from hermes_runtime.channel_agent import control as channel_control
+    if channel_control.selected(ctx) != "hermes":
+        from hermes_runtime.channel_agent.configure import stop_for_configuration
+        # Freeze intake before changing files consumed by active channel tasks.
+        # The normal supervisor retries activation if applying credentials fails.
+        await stop_for_configuration(ctx)
+
     env_files = [
         _write_runtime_secret_env_file(env_path, secrets)
         for env_path in _env_file_candidates()
@@ -225,7 +232,11 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             notice = await _send_secret_available_notice(secret_names)
         else:
             notice = await _send_secret_restart_notice()
-        gateway = await _run_gateway(hermes_bin)
+        if channel_control.selected(ctx) != "hermes":
+            await channel_control.start_native(ctx, channel_control.selected(ctx))
+            gateway = {"healthy": True, "mode": channel_control.selected(ctx)}
+        else:
+            gateway = await _run_gateway(hermes_bin)
         if not gateway.get("healthy"):
             raise RuntimeError("Hermes gateway did not report a healthy status.")
         if secrets.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1" and email_failure is None:
@@ -233,6 +244,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
             # gateway. Its next background check must not restart it a second time.
             mark_ready(ctx, secrets)
     else:
+        if channel_control.selected(ctx) != "hermes":
+            await channel_control.start_native(ctx, channel_control.selected(ctx))
         notice = {"ok": None}
         gateway = {
             "restarted": False,

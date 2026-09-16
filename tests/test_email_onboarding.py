@@ -44,17 +44,18 @@ class ConfigTests(TestCase):
                 self.assertTrue(email_onboarding.configure(Path("/hermes"), VALUES))
             self.assertNotIn("private-fixture", str(messages.output))
 
-    def test_runtime_import_does_not_require_hermes_yaml_dependency(self):
+    def test_runtime_import_does_not_require_receiver_dependencies(self):
         probe = """import importlib.abc,sys
 class BlockYaml(importlib.abc.MetaPathFinder):
  def find_spec(self, fullname, path=None, target=None):
-  if fullname == 'yaml' or fullname.startswith('yaml.'):
-   raise ImportError('YAML deliberately absent')
+  if fullname.split('.')[0] in {'yaml', 'aiohttp'}:
+   raise ImportError('Receiver dependency deliberately absent')
 sys.meta_path.insert(0,BlockYaml())
 import importlib,pkgutil,hermes_runtime
 for module in pkgutil.walk_packages(hermes_runtime.__path__, 'hermes_runtime.'):
  importlib.import_module(module.name)
 assert 'yaml' not in sys.modules
+assert 'aiohttp' not in sys.modules
 """
         result = subprocess.run(
             [sys.executable, "-c", probe], capture_output=True, text=True, timeout=30

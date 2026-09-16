@@ -213,6 +213,7 @@ async def _reconcile_locked(ctx):
         sync_terminal_env_passthrough,
     )
     from hermes_runtime.commands.configure_telegram import _run_gateway
+    from hermes_runtime.channel_agent import control as channel_control
 
     stage = "channel status"
     try:
@@ -237,6 +238,9 @@ async def _reconcile_locked(ctx):
             ctx.email_attempt_fingerprint = fingerprint
             ctx.email_gateway_attempts = 0
         stage = "Hermes email configuration"
+        if channel_control.selected(ctx) != "hermes":
+            from hermes_runtime.channel_agent.configure import stop_for_configuration
+            await stop_for_configuration(ctx)
         await asyncio.to_thread(configure, hermes_home(), values)
         clear_failure(ctx, stage)
         if values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") != "1":
@@ -255,6 +259,10 @@ async def _reconcile_locked(ctx):
             [Path(item["path"]) for item in applied], keys=list(values)
         )
         sync_terminal_env_passthrough(list(values), remove_names=sorted(removed))
+        if channel_control.selected(ctx) != "hermes":
+            await channel_control.start_native(ctx, channel_control.selected(ctx))
+            mark_ready(ctx, values)
+            return
         stage = "gateway restart"
         binary = find_hermes_binary()
         if not binary:
