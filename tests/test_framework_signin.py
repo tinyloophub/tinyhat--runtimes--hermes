@@ -74,7 +74,7 @@ class LoginWorkerTests(unittest.IsolatedAsyncioTestCase):
                     if signin.status(ctx)["status"] == "opening":
                         self.opening_seen = True
                         (control.directory(ctx)/"signin-browser-opened").write_text("opened")
-                        raise TimeoutError()
+                        raise asyncio.TimeoutError()
                     self.returncode = 0
                     return 0
             provider = Process()
