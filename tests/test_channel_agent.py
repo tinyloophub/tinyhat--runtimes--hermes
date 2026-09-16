@@ -97,7 +97,9 @@ class StateTests(unittest.TestCase):
             self.state.ingest("new", {"text": "later"}, cursor=("offset", 501))
         self.assertIsNone(self.state.setting("offset"))
         self.state.event_state("0", "done")
-        self.assertTrue(self.state.ingest("new", {"text": "later"}, cursor=("offset", 501)))
+        self.assertTrue(
+            self.state.ingest("new", {"text": "later"}, cursor=("offset", 501))
+        )
         self.assertEqual(self.state.setting("offset"), 501)
 
     def test_crash_does_not_reexecute_dispatched_work_or_repeat_uncertain_output(self):
@@ -268,6 +270,71 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         await self.transport.close()
         self.transport.session.close.assert_awaited_once()
 
+    async def test_typing_is_opt_in_bounded_and_cleaned_up(self):
+        self.transport.request.assert_not_awaited()
+        await self.transport.keep_typing("task1", self.event, 10)
+        self.assertEqual(
+            self.transport.request.await_args.args,
+            ("telegram", "sendChatAction", {"chat_id": "123", "action": "typing"}),
+        )
+        lease = self.transport.typing["task1"]
+        await self.transport.keep_typing("task1", self.event, 0)
+        self.assertTrue(lease.done())
+        self.assertFalse(self.transport.typing)
+        for seconds in (-1, 121, True):
+            with self.assertRaises(ValueError):
+                await self.transport.keep_typing("task1", self.event, seconds)
+
+    async def test_slack_stream_targets_current_owner_and_root_thread(self):
+        self.transport.methods["slack"] = {
+            "chat.startStream": {"target": "channel", "thread_status": True},
+            "chat.appendStream": {"target": "channel", "message": "ts"},
+            "chat.stopStream": {"target": "channel", "message": "ts"},
+        }
+        event = {
+            "provider": "slack",
+            "conversation": "C123",
+            "sender": "U123",
+            "team_id": "T123",
+            "message_id": "10.001",
+        }
+        self.transport.request.return_value = {"ts": "20.001"}
+        await self.transport.action(
+            "task1",
+            event,
+            {
+                "method": "chat.startStream",
+                "params": {"markdown_text": "Hello"},
+                "action_id": "start",
+            },
+        )
+        sent = self.transport.request.await_args.args[2]
+        self.assertEqual(sent["thread_ts"], "10.001")
+        self.assertEqual(sent["recipient_user_id"], "U123")
+        self.assertEqual(sent["recipient_team_id"], "T123")
+        for method in ("chat.appendStream", "chat.stopStream"):
+            await self.transport.action(
+                "task1",
+                event,
+                {"method": method, "params": {"ts": "20.001"}, "action_id": method},
+            )
+            with self.assertRaises(ValueError):
+                await self.transport.action(
+                    "task2",
+                    event,
+                    {"method": method, "params": {"ts": "20.001"}, "action_id": method},
+                )
+        with self.assertRaises(ValueError):
+            await self.transport.action(
+                "task1",
+                event,
+                {
+                    "method": "chat.startStream",
+                    "params": {"recipient_user_id": "OTHER"},
+                    "action_id": "foreign",
+                },
+            )
+
 
 class HandoffTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -317,7 +384,9 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         from hermes_runtime.main import _maybe_start_gateway_reconcile
         from hermes_runtime.commands import run_command
 
-        control.save(self.ctx, {"active": "hermes", "desired": "codex", "status": "failed"})
+        control.save(
+            self.ctx, {"active": "hermes", "desired": "codex", "status": "failed"}
+        )
         self.ctx.gateway_reconcile_task = None
         self.ctx.gateway_reconciled = False
         self.ctx.platform_state = "active"
@@ -419,7 +488,12 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 control,
                 "run_process",
-                AsyncMock(return_value={"ok": True, "stdout": "not running"}),
+                AsyncMock(
+                    return_value={
+                        "ok": True,
+                        "stdout": "✗ User gateway service is stopped\n  Run: hermes gateway start\n",
+                    }
+                ),
             ),
             patch.object(control, "start_native", side_effect=start),
             patch("hermes_runtime.commands.start_hermes.run", AsyncMock()) as old,
@@ -444,6 +518,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
                 close=AsyncMock(),
                 action=AsyncMock(),
                 stop_intake=AsyncMock(),
+                stop_typing=AsyncMock(),
             )
             with patch(
                 "hermes_runtime.channel_agent.service.Transports",
@@ -470,9 +545,10 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
                 elif event["message_id"] == "2":
                     await second.wait()
                 completed.append(event["message_id"])
-                return "native-" + task[
-                    "id"
-                ], "Terminal output must not become a channel reply"
+                return (
+                    "native-" + task["id"],
+                    "Terminal output must not become a channel reply",
+                )
 
             service.run_native = native
             for key in ("1", "2"):
@@ -491,6 +567,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
                 async def poll():
                     while not predicate():
                         await asyncio.sleep(0.02)
+
                 await asyncio.wait_for(poll(), 8)
 
             try:

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from hermes_runtime.agent_systems import _write_atomic
-from hermes_runtime.channel_agent.native import probe
+from hermes_runtime.channel_agent.native import model_name, probe
 from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.revision import installed_revision
 from hermes_runtime.hermes_cli import find_hermes_binary, run_process
@@ -104,17 +104,18 @@ def snapshot(ctx):
         **current,
         "frameworks": getattr(ctx, "channel_framework_inventory", {}),
         "channels": {},
+        "model": (
+            getattr(ctx, "hermes_channel_model", None)
+            if current["active"] == "hermes"
+            else None
+        ),
     }
     if current["active"] != "hermes":
         try:
             status = json.loads((directory(ctx) / "status.json").read_text())
             if status["active"] == current["active"]:
-                result.update(
-                    {
-                        key: status[key]
-                        for key in ("channels",)
-                    }
-                )
+                result.update({key: status[key] for key in ("channels",)})
+                result["model"] = model_name(status.get("model"))
                 if time.time() - status["updated_at"] > 20 or (
                     current.get("status") == "running"
                     and not all(status["channels"].values())
@@ -133,6 +134,19 @@ def snapshot(ctx):
 async def inventory(ctx):
     values = await asyncio.gather(*(probe(name) for name in sorted(FRAMEWORKS)))
     ctx.channel_framework_inventory = dict(zip(sorted(FRAMEWORKS), values, strict=True))
+    if (
+        selected(ctx) == "hermes"
+        and ctx.channel_framework_inventory["hermes"]["installed"]
+    ):
+        config = await run_process(
+            [str(find_hermes_binary()), "config", "get", "model.default"],
+            timeout_seconds=15,
+        )
+        ctx.hermes_channel_model = (
+            model_name(str(config.get("stdout") or "").strip())
+            if config.get("ok")
+            else None
+        )
     return ctx.channel_framework_inventory
 
 
@@ -244,7 +258,9 @@ async def reconcile(ctx):
     old, target = current["active"], current["desired"]
     if old == target:
         if current.get("status") == "suspended":
-            if not current.get("resume_on_assignment") or getattr(ctx, "platform_state", "") not in {"assigned", "active"}:
+            if not current.get("resume_on_assignment") or getattr(
+                ctx, "platform_state", ""
+            ) not in {"assigned", "active"}:
                 return
             await request_switch(ctx, target)
             return
@@ -330,7 +346,15 @@ async def reconcile(ctx):
 async def suspend(ctx, *, resume_on_assignment=False):
     """Fence native work before parking or revoking an assignment."""
     current = mode(ctx)
-    save(ctx, {**current, "desired": current["active"], "status": "suspended", "resume_on_assignment": resume_on_assignment})
+    save(
+        ctx,
+        {
+            **current,
+            "desired": current["active"],
+            "status": "suspended",
+            "resume_on_assignment": resume_on_assignment,
+        },
+    )
     if current["active"] == "hermes":
         return
     try:

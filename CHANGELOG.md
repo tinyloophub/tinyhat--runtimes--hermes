@@ -9,6 +9,22 @@
   printed-link fallback without storing or exposing provider output.
 - Add desktop sign-in shortcuts for both installed coding frameworks. They
   open the provider's official login in the Computer browser without a terminal.
+- Recognize the Hermes CLI's current stopped-service summary when switching
+  channel receivers. Historical journal entries cannot confirm a stopped
+  receiver. Previously the switch could stop Hermes and fail before starting
+  Codex or Claude Code.
+- Deliver owner Telegram photos as native Codex image input and transcribe
+  voice messages through the configured speech-to-text service before native
+  routing. The configured provider may receive audio; the platform does not
+  receive session contents. Support Slack owner image/audio attachments too.
+- Report the model returned by the native agent and the configured Hermes
+  model in framework health metadata, without sending sessions to the platform.
+- Install sudo on minimal Debian/Ubuntu Computers so desktop preparation can
+  run through the standard private-access gateway.
+
+- Expose an optional bounded Telegram typing lease to native agents. Bind Slack
+  streams to the incoming thread and recipient; the response skill chooses
+  when to show status, stream, edit, or remain silent.
 
 ## 0.0.71 - 2026-09-16
 
