@@ -99,10 +99,12 @@ async def run_process(
     timeout_seconds: float,
     env: dict[str, str] | None = None,
     kill_process_group: bool = False,
+    replace_env: bool = False,
 ) -> dict[str, Any]:
     started = asyncio.get_running_loop().time()
-    merged_env = os.environ.copy()
-    merged_env.update(root_user_manager_env())
+    merged_env = {} if replace_env else os.environ.copy()
+    if not replace_env:
+        merged_env.update(root_user_manager_env())
     if env:
         merged_env.update(env)
     process: asyncio.subprocess.Process | None = None

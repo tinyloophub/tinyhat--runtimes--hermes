@@ -42,7 +42,7 @@ async def probe(framework):
     binary = find_hermes_binary() if framework == "hermes" else shutil.which(command)
     if not binary:
         return {"installed": False, "authenticated": False}
-    version = await run_process([str(binary), "--version"], timeout_seconds=15)
+    version = await run_process([str(binary), "--version"], timeout_seconds=15, env=child_env(), replace_env=True)
     if framework == "hermes":
         return {"installed": bool(version.get("ok")), "authenticated": True}
     args = (
@@ -50,7 +50,7 @@ async def probe(framework):
         if framework == "codex"
         else [binary, "auth", "status", "--json"]
     )
-    result = await run_process(args, timeout_seconds=20, env=child_env())
+    result = await run_process(args, timeout_seconds=20, env=child_env(), replace_env=True)
     authenticated = bool(result.get("ok"))
     if framework == "claude_code":
         try:
