@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import time
 from contextlib import suppress
@@ -68,9 +69,21 @@ def _process_text(result: dict[str, Any] | None) -> str:
 
 
 def _gateway_status_is_stopped(status: dict[str, Any] | None) -> bool:
+    if not isinstance(status, dict) or status.get("timed_out"):
+        return False
     text = _process_text(status)
     if not text:
         return False
+    # The CLI prints journal history before its current service summary. Old
+    # log lines are not evidence that the current receiver has stopped.
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    service_states = re.findall(
+        r"^[^\w\n]*(?:user|system) gateway service is (\w+)\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if service_states:
+        return all(state == "stopped" for state in service_states)
     stopped_needles = (
         "not running",
         "gateway is not running",
@@ -79,7 +92,9 @@ def _gateway_status_is_stopped(status: dict[str, Any] | None) -> bool:
         "status: stopped",
         "state: stopped",
     )
-    return any(needle in text for needle in stopped_needles)
+    return any(
+        line.strip().lstrip("✓✗ ") in stopped_needles for line in text.splitlines()
+    )
 
 
 def _read_proc_cmdline(pid: int) -> list[str] | None:
@@ -193,8 +208,7 @@ def _terminate_process(process: dict[str, Any]) -> dict[str, Any]:
 
 def _terminate_gateway_processes(hermes_bin: Path | None) -> list[dict[str, Any]]:
     return [
-        _terminate_process(process)
-        for process in _list_gateway_processes(hermes_bin)
+        _terminate_process(process) for process in _list_gateway_processes(hermes_bin)
     ]
 
 

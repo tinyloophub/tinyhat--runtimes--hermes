@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import sys
@@ -26,6 +27,16 @@ ROUTE_SCHEMA = {
 }
 
 
+def model_name(value):
+    """Only a model identifier may cross into health telemetry."""
+    return (
+        value
+        if isinstance(value, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", value)
+        else None
+    )
+
+
 def child_env():
     # Provider login stays in its supported home. Channel/platform credentials
     # do not cross the tool boundary as environment variables.
@@ -42,7 +53,12 @@ async def probe(framework):
     binary = find_hermes_binary() if framework == "hermes" else shutil.which(command)
     if not binary:
         return {"installed": False, "authenticated": False}
-    version = await run_process([str(binary), "--version"], timeout_seconds=15, env=child_env(), replace_env=True)
+    version = await run_process(
+        [str(binary), "--version"],
+        timeout_seconds=15,
+        env=child_env(),
+        replace_env=True,
+    )
     if framework == "hermes":
         return {"installed": bool(version.get("ok")), "authenticated": True}
     args = (
@@ -50,7 +66,9 @@ async def probe(framework):
         if framework == "codex"
         else [binary, "auth", "status", "--json"]
     )
-    result = await run_process(args, timeout_seconds=20, env=child_env(), replace_env=True)
+    result = await run_process(
+        args, timeout_seconds=20, env=child_env(), replace_env=True
+    )
     authenticated = bool(result.get("ok"))
     if framework == "claude_code":
         try:
@@ -203,7 +221,15 @@ class Codex:
         await self.send({"id": message["id"], "result": answer})
 
     async def turn(
-        self, prompt, *, native_id, instructions, router=False, on_session=None
+        self,
+        prompt,
+        *,
+        native_id,
+        instructions,
+        router=False,
+        on_session=None,
+        on_model=None,
+        images=(),
     ):
         config = {
             "cwd": str(self.cwd),
@@ -226,12 +252,17 @@ class Codex:
         else:
             result = await self.request("thread/start", {**config, "ephemeral": router})
         self.thread_id = result["thread"]["id"]
+        if on_model:
+            on_model(model_name(result.get("model")))
         if on_session:
             on_session(self.thread_id)
         self.done = asyncio.get_running_loop().create_future()
         params = {
             "threadId": self.thread_id,
-            "input": [{"type": "text", "text": prompt}],
+            "input": [
+                {"type": "text", "text": prompt},
+                *({"type": "localImage", "path": str(path)} for path in images),
+            ],
         }
         if router:
             params["outputSchema"] = ROUTE_SCHEMA
@@ -270,6 +301,7 @@ async def claude_turn(
     capability,
     router=False,
     on_session=None,
+    on_model=None,
 ):
     session_id = native_id or str(uuid.uuid4())
     args = [
@@ -314,7 +346,7 @@ async def claude_turn(
             "--mcp-config",
             json.dumps(mcp),
             "--allowedTools",
-            "mcp__tinyhat_channel__channel_api,mcp__tinyhat_channel__channel_api_help",
+            "mcp__tinyhat_channel__channel_api,mcp__tinyhat_channel__channel_api_help,mcp__tinyhat_channel__channel_typing",
             "--permission-prompt-tool",
             "mcp__tinyhat_channel__request_approval",
         ]
@@ -337,6 +369,12 @@ async def claude_turn(
             on_session(session_id)
         while line := await process.stdout.readline():
             message = json.loads(line)
+            if (
+                message.get("type") == "system"
+                and message.get("subtype") == "init"
+                and on_model
+            ):
+                on_model(model_name(message.get("model")))
             if message.get("type") == "result":
                 result = message
         await process.wait()

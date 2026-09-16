@@ -46,6 +46,7 @@ class Transports:
         self.session = None
         self.listeners = []
         self.draining = False
+        self.typing = {}
 
     async def request(self, provider, method, payload, *, app=False):
         if provider == "telegram":
@@ -217,6 +218,7 @@ class Transports:
                                     "provider": "slack",
                                     "conversation": event["channel"],
                                     "sender": event["user"],
+                                    "team_id": payload.get("team_id"),
                                     "text": event.get("text", ""),
                                     "message_id": event["ts"],
                                     "thread_id": event.get("thread_ts"),
@@ -286,8 +288,43 @@ class Transports:
                 "slack": "https://docs.slack.dev/reference/methods/",
                 "email": "send accepts subject and body; owner recipient is fixed.",
             }[provider],
-            "scope": "The runtime supplies the destination. Edit only messages returned to this task.",
+            "helpers": ["channel_typing"] if provider == "telegram" else [],
+            "scope": "The runtime supplies destination, thread and streaming recipient. Edit only messages returned to this task.",
         }
+
+    async def stop_typing(self, task_id):
+        running = self.typing.pop(task_id, None)
+        if running:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+
+    async def keep_typing(self, task_id, event, seconds):
+        # An agent-requested lease, never an automatic reply policy.
+        if (
+            event["provider"] != "telegram"
+            or type(seconds) is not int
+            or not 0 <= seconds <= 120
+        ):
+            raise ValueError("Typing needs a Telegram event and 0–120 seconds.")
+        await self.stop_typing(task_id)
+        if not seconds:
+            return {"stopped": True}
+        params = {"chat_id": event["conversation"], "action": "typing"}
+        if event.get("thread_id"):
+            params["message_thread_id"] = event["thread_id"]
+        await self.request("telegram", "sendChatAction", params)
+
+        async def renew():
+            end = asyncio.get_running_loop().time() + seconds
+            try:
+                while asyncio.get_running_loop().time() + 4 < end:
+                    await asyncio.sleep(4)
+                    await self.request("telegram", "sendChatAction", params)
+            except Exception:
+                pass  # Ephemeral feedback failing must not fail the owner's work.
+
+        self.typing[task_id] = asyncio.create_task(renew())
+        return {"typing_for_seconds": seconds}
 
     async def action(self, task_id, event, arguments):
         provider, method = event["provider"], arguments.get("method")
@@ -338,6 +375,19 @@ class Transports:
             params["thread_ts" if provider == "slack" else "message_thread_id"] = event[
                 "thread_id"
             ]
+        if provider == "slack" and method == "chat.startStream":
+            for key, value in (
+                ("recipient_user_id", event.get("sender")),
+                ("recipient_team_id", event.get("team_id")),
+            ):
+                if key in params and params[key] != value:
+                    raise ValueError("The stream belongs to another recipient.")
+                if value:
+                    params[key] = value
+            # Root messages also need a thread for the normal Slack chat UX.
+            params["thread_ts"] = event.get("thread_id") or event["message_id"]
+        elif {"recipient_user_id", "recipient_team_id"} & set(params):
+            raise ValueError("Recipient overrides are not supported.")
         if rule.get("thread_status"):
             thread = event.get("thread_id") or event.get("message_id")
             params["thread_ts"] = thread
@@ -439,6 +489,8 @@ class Transports:
             )
 
     async def close(self):
+        for task_id in list(self.typing):
+            await self.stop_typing(task_id)
         try:
             await self.stop_intake()
         finally:

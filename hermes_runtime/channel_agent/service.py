@@ -36,6 +36,7 @@ class Service:
         self.transports = Transports(self.state, self.state.ingest, self.stop_task)
         self.error = None
         self.revision = installed_revision()
+        self.model = None
 
     def skill(self, name):
         return (
@@ -43,8 +44,10 @@ class Service:
         ).read_text()
 
     def snapshot(self):
-        tasks = [{key: value for key, value in task.items() if key != "summary"}
-                 for task in self.state.tasks()]
+        tasks = [
+            {key: value for key, value in task.items() if key != "summary"}
+            for task in self.state.tasks()
+        ]
         approvals = [
             dict(row)
             for row in self.state.db.execute(
@@ -66,6 +69,7 @@ class Service:
         return {
             "schema": "tinyhat.channel-agent.v1",
             "active": self.framework,
+            "model": self.model,
             "status": "draining" if self.draining else "running",
             "updated_at": time.time(),
             "pid": os.getpid(),
@@ -81,6 +85,37 @@ class Service:
         _write_atomic(
             self.directory / "status.json", json.dumps(self.snapshot()), 0o600
         )
+
+    def report_model(self, model):
+        self.model = native.model_name(model)
+        self.publish()
+
+    async def discover_model(self):
+        if self.framework != "codex":
+            return
+
+        # An ephemeral thread resolves the official CLI's defaults without
+        # generating a response or persisting a conversation.
+        async def deny(_request):
+            return False
+
+        root = self.directory / "workspaces" / "router"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        agent = native.Codex(cwd=root, approve=deny)
+        try:
+            await agent.start()
+            resolved = await agent.request(
+                "thread/start",
+                {
+                    "cwd": str(root),
+                    "ephemeral": True,
+                    "approvalPolicy": "never",
+                    "sandbox": "read-only",
+                },
+            )
+            self.report_model(resolved.get("model"))
+        finally:
+            await agent.close()
 
     async def publish_status(self):
         while not self.shutdown.is_set():
@@ -128,6 +163,10 @@ class Service:
     async def tool(self, task_id, event, name, arguments):
         if name == "channel_api_help":
             return self.transports.help(event)
+        if name == "channel_typing":
+            return await self.transports.keep_typing(
+                task_id, event, arguments.get("seconds")
+            )
         if name == "channel_api":
             return await self.transports.action(task_id, event, arguments)
         if name == "request_approval":
@@ -213,6 +252,7 @@ class Service:
                     capability=capability,
                     router=router,
                     on_session=callback,
+                    on_model=self.report_model,
                 )
             mcp = (
                 None
@@ -225,7 +265,11 @@ class Service:
                         "TINYHAT_CHANNEL_CAPABILITY": capability,
                         "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
                     },
-                    "enabled_tools": ["channel_api", "channel_api_help"],
+                    "enabled_tools": [
+                        "channel_api",
+                        "channel_api_help",
+                        "channel_typing",
+                    ],
                 }
             )
 
@@ -241,6 +285,12 @@ class Service:
                     instructions=instruction,
                     router=router,
                     on_session=callback,
+                    on_model=self.report_model,
+                    images=[
+                        item["path"]
+                        for item in (event or {}).get("attachments", [])
+                        if item["kind"] == "image"
+                    ],
                 )
             finally:
                 await agent.close()
@@ -251,14 +301,43 @@ class Service:
         event = json.loads(row["payload"])
         if row["task_id"]:
             return row["task_id"]
-        if event.get("provider") == "telegram" and re.fullmatch(r"/activity(?:@[A-Za-z0-9_]+)?", event.get("text", "").strip(), re.I):
+        from hermes_runtime.channel_agent.attachments import prepare_media
+
+        raw = event.get("raw") or {}
+        if (
+            event.get("provider") in {"telegram", "slack"}
+            and (raw.get("photo") or raw.get("voice") or raw.get("files"))
+            and not event.get("attachments")
+            and not event.get("media_error")
+        ):
+            event = await prepare_media(
+                event, self.transports, self.directory / "attachments"
+            )
+            with self.state.db:
+                self.state.db.execute(
+                    "UPDATE events SET payload=? WHERE id=?",
+                    (json.dumps(event), row["id"]),
+                )
+        if event.get("provider") == "telegram" and re.fullmatch(
+            r"/activity(?:@[A-Za-z0-9_]+)?", event.get("text", "").strip(), re.I
+        ):
             from hermes_runtime.channel_agent.transports import plugin_module
 
-            button = await asyncio.to_thread(plugin_module("capabilities.channels.sessions").button)
-            await self.transports.action("command:" + row["id"], event, {
-                "method": "sendMessage", "action_id": "sessions-link",
-                "params": {"text": "Your sessions", "reply_markup": {"inline_keyboard": [[button]]}},
-            })
+            button = await asyncio.to_thread(
+                plugin_module("capabilities.channels.sessions").button
+            )
+            await self.transports.action(
+                "command:" + row["id"],
+                event,
+                {
+                    "method": "sendMessage",
+                    "action_id": "sessions-link",
+                    "params": {
+                        "text": "Your sessions",
+                        "reply_markup": {"inline_keyboard": [[button]]},
+                    },
+                },
+            )
             self.state.event_state(row["id"], "done")
             return None
         explicit = event.get("task_id")
@@ -321,6 +400,7 @@ class Service:
                     "UPDATE approvals SET decision='deny' WHERE task_id=? AND decision IS NULL",
                     (task_id,),
                 )
+            await self.transports.stop_typing(task_id)
             self.workers.pop(task_id, None)
             self.publish()
 
@@ -355,6 +435,8 @@ class Service:
             asyncio.get_running_loop().add_signal_handler(sig, self.shutdown.set)
         publisher = asyncio.create_task(self.publish_status())
         try:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.discover_model(), 10)
             await self.transports.start()
             while not self.shutdown.is_set():
                 self.publish()

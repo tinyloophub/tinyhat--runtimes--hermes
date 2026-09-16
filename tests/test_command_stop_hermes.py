@@ -32,7 +32,9 @@ def load_tests(
 
 def test_stop_hermes_reports_missing_cli_without_failing() -> None:
     with (
-        patch("hermes_runtime.commands.stop_hermes.find_hermes_binary", return_value=None),
+        patch(
+            "hermes_runtime.commands.stop_hermes.find_hermes_binary", return_value=None
+        ),
         patch(
             "hermes_runtime.commands.stop_hermes._terminate_gateway_processes",
             return_value=[],
@@ -45,6 +47,34 @@ def test_stop_hermes_reports_missing_cli_without_failing() -> None:
     assert result["stopped"] is True
     assert result["gateway_stop"] is None
     assert result["terminated_processes"] == []
+
+
+def test_gateway_service_status_uses_current_summary_not_journal_history() -> None:
+    for manager in ("User", "System"):
+        assert stop_hermes._gateway_status_is_stopped(
+            {
+                "stdout": "Active: inactive (dead)\n"
+                "Sep 16 host python[123]: Hermes Gateway Starting...\n"
+                f"✗ {manager} gateway service is stopped\n  Run: hermes gateway start\n",
+            }
+        )
+        assert not stop_hermes._gateway_status_is_stopped(
+            {
+                "stdout": "Sep 16 host python[123]: gateway stopped\n"
+                f"✓ {manager} gateway service is running\n",
+            }
+        )
+    assert not stop_hermes._gateway_status_is_stopped(
+        {
+            "timed_out": True,
+            "stdout": "✗ User gateway service is stopped\n",
+        }
+    )
+    assert not stop_hermes._gateway_status_is_stopped(
+        {
+            "stdout": "Sep 16 host python[123]: gateway is not running\n",
+        }
+    )
 
 
 def test_stop_hermes_runs_gateway_stop_and_status() -> None:

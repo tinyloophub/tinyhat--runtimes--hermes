@@ -30,6 +30,18 @@ TOOLS = [
         },
     },
     {
+        "name": "channel_typing",
+        "description": "Optional Telegram typing lease while you work. Explicitly start/renew for 1–120 seconds or stop with 0. No messages are sent. Ends when this turn ends.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "integer", "minimum": 0, "maximum": 120}
+            },
+            "required": ["seconds"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "request_approval",
         "description": "Ask the owner to approve a native Claude Code tool operation.",
         "inputSchema": {
