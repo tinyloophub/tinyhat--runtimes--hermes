@@ -478,9 +478,10 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             runner = asyncio.create_task(service.run())
 
             async def wait_for(predicate):
-                async with asyncio.timeout(8):
+                async def poll():
                     while not predicate():
                         await asyncio.sleep(0.02)
+                await asyncio.wait_for(poll(), 8)
 
             try:
                 await wait_for(lambda: len(running) == 2)
