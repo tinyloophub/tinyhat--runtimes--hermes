@@ -251,7 +251,7 @@ class Service:
         event = json.loads(row["payload"])
         if row["task_id"]:
             return row["task_id"]
-        if event.get("provider") == "telegram" and re.fullmatch(r"/sessions(?:@[A-Za-z0-9_]+)?", event.get("text", "").strip(), re.I):
+        if event.get("provider") == "telegram" and re.fullmatch(r"/activity(?:@[A-Za-z0-9_]+)?", event.get("text", "").strip(), re.I):
             from hermes_runtime.channel_agent.transports import plugin_module
 
             button = await asyncio.to_thread(plugin_module("capabilities.channels.sessions").button)

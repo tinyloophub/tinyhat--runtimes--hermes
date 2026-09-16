@@ -59,7 +59,7 @@ The private `hermes_runtime.channel_agent.bridge` command serves session lists
 and approvals on demand over the Computer's authenticated access tunnel.
 Session titles, native IDs, messages, summaries and approval requests stay on
 the Computer; they are never included in heartbeat or runtime-command results.
-Telegram `/sessions` opens the owner's authenticated live session page.
+Telegram `/activity` opens the owner's authenticated live session page.
 
 The Tinyhat plugin must include `tinyhat-route-message`, `tinyhat-respond`, and
 the provider method catalog. The receiver uses its own private SQLite inbox,

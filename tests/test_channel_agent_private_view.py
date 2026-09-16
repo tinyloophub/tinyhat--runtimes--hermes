@@ -129,7 +129,7 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
         service.transports.methods = {"telegram": {"sendMessage": {"target": "chat_id"}}}
         service.transports.request = AsyncMock(return_value={"message_id": 91})
         service.run_native = AsyncMock()
-        event = {"provider": "telegram", "text": "/sessions@my_bot", "conversation": "7"}
+        event = {"provider": "telegram", "text": "/activity@my_bot", "conversation": "7"}
         state.ingest("command-update", event)
         button = {"text": "Sessions", "url": "https://computer.example/sessions"}
         try:
