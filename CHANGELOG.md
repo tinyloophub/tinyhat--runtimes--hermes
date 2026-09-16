@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Open official provider sign-in through the Computer browser profile without a
+  terminal. Keep OAuth output and account credentials local.
+- Explicit stop/start commands suspend and resume the selected native receiver;
+  park/unpark resumes its existing selection.
+
 - Settle background CLI probes before the control process restarts, while
   leaving native channel workers and their running jobs alive.
 - Keep native channel control sockets on the Computer's local filesystem so
@@ -13,7 +18,8 @@
   independent tasks allowed to run concurrently. Agents explicitly send or edit
   channel messages through scoped tools; terminal output is not sent automatically.
 - Drain native work before changing receivers or installed adapters, preserve
-  session IDs, and report installation, login, task, and approval status.
+  session IDs, and report installation/login health. Private task and approval
+  data is available only through the authenticated live Computer bridge.
   Switching from Hermes uses its public gateway stop/uninstall interfaces.
   In-flight Hermes turns are not migrated into another framework.
 
