@@ -59,9 +59,21 @@ supported login stays in its normal home on that Computer.
 `signin.status` remains `opening` until the provider CLI has launched the
 Computer browser, then becomes `waiting`, `authenticated`, or `failed`. Clients
 should wait for `waiting` before entering the desktop for credential entry.
+The optional `signins` map reports the same public state for each provider;
+clients should use `signins[framework]` for their selected provider, with
+`signin` retained as the compatibility view of the last requested provider.
 Both installed CLIs also get **Sign in to Codex** / **Sign in to Claude Code**
 desktop shortcuts. They run the same browser flow without a terminal; desktop
 app authentication remains a separate provider-owned login.
+
+Startup readiness uses the existing `agent_systems` inventory: `desktop_ready`
+requires the desktop tools and browser, and every preinstalled CLI must pass
+its version probe. On assignment, `apply_context` writes both installed
+providers' sign-in shortcuts before `agent_api.ready` can become true. A
+launcher write failure leaves that acknowledgement false and retries on the
+next heartbeat. This prepares sign-in before an assigned Computer is ready;
+it does not start an expiring OAuth login at boot. The command still waits for
+the actual desktop display and browser before reporting `waiting`.
 
 The private `hermes_runtime.channel_agent.bridge` command serves session lists
 and approvals on demand over the Computer's authenticated access tunnel.
