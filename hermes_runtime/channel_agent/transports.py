@@ -85,10 +85,10 @@ class Transports:
     async def start(self):
         # The control process uses only the standard library. Provider I/O
         # runs in the separate receiver's Hermes environment.
-        import aiohttp
-
         self.draining = False
         if self.session is None or self.session.closed:
+            import aiohttp
+
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=40)
             )
