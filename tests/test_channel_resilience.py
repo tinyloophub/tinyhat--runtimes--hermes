@@ -248,6 +248,47 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.transport.typing)
         self.assertFalse(self.transport.receipt_events)
 
+    async def test_second_cancellation_cannot_interrupt_slack_cleanup(self):
+        started, clearing = asyncio.Event(), asyncio.Event()
+        release, cleared = asyncio.Event(), asyncio.Event()
+
+        async def uncertain(provider, method, params):
+            if params["status"] == "processing":
+                started.set()
+                await asyncio.Future()
+            if params["status"] == "active":
+                clearing.set()
+                await release.wait()
+                cleared.set()
+            return {}
+
+        self.transport.request = uncertain
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await asyncio.wait_for(started.wait(), 1)
+        self.transport.receipt_jobs["receipt:update"].cancel()
+        await asyncio.wait_for(clearing.wait(), 1)
+        stop = asyncio.create_task(self.transport.stop_receipt(event))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(stop, 1)
+        self.assertTrue(cleared.is_set())
+        self.assertIsNone(self.state.setting('slack_status:["123", "17"]'))
+        self.assertFalse(self.transport.typing)
+        self.assertFalse(self.transport.receipt_events)
+
+    async def test_slack_stop_clears_receipt_before_worker_exists(self):
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await self.receipts()
+        service = Service.__new__(Service)
+        service.state, service.transports, service.workers = self.state, self.transport, {}
+        await service.stop_task("slack", json.dumps(["123", "17"]))
+        self.assertEqual(self.transport.request.await_args.args[2]["status"], "active")
+        self.assertFalse(self.transport.receipt_events)
+        self.assertFalse(self.transport.typing)
+        self.assertIsNone(self.state.setting('slack_status:["123", "17"]'))
+
     async def test_quiet_preference_is_durable_and_conversation_scoped(self):
         event = self.event()
         self.transport.accept("update", event)

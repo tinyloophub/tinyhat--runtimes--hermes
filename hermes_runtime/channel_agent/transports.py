@@ -468,19 +468,37 @@ class Transports:
         clear_methods = [(method, clear)]
         self.state.set(scope, task_id)
 
+        async def clear_status():
+            try:
+                for clear_method, clear_status in clear_methods:
+                    if self.state.setting(scope) != task_id:
+                        break
+                    try:
+                        await asyncio.wait_for(
+                            self.request(
+                                "slack", clear_method,
+                                {**params, "status": clear_status},
+                            ), 5
+                        )
+                    except Exception:
+                        pass
+            finally:
+                if self.state.setting(scope) == task_id:
+                    self.state.set(scope, None)
+
         async def lease():
             try:
                 await asyncio.sleep(seconds)
             finally:
                 if self.state.setting(scope) == task_id:
-                    for clear_method, clear_status in clear_methods:
+                    cleanup = asyncio.create_task(clear_status())
+                    while not cleanup.done():
                         try:
-                            await asyncio.wait_for(
-                                self.request("slack", clear_method, {**params, "status": clear_status}), 5
-                            )
-                        except Exception:
-                            pass
-                    self.state.set(scope, None)
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            # A second cancellation must not cancel bounded
+                            # cleanup or leave an ownerless working indicator.
+                            continue
 
         # Own cleanup before the request: a timed-out status write may still
         # have reached Slack. Never leave an uncertain processing status forever.

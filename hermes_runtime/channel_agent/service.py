@@ -477,6 +477,10 @@ class Service:
                 self.workers[task_id].cancel()
         elif provider == "slack":
             task_id = self.state.setting("slack_status:" + reference)
+            receipt = self.transports.receipt_events.get(task_id)
+            if receipt:
+                await self.transports.stop_receipt(receipt)
+                return
             if task_id in self.workers:
                 self.workers[task_id].cancel()
                 # Stop is a transport lifecycle event, not an authored reply.
