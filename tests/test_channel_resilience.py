@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from hermes_runtime.channel_agent.native import Codex, CodexRequestError
 from hermes_runtime.channel_agent.service import Service
@@ -359,6 +359,74 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             await service.tool("router", self.event(), True, "channel_typing",
                                {"seconds": 0, "receipt_feedback": False})
         self.assertTrue(self.transport.receipt_enabled(self.event()))
+
+    async def test_router_handoff_keeps_receipt_until_worker_finishes(self):
+        service = Service.__new__(Service)
+        service.directory, service.framework = self.root, "codex"
+        service.capabilities, service.state = {}, self.state
+        service.socket_path, service.transports = self.root / "socket", self.transport
+        service.skill = Mock(return_value="response policy")
+        service.codex_skill = Mock(return_value=None)
+        agent = SimpleNamespace(start=AsyncMock(), close=AsyncMock())
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await self.receipts()
+
+        async def route_turn(*args, **kwargs):
+            await service.tool("routing:1", event, True, "channel_typing", {"seconds": 60})
+            return None, "decision"
+
+        agent.turn = route_turn
+        with patch("hermes_runtime.channel_agent.service.native.Codex", return_value=agent):
+            await service.run_native("route", event=event, router=True)
+        self.assertIn("receipt:update", self.transport.typing)
+        self.assertFalse(self.transport.typing["receipt:update"].done())
+        self.assertEqual(self.transport.request.await_args.args[2]["status"], "processing")
+
+        agent.turn = AsyncMock(return_value=("native-session", "done"))
+        with patch("hermes_runtime.channel_agent.service.native.Codex", return_value=agent):
+            await service.run_native("work", task={"id": "worker", "native_id": None}, event=event)
+        self.assertNotIn("receipt:update", self.transport.typing)
+        self.assertEqual(self.transport.request.await_args.args[2]["status"], "active")
+
+    async def test_renewed_receipts_remain_tracked_for_quiet_and_cleanup(self):
+        for provider in ("telegram", "slack"):
+            for quiet in (True, False):
+                with self.subTest(provider=provider, quiet=quiet):
+                    key = f"renewed-{provider}-{quiet}"
+                    event = self.event(provider, event_id=key)
+                    self.state.set(self.transport.receipt_scope(event), True)
+                    self.transport.accept(key, event)
+                    await self.receipts()
+                    receipt_id = "receipt:" + key
+                    old_lease = self.transport.typing[receipt_id]
+                    await self.transport.keep_typing(receipt_id, event, 60)
+                    self.assertIsNot(self.transport.typing[receipt_id], old_lease)
+                    self.assertIn(receipt_id, self.transport.receipt_events)
+                    if quiet:
+                        await self.transport.keep_typing("worker", event, 0, receipt_feedback=False)
+                    else:
+                        lease = self.transport.typing[receipt_id]
+                        lease.cancel()
+                        await asyncio.gather(lease, return_exceptions=True)
+                    self.assertNotIn(receipt_id, self.transport.typing)
+                    self.assertNotIn(receipt_id, self.transport.receipt_events)
+
+    async def test_slack_root_and_thread_replies_match_activity_destination(self):
+        self.transport.methods["slack"]["chat.postMessage"] = {"target": "channel"}
+        for thread in (None, "original-thread"):
+            event = self.event("slack", thread_id=thread)
+            await self.transport.keep_typing("worker", event, 60)
+            status_params = self.transport.request.await_args.args[2]
+            await self.transport.action("worker", event, {
+                "method": "chat.postMessage", "params": {"text": "Answer"},
+                "action_id": str(thread),
+            })
+            reply_params = self.transport.request.await_args.args[2]
+            self.assertEqual(status_params["thread_ts"], reply_params["thread_ts"])
+            self.assertEqual(reply_params["thread_ts"], thread or event["message_id"])
+            self.assertEqual(self.transport.help(event)["reply_thread"], reply_params["thread_ts"])
+            await self.transport.stop_typing("worker")
 
     async def test_transient_preflight_failure_recovers_without_process_restart(self):
         self.transport.connected = {"telegram": False}

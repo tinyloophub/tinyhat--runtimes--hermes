@@ -105,14 +105,7 @@ class Transports:
             log.warning("channel_receipt_unavailable")
         finally:
             lease = self.typing.get(receipt_id)
-            if lease and not lease.done():
-
-                def finished(_):
-                    self.receipt_events.pop(receipt_id, None)
-                    self.typing.pop(receipt_id, None)
-
-                lease.add_done_callback(finished)
-            else:
+            if not lease or lease.done():
                 self.receipt_events.pop(receipt_id, None)
                 self.typing.pop(receipt_id, None)
 
@@ -397,6 +390,8 @@ class Transports:
             }[provider],
             "helpers": ["channel_typing"] if provider in {"telegram", "slack"} else [],
             "receipt_feedback": self.receipt_enabled(event),
+            "reply_thread": (event.get("thread_id") or event.get("message_id"))
+            if provider == "slack" else event.get("thread_id"),
             "scope": "The runtime supplies destination, thread and streaming recipient. Edit only messages returned to this task.",
         }
 
@@ -431,7 +426,9 @@ class Transports:
         if not seconds or not self.receipt_enabled(event):
             return {"stopped": True}
         if event["provider"] == "slack":
-            return await self.slack_typing(task_id, event, seconds)
+            result = await self.slack_typing(task_id, event, seconds)
+            self.track_receipt_lease(task_id)
+            return result
         params = {"chat_id": event["conversation"], "action": "typing"}
         if event.get("thread_id"):
             params["message_thread_id"] = event["thread_id"]
@@ -447,7 +444,20 @@ class Transports:
                 pass  # Ephemeral feedback failing must not fail the owner's work.
 
         self.typing[task_id] = asyncio.create_task(renew())
+        self.track_receipt_lease(task_id)
         return {"typing_for_seconds": seconds}
+
+    def track_receipt_lease(self, task_id):
+        lease = self.typing.get(task_id)
+        if not task_id.startswith("receipt:") or lease is None:
+            return
+
+        def finished(_):
+            if self.typing.get(task_id) is lease:
+                self.typing.pop(task_id, None)
+                self.receipt_events.pop(task_id, None)
+
+        lease.add_done_callback(finished)
 
     async def slack_typing(self, task_id, event, seconds):
         params = {
@@ -565,6 +575,10 @@ class Transports:
             params["thread_ts" if provider == "slack" else "message_thread_id"] = event[
                 "thread_id"
             ]
+        if provider == "slack" and method == "chat.postMessage":
+            # Activity opens this thread in Slack. Keep the eventual answer in
+            # that same place, including when the owner wrote in the DM root.
+            params["thread_ts"] = event.get("thread_id") or event["message_id"]
         if provider == "slack" and method == "chat.startStream":
             for key, value in (
                 ("recipient_user_id", event.get("sender")),

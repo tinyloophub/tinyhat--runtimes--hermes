@@ -88,6 +88,9 @@ recent messages, task summaries, and provider reply/thread context; two separate
 tasks can run concurrently. Updates to the same task wait for its current turn.
 Response skills decide whether to send, edit, stream, or stay quiet. CLI final
 text never becomes an automatic channel reply.
+Receipt feedback survives the router-to-worker handoff until the worker takes
+over, finishes, or the bounded lease expires. Slack replies use the same thread
+as status and streams, including an owner's message in the root DM.
 
 Native worker conversations show the owner's message first, followed by concise
 source, reply and attachment context. The original update remains in the private

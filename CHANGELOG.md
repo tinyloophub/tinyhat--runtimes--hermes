@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Preserve receipt feedback through the router-to-worker handoff. Slack replies
+  now stay in the same thread as their working status, including root DM messages.
+
 ## 0.0.75 - 2026-09-17
 
 - Pair with Tinyhat plugin 0.32.22 for skill-managed receipt defaults and saved
