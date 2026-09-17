@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.74 - 2026-09-17
+
+- Pair with Tinyhat plugin 0.32.21 for early typing and streaming defaults.
+  Promote this runtime before the plugin. Existing platform APIs remain
+  compatible. Promotion does not update already-running Computers; bake and
+  verify fleet images against this final release.
 
 - Show readable incoming channel messages in Codex and Claude Code sessions,
   retaining reply context, media inputs and a private local original-update reference.
