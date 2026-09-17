@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.75 - 2026-09-17
+
+- Pair with Tinyhat plugin 0.32.22 for skill-managed receipt defaults and saved
+  quiet preferences. Promote this runtime before the plugin. Existing platform
+  APIs remain compatible. Update running Computers and bake and verify a new
+  preinstalled image against this release after promotion.
 
 - Show bounded Telegram typing or Slack working status as soon as a new owner
   message is stored, before routing, media processing or worker availability.
