@@ -47,6 +47,20 @@ class Service:
             plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME) / "skills" / name / "SKILL.md"
         ).read_text()
 
+    def codex_skill(self, root, name):
+        # Explicit skill input only resolves skills in Codex's catalog. Use its
+        # documented workspace discovery directory and symlink support so the
+        # plugin stays the canonical source and updates apply to existing tasks.
+        link = root / ".agents" / "skills" / name
+        link.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not link.exists() and not link.is_symlink():
+            link.symlink_to(
+                plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME) / "skills" / name,
+                target_is_directory=True,
+            )
+        # Preserve an owner-created workspace override rather than replacing it.
+        return (link / "SKILL.md").resolve()
+
     def snapshot(self):
         tasks = [
             {key: value for key, value in task.items() if key != "summary"}
@@ -301,6 +315,7 @@ class Service:
             async def approve(request):
                 return False if router else await self.approval(task["id"], request)
 
+            skill_path = self.codex_skill(root, name)
             agent = native.Codex(cwd=root, approve=approve, mcp=mcp)
             try:
                 await agent.start()
@@ -311,12 +326,7 @@ class Service:
                     router=router,
                     on_session=callback,
                     on_model=self.report_model,
-                    skill_path=(
-                        plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME)
-                        / "skills"
-                        / name
-                        / "SKILL.md"
-                    ),
+                    skill_path=skill_path,
                     images=[
                         item["path"]
                         for item in (event or {}).get("attachments", [])
