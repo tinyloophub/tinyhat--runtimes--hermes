@@ -311,6 +311,12 @@ class Service:
                     router=router,
                     on_session=callback,
                     on_model=self.report_model,
+                    skill_path=(
+                        plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME)
+                        / "skills"
+                        / name
+                        / "SKILL.md"
+                    ),
                     images=[
                         item["path"]
                         for item in (event or {}).get("attachments", [])

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Load the current response/routing skill on every Codex turn, including resumed
+  and forked conversations, using the official skill input.
+
 - Continue a native Codex conversation through the official fork API when its
   desktop app owns the writer, preserving history and the local Tinyhat task.
   Do not replay uncertain turns or interrupt the desktop session.

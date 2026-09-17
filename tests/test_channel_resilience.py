@@ -43,10 +43,19 @@ class CodexWriterTests(unittest.IsolatedAsyncioTestCase):
             native_id="original",
             instructions="skill",
             on_session=sessions.append,
+            skill_path=Path("/plugin/skills/tinyhat-respond/SKILL.md"),
         )
         self.assertEqual(result, ("continuation", "answer"))
         self.assertEqual(
             [c[0] for c in calls], ["thread/resume", "thread/fork", "turn/start"]
+        )
+        self.assertEqual(
+            calls[-1][1]["input"][0],
+            {
+                "type": "skill",
+                "name": "tinyhat-respond",
+                "path": "/plugin/skills/tinyhat-respond/SKILL.md",
+            },
         )
 
     async def test_other_errors_and_uncertain_turn_start_are_not_replayed(self):

@@ -247,6 +247,7 @@ class Codex:
         on_session=None,
         on_model=None,
         images=(),
+        skill_path=None,
     ):
         config = {
             "cwd": str(self.cwd),
@@ -294,6 +295,18 @@ class Codex:
                 *({"type": "localImage", "path": str(path)} for path in images),
             ],
         }
+        if skill_path:
+            # Resuming/forking can retain a thread's older developer instructions.
+            # The official skill input loads the installed policy for this turn,
+            # including updated owner-overridable feedback defaults.
+            params["input"].insert(
+                0,
+                {
+                    "type": "skill",
+                    "name": Path(skill_path).parent.name,
+                    "path": str(skill_path),
+                },
+            )
         if router:
             params["outputSchema"] = ROUTE_SCHEMA
             params["effort"] = "low"
