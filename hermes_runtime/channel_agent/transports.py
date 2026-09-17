@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import importlib
 import json
+import logging
 import os
 import re
 import sys
@@ -13,6 +14,8 @@ from types import ModuleType
 
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
 from hermes_runtime.runtime_env import env_file_candidates, read_env_values
+
+log = logging.getLogger(__name__)
 
 
 def plugin_module(name):
@@ -45,6 +48,7 @@ class Transports:
         }
         self.session = None
         self.listeners = []
+        self.listener_by_provider = {}
         self.draining = False
         self.typing = {}
 
@@ -81,28 +85,52 @@ class Transports:
     async def start(self):
         # The control process uses only the standard library. Provider I/O
         # runs in the separate receiver's Hermes environment.
-        import aiohttp
-
         self.draining = False
         if self.session is None or self.session.closed:
+            import aiohttp
+
             self.session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=40)
             )
-        if self.values.get("TELEGRAM_BOT_TOKEN"):
-            await self.request("telegram", "getMe", {})
-            info = await self.request("telegram", "getWebhookInfo", {})
-            if info.get("url"):
-                raise RuntimeError(
-                    "Telegram still has a webhook; run channel setup before switching."
-                )
-            self.listeners.append(asyncio.create_task(self.telegram()))
-        if self.values.get("SLACK_BOT_TOKEN"):
-            await self.request("slack", "auth.test", {})
-            self.listeners.append(asyncio.create_task(self.slack()))
-        if self.values.get("TINYHAT_EMAIL_CHANNEL_ENABLED") == "1":
-            self.listeners.append(asyncio.create_task(self.email()))
-        if not self.listeners:
+        if not self.connected:
             raise RuntimeError("No channel credentials are installed.")
+        self.ensure_listeners()
+
+    def ensure_listeners(self):
+        """Supervise intake separately from routing and individual workers."""
+        if self.draining or self.session is None:
+            return
+        for provider in self.connected:
+            task = self.listener_by_provider.get(provider)
+            if task is None or task.done():
+                if task and not task.cancelled():
+                    task.exception()  # Retrieve without logging secret-bearing errors.
+                self.connected[provider] = False
+                self.listener_by_provider[provider] = asyncio.create_task(
+                    self.listen(provider)
+                )
+        self.listeners = list(self.listener_by_provider.values())
+
+    async def listen(self, provider):
+        while not self.draining:
+            try:
+                if provider == "telegram":
+                    await self.request(provider, "getMe", {})
+                    info = await self.request(provider, "getWebhookInfo", {})
+                    if info.get("url"):
+                        raise RuntimeError("Telegram webhook still owns intake.")
+                elif provider == "slack":
+                    await self.request(provider, "auth.test", {})
+                await getattr(self, provider)()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            finally:
+                self.connected[provider] = False
+            if not self.draining:
+                log.warning("%s_listener_retry", provider)
+                await asyncio.sleep(5)
 
     async def telegram(self):
         owner = self.values.get("TELEGRAM_ALLOWED_USERS", "").strip()
@@ -162,6 +190,7 @@ class Transports:
                 raise
             except Exception:
                 self.connected["telegram"] = False
+                log.warning("telegram_receive_retry")
                 await asyncio.sleep(5)
 
     async def slack(self):
@@ -230,10 +259,14 @@ class Transports:
                         # durable ingest. A full inbox leaves the envelope unacked.
                         if envelope.get("envelope_id"):
                             await ws.send_json({"envelope_id": envelope["envelope_id"]})
+                self.connected["slack"] = False
+                if not self.draining:
+                    await asyncio.sleep(1)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.connected["slack"] = False
+                log.warning("slack_receive_retry")
                 await asyncio.sleep(5)
 
     async def email(self):
@@ -276,6 +309,7 @@ class Transports:
                 raise
             except Exception:
                 self.connected["email"] = False
+                log.warning("email_receive_retry")
             await asyncio.sleep(15)
 
     def help(self, event):
@@ -288,7 +322,7 @@ class Transports:
                 "slack": "https://docs.slack.dev/reference/methods/",
                 "email": "send accepts subject and body; owner recipient is fixed.",
             }[provider],
-            "helpers": ["channel_typing"] if provider == "telegram" else [],
+            "helpers": ["channel_typing"] if provider in {"telegram", "slack"} else [],
             "scope": "The runtime supplies destination, thread and streaming recipient. Edit only messages returned to this task.",
         }
 
@@ -301,14 +335,16 @@ class Transports:
     async def keep_typing(self, task_id, event, seconds):
         # An agent-requested lease, never an automatic reply policy.
         if (
-            event["provider"] != "telegram"
+            event["provider"] not in {"telegram", "slack"}
             or type(seconds) is not int
             or not 0 <= seconds <= 120
         ):
-            raise ValueError("Typing needs a Telegram event and 0–120 seconds.")
+            raise ValueError("Activity needs a Telegram/Slack event and 0–120 seconds.")
         await self.stop_typing(task_id)
         if not seconds:
             return {"stopped": True}
+        if event["provider"] == "slack":
+            return await self.slack_typing(task_id, event, seconds)
         params = {"chat_id": event["conversation"], "action": "typing"}
         if event.get("thread_id"):
             params["message_thread_id"] = event["thread_id"]
@@ -324,6 +360,45 @@ class Transports:
                 pass  # Ephemeral feedback failing must not fail the owner's work.
 
         self.typing[task_id] = asyncio.create_task(renew())
+        return {"typing_for_seconds": seconds}
+
+    async def slack_typing(self, task_id, event, seconds):
+        params = {
+            "channel_id": event["conversation"],
+            "thread_ts": event.get("thread_id") or event["message_id"],
+        }
+        scope = "slack_status:" + json.dumps(
+            [params["channel_id"], params["thread_ts"]]
+        )
+        other = self.state.setting(scope)
+        if other and other != task_id:
+            task = self.state.task(other)
+            if other in self.typing or (
+                task and task["status"] in {"running", "waiting"}
+            ):
+                return {"already_working": True}
+        method, status, clear = "agents.sessions.setStatus", "processing", "active"
+        try:
+            await self.request("slack", method, {**params, "status": status})
+        except Exception:
+            method, clear = "assistant.threads.setStatus", ""
+            await self.request("slack", method, {**params, "status": "Working…"})
+        self.state.set(scope, task_id)
+
+        async def lease():
+            try:
+                await asyncio.sleep(seconds)
+            finally:
+                if self.state.setting(scope) == task_id:
+                    try:
+                        await self.request("slack", method, {**params, "status": clear})
+                    except Exception:
+                        pass
+                    self.state.set(scope, None)
+
+        self.typing[task_id] = asyncio.create_task(lease())
+        # Let the lease enter its finally block before it can be cancelled.
+        await asyncio.sleep(0)
         return {"typing_for_seconds": seconds}
 
     async def action(self, task_id, event, arguments):
@@ -475,6 +550,9 @@ class Transports:
             task.cancel()
         await asyncio.gather(*self.listeners, return_exceptions=True)
         self.listeners = []
+        self.listener_by_provider = {}
+        for provider in self.connected:
+            self.connected[provider] = False
         # Confirm only the Telegram updates already committed locally. A next
         # update returned here remains unacknowledged for the next receiver.
         offset = self.state.setting("telegram_offset")

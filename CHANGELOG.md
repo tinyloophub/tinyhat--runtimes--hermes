@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Keep receiver liveness and pending approvals available after a task failure;
+  report the failure separately. Route with low reasoning effort for prompt
+  feedback while leaving task execution on the owner's configured effort.
+
+- Load the current response/routing skill on every Codex turn, including resumed
+  and forked conversations, using the official skill input.
+
+- Continue a native Codex conversation through the official fork API when its
+  desktop app owns the writer, preserving history and the local Tinyhat task.
+  Do not replay uncertain turns or interrupt the desktop session.
+- Retry each channel's startup independently and supervise stopped listeners.
+  Keep bounded, sanitized receiver diagnostics on the Computer and report
+  failed native processing through channel health.
+- Allow the routing skill to request temporary Telegram/Slack activity while
+  selecting a task. The router cannot send messages or execute work. Response
+  and silence choices remain in skills; existing plugins remain compatible.
+
 ## 0.0.73 - 2026-09-16
 
 - Keep Codex and Claude Code browser sign-ins independent. An unfinished login

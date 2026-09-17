@@ -946,3 +946,28 @@ when every observation in that window is negative: Hermes can briefly report
 disconnected during a successful restart. Any unknown or converging evidence
 preserves its previous connected status. A later failure needs an explicit retry
 to refresh that status; this bounded check is not continuous channel monitoring.
+
+
+### Native receiver recovery
+
+Native channel intake retries provider startup independently. A health loop
+restarts stopped listeners while the Computer is active; draining never restarts
+intake. Heartbeat supervision restarts an exited receiver. Event cursors and the
+local inbox survive restarts; uncertain sends and native turns are not replayed.
+A Codex thread held by the desktop continues through its official fork interface
+before the new turn starts, keeping the existing local Tinyhat task and history.
+Processing failures are reported separately until a subsequent turn succeeds;
+they never hide a live worker's approvals or mark connected intake as stopped.
+The bounded `receiver.log` contains diagnostic codes, never messages or provider
+exceptions.
+
+Compatible routing skills can request a bounded Telegram/Slack activity lease
+before selecting a task. They cannot send, edit, or stream replies. Response
+skills choose typing, drafts/streams, and silence; the runtime does not turn CLI
+output into automatic replies. Slack leases clear only the status they own.
+Codex receives the current skill on each turn through its official skill input,
+discovered from a workspace skill link to the installed plugin. Unexpected
+workspace replacements are preserved but not loaded as the explicit policy.
+Owner response preferences still apply through conversation and skills. Routing
+uses low reasoning effort; task execution keeps
+the owner's configured effort.

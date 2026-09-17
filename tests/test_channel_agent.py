@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from hermes_runtime.channel_agent import control
 from hermes_runtime.channel_agent.native import Codex
@@ -535,6 +535,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             root = Path(folder)
             (root / "control").write_text("local-control")
             transport = SimpleNamespace(
+                ensure_listeners=Mock(),
                 connected={"telegram": True},
                 values={},
                 start=AsyncMock(),
