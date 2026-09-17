@@ -89,6 +89,13 @@ tasks can run concurrently. Updates to the same task wait for its current turn.
 Response skills decide whether to send, edit, stream, or stay quiet. CLI final
 text never becomes an automatic channel reply.
 
+Native worker conversations show the owner's message first, followed by concise
+source, reply and attachment context. The original update remains in the private
+local `channels.sqlite3` inbox; the visible turn includes its `events` record ID
+and database path for optional inspection. Images still use native image inputs
+and voice transcripts remain readable. Router context and scoped channel tools
+continue to receive the structured event. Existing native history is not rewritten.
+
 Provider credentials stay outside prompts and tools. Telegram and Slack accept
 only the configured owner, and email reuses the plugin's authenticated-owner
 ingress. Sending is bound to the incoming conversation; edits require a message
