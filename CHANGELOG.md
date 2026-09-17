@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep receiver liveness and pending approvals available after a task failure;
+  report the failure separately. Route with low reasoning effort for prompt
+  feedback while leaving task execution on the owner's configured effort.
+
 - Load the current response/routing skill on every Codex turn, including resumed
   and forked conversations, using the official skill input.
 

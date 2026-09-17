@@ -57,6 +57,14 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["tasks"][0]["title"], "Secret task")
         self.assertNotIn("native_id", view["tasks"][0])
         self.assertNotIn("summary", view["tasks"][0])
+        # Failure in a different task must not hide a live worker's approval.
+        private["error"] = "native_turn_failed"
+        (control.directory(self.ctx) / "status.json").write_text(json.dumps(private))
+        public = control.snapshot(self.ctx)
+        self.assertEqual(public["status"], "running")
+        self.assertEqual(public["error"], "native_turn_failed")
+        view = await bridge.request(self.ctx, "owner-one")
+        self.assertEqual(view["approvals"][0]["id"], "2")
         with self.assertRaises(ValueError):
             await bridge.request(self.ctx, "owner-two")
         control.save(

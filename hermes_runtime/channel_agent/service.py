@@ -95,11 +95,9 @@ class Service:
             "schema": "tinyhat.channel-agent.v1",
             "active": self.framework,
             "model": self.model,
-            "status": "draining"
-            if self.draining
-            else "unavailable"
-            if error
-            else "running",
+            # Liveness is independent of a failed task: a live receiver must
+            # keep exposing approvals and accepting the next owner message.
+            "status": "draining" if self.draining else "running",
             "updated_at": time.time(),
             "pid": os.getpid(),
             "revision": self.revision,

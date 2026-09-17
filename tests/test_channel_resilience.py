@@ -158,7 +158,6 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_listener_restarts_and_drain_does_not_restart_it(self):
         self.transport.connected = {"telegram": False}
-        self.transport.telegram = AsyncMock(side_effect=lambda: None)
         self.transport.telegram = AsyncMock(side_effect=self.wait_forever)
         await self.transport.start()
         original = self.transport.listeners[0]
@@ -258,7 +257,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             service.run_native = AsyncMock(side_effect=RuntimeError("secret-error"))
             await service.work(row, task_id)
             status = service.snapshot()
-            self.assertEqual(status["status"], "unavailable")
+            self.assertEqual(status["status"], "running")
             self.assertEqual(status["error"], "native_turn_failed")
             service.run_native = AsyncMock(return_value=("native", ""))
             await service.work(row, task_id)

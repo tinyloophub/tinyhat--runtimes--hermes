@@ -956,10 +956,16 @@ intake. Heartbeat supervision restarts an exited receiver. Event cursors and the
 local inbox survive restarts; uncertain sends and native turns are not replayed.
 A Codex thread held by the desktop continues through its official fork interface
 before the new turn starts, keeping the existing local Tinyhat task and history.
-Processing failures affect health until a subsequent turn succeeds. The bounded
-`receiver.log` contains diagnostic codes, never messages or provider exceptions.
+Processing failures are reported separately until a subsequent turn succeeds;
+they never hide a live worker's approvals or mark connected intake as stopped.
+The bounded `receiver.log` contains diagnostic codes, never messages or provider
+exceptions.
 
 Compatible routing skills can request a bounded Telegram/Slack activity lease
 before selecting a task. They cannot send, edit, or stream replies. Response
 skills choose typing, drafts/streams, and silence; the runtime does not turn CLI
 output into automatic replies. Slack leases clear only the status they own.
+Codex receives the current skill on each turn through its official skill input,
+discovered from a workspace skill link to the installed plugin. Existing owner
+overrides are preserved. Routing uses low reasoning effort; task execution keeps
+the owner's configured effort.

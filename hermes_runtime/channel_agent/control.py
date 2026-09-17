@@ -116,14 +116,15 @@ def snapshot(ctx):
             if status["active"] == current["active"]:
                 result.update({key: status[key] for key in ("channels",)})
                 result["model"] = model_name(status.get("model"))
-                if (
-                    status.get("error")
-                    or status.get("status") == "unavailable"
-                    or time.time() - status["updated_at"] > 20
-                    or (
-                        current.get("status") == "running"
-                        and not all(status["channels"].values())
-                    )
+                if status.get("error") in {
+                    "native_turn_failed",
+                    "routing_unavailable",
+                    "routing_decision_invalid",
+                }:
+                    result["error"] = status["error"]
+                if time.time() - status["updated_at"] > 20 or (
+                    current.get("status") == "running"
+                    and not all(status["channels"].values())
                 ):
                     result["status"] = "unavailable"
         except (OSError, ValueError, KeyError):
