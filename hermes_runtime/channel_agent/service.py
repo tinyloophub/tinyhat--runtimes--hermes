@@ -52,14 +52,16 @@ class Service:
         # documented workspace discovery directory and symlink support so the
         # plugin stays the canonical source and updates apply to existing tasks.
         link = root / ".agents" / "skills" / name
+        source = plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME) / "skills" / name
         link.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not link.exists() and not link.is_symlink():
-            link.symlink_to(
-                plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME) / "skills" / name,
-                target_is_directory=True,
-            )
-        # Preserve an owner-created workspace override rather than replacing it.
-        return (link / "SKILL.md").resolve()
+            link.symlink_to(source, target_is_directory=True)
+        if not link.is_symlink() or link.resolve() != source.resolve():
+            # Never promote workspace content to the explicit response policy.
+            # Preserve the file; developer instructions still carry the plugin.
+            log.warning("codex_skill_override_ignored")
+            return None
+        return (source / "SKILL.md").resolve()
 
     def snapshot(self):
         tasks = [
@@ -194,9 +196,14 @@ class Service:
         if name == "channel_api_help":
             return self.transports.help(event)
         if name == "channel_typing":
-            return await self.transports.keep_typing(
+            result = await self.transports.keep_typing(
                 task_id, event, arguments.get("seconds")
             )
+            if arguments.get("seconds"):
+                log.info(
+                    "router_activity_started" if router else "worker_activity_started"
+                )
+            return result
         if name == "channel_api":
             return await self.transports.action(task_id, event, arguments)
         if name == "request_approval":
@@ -542,7 +549,7 @@ def main():
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     logger = logging.getLogger("hermes_runtime.channel_agent")
     logger.addHandler(handler)
-    logger.setLevel(logging.WARNING)
+    logger.setLevel(logging.INFO)
     asyncio.run(Service(args.state_dir, args.framework).run())
 
 

@@ -15,7 +15,7 @@ from hermes_runtime.channel_agent.transports import Transports
 
 
 class CodexWriterTests(unittest.IsolatedAsyncioTestCase):
-    def test_workspace_skill_tracks_plugin_updates_and_preserves_owner_override(self):
+    def test_workspace_skill_tracks_plugin_updates_and_ignores_workspace_override(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "plugin/skills/tinyhat-respond"
@@ -34,10 +34,12 @@ class CodexWriterTests(unittest.IsolatedAsyncioTestCase):
                 link.unlink()
                 link.mkdir()
                 (link / "SKILL.md").write_text("owner override")
-                self.assertEqual(
-                    service.codex_skill(root / "work", "tinyhat-respond").read_text(),
-                    "owner override",
-                )
+                with self.assertLogs(level="WARNING") as logs:
+                    self.assertIsNone(
+                        service.codex_skill(root / "work", "tinyhat-respond")
+                    )
+                self.assertIn("codex_skill_override_ignored", logs.output[0])
+                self.assertEqual((link / "SKILL.md").read_text(), "owner override")
 
     async def test_owned_desktop_thread_forks_history_before_one_new_turn(self):
         agent = Codex(cwd=Path("/tmp"), approve=AsyncMock())

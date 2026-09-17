@@ -966,6 +966,8 @@ before selecting a task. They cannot send, edit, or stream replies. Response
 skills choose typing, drafts/streams, and silence; the runtime does not turn CLI
 output into automatic replies. Slack leases clear only the status they own.
 Codex receives the current skill on each turn through its official skill input,
-discovered from a workspace skill link to the installed plugin. Existing owner
-overrides are preserved. Routing uses low reasoning effort; task execution keeps
+discovered from a workspace skill link to the installed plugin. Unexpected
+workspace replacements are preserved but not loaded as the explicit policy.
+Owner response preferences still apply through conversation and skills. Routing
+uses low reasoning effort; task execution keeps
 the owner's configured effort.
