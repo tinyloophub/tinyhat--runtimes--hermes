@@ -113,7 +113,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name)
         (self.root / "control").write_text("local-control")
         (self.root / "capabilities/channels").mkdir(parents=True)
-        (self.root / "capabilities/channels/methods.json").write_text("{}")
+        (self.root / "capabilities/channels/methods.json").write_text('{"telegram": {}, "slack": {}}')
         self.state = State(self.root)
         with (
             patch(
@@ -175,6 +175,190 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def wait_forever(self):
         await asyncio.Future()
+
+    def event(self, provider="telegram", **extra):
+        return {"provider": provider, "conversation": "123", "sender": "123",
+                "message_id": "17", "event_id": "update", **extra}
+
+    async def receipts(self):
+        await asyncio.gather(*list(self.transport.receipt_jobs.values()))
+
+    async def test_receipt_precedes_routing_even_for_voice_and_duplicate_is_silent(self):
+        event = self.event(raw={"voice": {"file_id": "voice"}})
+        self.assertTrue(self.transport.accept("update", event))
+        self.assertFalse(self.transport.accept("update", event))
+        await self.receipts()
+        self.transport.request.assert_awaited_once_with(
+            "telegram", "sendChatAction", {"chat_id": "123", "action": "typing"}
+        )
+        self.assertEqual(self.state.queued()[0]["state"], "queued")
+        self.assertFalse(self.state.tasks())  # No router, transcription or worker.
+        await self.transport.keep_typing("worker", event, 60)
+        self.assertNotIn("receipt:update", self.transport.typing)
+        self.assertIn("worker", self.transport.typing)
+
+    async def test_slow_feedback_cannot_block_durable_intake_or_handoff(self):
+        started = asyncio.Event()
+
+        async def stalled(*args):
+            started.set()
+            await asyncio.Future()
+
+        self.transport.request = stalled
+        self.transport.accept("update", self.event(), cursor=("telegram_offset", 18))
+        await asyncio.wait_for(started.wait(), 1)
+        self.assertTrue(self.transport.accept("next", self.event(message_id="18")))
+        self.assertEqual(self.state.setting("telegram_offset"), 18)
+        self.assertEqual(len(self.state.queued()), 2)
+        await asyncio.wait_for(self.transport.stop_receipt(self.event()), 1)
+        self.assertNotIn("receipt:update", self.transport.receipt_jobs)
+        self.assertNotIn("receipt:update", self.transport.typing)
+
+    async def test_slack_receipt_falls_back_in_original_thread_then_clears(self):
+        self.transport.request.side_effect = [RuntimeError("no agents support"), {}, {}]
+        event = self.event("slack", thread_id="2.5")
+        self.transport.accept("update", event)
+        await self.receipts()
+        calls = self.transport.request.await_args_list
+        self.assertEqual(calls[0].args[1], "agents.sessions.setStatus")
+        self.assertEqual(calls[1].args, (
+            "slack", "assistant.threads.setStatus",
+            {"channel_id": "123", "thread_ts": "2.5", "status": "Working…"},
+        ))
+        await self.transport.stop_receipt(event)
+        self.assertEqual(self.transport.request.await_args.args[2]["status"], "")
+
+    async def test_cancelled_slack_status_write_still_attempts_cleanup(self):
+        started, cleared = asyncio.Event(), asyncio.Event()
+
+        async def uncertain(provider, method, params):
+            if params["status"] == "processing":
+                started.set()
+                await asyncio.Future()
+            if params["status"] == "active":
+                cleared.set()
+            return {}
+
+        self.transport.request = uncertain
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(self.transport.stop_receipt(event), 1)
+        self.assertTrue(cleared.is_set())
+        self.assertFalse(self.transport.typing)
+        self.assertFalse(self.transport.receipt_events)
+
+    async def test_second_cancellation_cannot_interrupt_slack_cleanup(self):
+        started, clearing = asyncio.Event(), asyncio.Event()
+        release, cleared = asyncio.Event(), asyncio.Event()
+
+        async def uncertain(provider, method, params):
+            if params["status"] == "processing":
+                started.set()
+                await asyncio.Future()
+            if params["status"] == "active":
+                clearing.set()
+                await release.wait()
+                cleared.set()
+            return {}
+
+        self.transport.request = uncertain
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await asyncio.wait_for(started.wait(), 1)
+        self.transport.receipt_jobs["receipt:update"].cancel()
+        await asyncio.wait_for(clearing.wait(), 1)
+        stop = asyncio.create_task(self.transport.stop_receipt(event))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(stop, 1)
+        self.assertTrue(cleared.is_set())
+        self.assertIsNone(self.state.setting('slack_status:["123", "17"]'))
+        self.assertFalse(self.transport.typing)
+        self.assertFalse(self.transport.receipt_events)
+
+    async def test_slack_stop_clears_receipt_before_worker_exists(self):
+        event = self.event("slack")
+        self.transport.accept("update", event)
+        await self.receipts()
+        service = Service.__new__(Service)
+        service.state, service.transports, service.workers = self.state, self.transport, {}
+        await service.stop_task("slack", json.dumps(["123", "17"]))
+        self.assertEqual(self.transport.request.await_args.args[2]["status"], "active")
+        self.assertFalse(self.transport.receipt_events)
+        self.assertFalse(self.transport.typing)
+        self.assertIsNone(self.state.setting('slack_status:["123", "17"]'))
+
+    async def test_quiet_preference_is_durable_and_conversation_scoped(self):
+        event = self.event()
+        self.transport.accept("update", event)
+        await self.receipts()
+        await self.transport.keep_typing("worker", event, 0, receipt_feedback=False)
+        self.assertFalse(self.transport.help(event)["receipt_feedback"])
+        self.transport.request.reset_mock()
+        self.transport.accept("later", event)
+        await self.transport.keep_typing("router", event, 60)
+        await self.receipts()
+        self.transport.request.assert_not_awaited()
+        reopened = State(self.root)
+        try:
+            self.assertIs(reopened.setting(self.transport.receipt_scope(event)), False)
+        finally:
+            reopened.close()
+        self.assertTrue(self.transport.receipt_enabled(self.event(conversation="456")))
+        self.assertTrue(self.transport.receipt_enabled(self.event("slack")))
+        await self.transport.keep_typing("worker", event, 60, receipt_feedback=True)
+        self.transport.request.assert_awaited_once()
+
+    async def test_feedback_failure_does_not_fail_message_or_leak_provider_error(self):
+        self.transport.request.side_effect = RuntimeError("secret-provider-value")
+        with self.assertLogs("hermes_runtime.channel_agent.transports") as captured:
+            self.transport.accept("update", self.event())
+            await self.receipts()
+        self.assertEqual(self.state.queued()[0]["state"], "queued")
+        self.assertFalse(self.transport.receipt_events)
+        self.assertNotIn("secret-provider-value", str(captured.output))
+        self.assertIn("channel_receipt_unavailable", str(captured.output))
+
+    async def test_full_inbox_and_drain_never_start_feedback(self):
+        self.transport._accept = lambda *a, **kw: (_ for _ in ()).throw(BufferError())
+        with self.assertRaises(BufferError):
+            self.transport.accept("update", self.event())
+        self.assertFalse(self.transport.receipt_jobs)
+        self.transport._accept = self.state.ingest
+        self.transport.draining = True
+        self.transport.accept("update", self.event())
+        self.assertFalse(self.transport.receipt_jobs)
+
+    async def test_telegram_unauthorized_updates_receive_no_feedback(self):
+        self.transport.values["TELEGRAM_ALLOWED_USERS"] = "123"
+        called = 0
+
+        async def updates(provider, method, params):
+            nonlocal called
+            self.assertEqual(method, "getUpdates")
+            called += 1
+            if called > 1:
+                raise asyncio.CancelledError()
+            return [{"update_id": 1, "message": {
+                "message_id": 1, "from": {"id": 456},
+                "chat": {"id": 123, "type": "private"}, "text": "untrusted",
+            }}]
+
+        self.transport.request = updates
+        with self.assertRaises(asyncio.CancelledError):
+            await self.transport.telegram()
+        self.assertFalse(self.transport.receipt_jobs)
+        self.assertFalse(self.state.queued())
+        self.transport.values.clear()
+
+    async def test_router_cannot_change_saved_preferences(self):
+        service = Service.__new__(Service)
+        service.transports = self.transport
+        with self.assertRaises(ValueError):
+            await service.tool("router", self.event(), True, "channel_typing",
+                               {"seconds": 0, "receipt_feedback": False})
+        self.assertTrue(self.transport.receipt_enabled(self.event()))
 
     async def test_transient_preflight_failure_recovers_without_process_restart(self):
         self.transport.connected = {"telegram": False}

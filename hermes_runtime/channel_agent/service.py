@@ -199,15 +199,22 @@ class Service:
         if name == "channel_api_help":
             return self.transports.help(event)
         if name == "channel_typing":
+            if router and "receipt_feedback" in arguments:
+                raise ValueError("Only the worker may save response preferences.")
             result = await self.transports.keep_typing(
-                task_id, event, arguments.get("seconds")
+                task_id, event, arguments.get("seconds"),
+                **(
+                    {"receipt_feedback": arguments["receipt_feedback"]}
+                    if "receipt_feedback" in arguments else {}
+                ),
             )
-            if arguments.get("seconds"):
+            if result.get("typing_for_seconds"):
                 log.info(
                     "router_activity_started" if router else "worker_activity_started"
                 )
             return result
         if name == "channel_api":
+            await self.transports.stop_receipt(event)
             return await self.transports.action(task_id, event, arguments)
         if name == "request_approval":
             allowed = await self.approval(task_id, arguments)
@@ -345,6 +352,8 @@ class Service:
                 await agent.close()
         finally:
             self.capabilities.pop(capability, None)
+            if event:
+                await self.transports.stop_receipt(event)
             if router:
                 await self.transports.stop_typing(tool_id)
 
@@ -390,6 +399,7 @@ class Service:
                 },
             )
             self.state.event_state(row["id"], "done")
+            await self.transports.stop_receipt(event)
             return None
         explicit = event.get("task_id")
         if explicit:
@@ -467,6 +477,10 @@ class Service:
                 self.workers[task_id].cancel()
         elif provider == "slack":
             task_id = self.state.setting("slack_status:" + reference)
+            receipt = self.transports.receipt_events.get(task_id)
+            if receipt:
+                await self.transports.stop_receipt(receipt)
+                return
             if task_id in self.workers:
                 self.workers[task_id].cancel()
                 # Stop is a transport lifecycle event, not an authored reply.

@@ -968,6 +968,9 @@ they never hide a live worker's approvals or mark connected intake as stopped.
 The bounded `receiver.log` contains diagnostic codes, never messages or provider
 exceptions.
 
+The native receiver shows bounded Telegram typing or Slack working status after
+durable receipt, before model work. The response skill packages the default;
+explicit quiet preferences are stored locally per sender and conversation.
 Compatible routing skills can request a bounded Telegram/Slack activity lease
 before selecting a task. They cannot send, edit, or stream replies. Response
 skills choose typing, drafts/streams, and silence; the runtime does not turn CLI
