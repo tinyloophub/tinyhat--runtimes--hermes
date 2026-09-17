@@ -428,6 +428,67 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.transport.help(event)["reply_thread"], reply_params["thread_ts"])
             await self.transport.stop_typing("worker")
 
+    async def test_router_renewal_drains_inflight_receipt_before_new_lease(self):
+        for provider in ("telegram", "slack"):
+            with self.subTest(provider=provider):
+                started = asyncio.Event()
+                first = True
+
+                async def slow_receipt(*args):
+                    nonlocal first
+                    if first:
+                        first = False
+                        started.set()
+                        await asyncio.Future()
+                    return {}
+
+                self.transport.request = AsyncMock(side_effect=slow_receipt)
+                event = self.event(provider, event_id="slow-" + provider)
+                receipt_id = "receipt:" + event["event_id"]
+                existing_tasks = asyncio.all_tasks()
+                self.transport.accept(event["event_id"], event)
+                job = self.transport.receipt_jobs[receipt_id]
+                await asyncio.wait_for(started.wait(), 1)
+                await asyncio.wait_for(
+                    self.transport.keep_typing(receipt_id, event, 60), 1
+                )
+                self.assertTrue(job.done())
+                self.assertNotIn(receipt_id, self.transport.receipt_jobs)
+                renewed = self.transport.typing[receipt_id]
+                self.assertFalse(renewed.done())
+                self.assertIn(receipt_id, self.transport.receipt_events)
+                if provider == "slack":
+                    self.assertEqual(
+                        self.transport.request.await_args.args[2]["status"], "processing"
+                    )
+                await self.transport.stop_receipt(event)
+                self.assertTrue(renewed.done())
+                self.assertFalse(self.transport.receipt_events)
+                self.assertFalse(asyncio.all_tasks() - existing_tasks)
+
+    async def test_failed_or_shared_router_renewal_releases_receipt_capacity(self):
+        for provider in ("telegram", "slack"):
+            with self.subTest(provider=provider):
+                self.transport.request = AsyncMock(return_value={})
+                event = self.event(provider, event_id="failure-" + provider)
+                receipt_id = "receipt:" + event["event_id"]
+                self.transport.accept(event["event_id"], event)
+                await self.receipts()
+                self.transport.request.side_effect = RuntimeError("unavailable")
+                with self.assertRaises(RuntimeError):
+                    await self.transport.keep_typing(receipt_id, event, 60)
+                self.assertNotIn(receipt_id, self.transport.typing)
+                self.assertNotIn(receipt_id, self.transport.receipt_events)
+
+        self.transport.request = AsyncMock(return_value={})
+        event = self.event("slack", event_id="shared")
+        await self.transport.keep_typing("other-worker", event, 60)
+        result = await self.transport.keep_typing("receipt:shared", event, 60)
+        self.assertEqual(result, {"already_working": True})
+        self.assertNotIn("receipt:shared", self.transport.receipt_events)
+        self.assertFalse(self.transport.typing["other-worker"].done())
+        await self.transport.stop_typing("other-worker")
+
     async def test_transient_preflight_failure_recovers_without_process_restart(self):
         self.transport.connected = {"telegram": False}
         ready, retry = asyncio.Event(), asyncio.Event()

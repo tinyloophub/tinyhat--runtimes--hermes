@@ -99,7 +99,9 @@ class Transports:
 
     async def receipt(self, receipt_id, event):
         try:
-            await asyncio.wait_for(self.keep_typing(receipt_id, event, 60), 5)
+            await asyncio.wait_for(
+                self.keep_typing(receipt_id, event, 60, _initial_receipt=True), 5
+            )
             log.info("channel_receipt_started")
         except Exception:
             log.warning("channel_receipt_unavailable")
@@ -401,7 +403,9 @@ class Transports:
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
 
-    async def keep_typing(self, task_id, event, seconds, *, receipt_feedback=None):
+    async def keep_typing(
+        self, task_id, event, seconds, *, receipt_feedback=None, _initial_receipt=False
+    ):
         # Receipt activity and agent-requested activity share a bounded lease.
         # Neither sends an authored reply or forces one response per event.
         if (
@@ -420,15 +424,23 @@ class Transports:
                     for pending in list(self.receipt_events.values())
                     if self.receipt_scope(pending) == self.receipt_scope(event)
                 ))
-        if not task_id.startswith("receipt:"):
+        if not _initial_receipt:
+            # A router renewal must finish the initial provider request before
+            # replacing its lease. Its timeout must not clear the newer lease.
             await self.stop_receipt(event)
         await self.stop_typing(task_id)
         if not seconds or not self.receipt_enabled(event):
             return {"stopped": True}
-        if event["provider"] == "slack":
-            result = await self.slack_typing(task_id, event, seconds)
+        if task_id.startswith("receipt:"):
+            self.receipt_events[task_id] = event
+        try:
+            return await self.start_typing(task_id, event, seconds)
+        finally:
             self.track_receipt_lease(task_id)
-            return result
+
+    async def start_typing(self, task_id, event, seconds):
+        if event["provider"] == "slack":
+            return await self.slack_typing(task_id, event, seconds)
         params = {"chat_id": event["conversation"], "action": "typing"}
         if event.get("thread_id"):
             params["message_thread_id"] = event["thread_id"]
@@ -444,12 +456,14 @@ class Transports:
                 pass  # Ephemeral feedback failing must not fail the owner's work.
 
         self.typing[task_id] = asyncio.create_task(renew())
-        self.track_receipt_lease(task_id)
         return {"typing_for_seconds": seconds}
 
     def track_receipt_lease(self, task_id):
         lease = self.typing.get(task_id)
-        if not task_id.startswith("receipt:") or lease is None:
+        if not task_id.startswith("receipt:"):
+            return
+        if lease is None:
+            self.receipt_events.pop(task_id, None)
             return
 
         def finished(_):
@@ -512,7 +526,8 @@ class Transports:
 
         # Own cleanup before the request: a timed-out status write may still
         # have reached Slack. Never leave an uncertain processing status forever.
-        self.typing[task_id] = asyncio.create_task(lease())
+        typing_lease = asyncio.create_task(lease())
+        self.typing[task_id] = typing_lease
         await asyncio.sleep(0)
         try:
             try:
@@ -522,7 +537,8 @@ class Transports:
                 clear_methods.append((method, clear))
                 await self.request("slack", method, {**params, "status": "Working…"})
         except (Exception, asyncio.CancelledError):
-            await self.stop_typing(task_id)
+            if self.typing.get(task_id) is typing_lease:
+                await self.stop_typing(task_id)
             raise
         return {"typing_for_seconds": seconds}
 

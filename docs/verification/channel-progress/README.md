@@ -1,7 +1,7 @@
 # Channel receipt and progress verification
 
 Verified on 2026-09-17 with real incoming messages in Slack Desktop and
-Telegram Desktop, routed to authenticated Codex. These are native-app captures;
+Telegram Desktop, routed to authenticated Codex. These are actual app captures;
 personal names, avatars, and unrelated conversations have been cropped or
 redacted. No provider messages or model replies were simulated.
 
@@ -62,6 +62,43 @@ normal voice-message control. Official Codex thread readback confirmed
 The draft transition was observed live; only the final reply is pictured here.
 
 ![Telegram completed reply](telegram-reply.png)
+
+## Follow-up verification after review
+
+Independent review identified two receipt timing races. A router renewal now
+cancels and drains the initial provider request before replacing its activity
+lease, and unsuccessful/shared renewals release their receipt-capacity entry.
+Regression tests cover stalled provider calls on both channels, failed renewals,
+and a Slack status already owned by another worker.
+
+Fresh live tests ran with those final source changes and the same plugin skill:
+
+- Slack D: an ordinary question reached Codex and used typing, start/append/stop
+  stream, then stopped typing. Its answer stayed in the input message's thread.
+- Slack E: a threaded follow-up showed the working indicator, three native task
+  cards, and the final plan. Official Codex readback confirmed all three steps
+  progressed from `in_progress` to `complete` before the stream and typing ended.
+- Telegram TG3: a new incoming question reached Codex and returned a final reply.
+  Official thread readback confirmed typing, two draft updates, and the durable
+  send. The initial typing/draft transitions were not recaptured in this pass.
+
+The Slack captures below are from the signed-in web client; the original pass
+above used Slack Desktop. The Telegram reply is from Telegram Desktop.
+
+![Slack follow-up working indicator](slack-reviewed-working.png)
+![Slack follow-up completed steps and plan](slack-reviewed-completed.png)
+![Telegram follow-up final reply](telegram-reviewed-reply.png)
+
+Tested source SHA-256 values (matched against the final working tree):
+
+| File | SHA-256 |
+| --- | --- |
+| `hermes_runtime/channel_agent/service.py` | `68d55915bb4dd0503d03e4e9608bdc64628efa8f898f404f3a859b54018d3677` |
+| `hermes_runtime/channel_agent/transports.py` | `6604e9d62fab975f8e2d9b2dfdd14a077774adfd34c9133e463d46c0fbc78516` |
+| `skills/tinyhat-respond/SKILL.md` | `8d13d6a560764342bf4a4ca64fb34dbf6d9558ac5d794086b9f21729ce46edd1` |
+
+The runtime suite passed **695 tests**, including **26 channel-resilience tests**.
+The cleanup below was repeated after these fresh tests.
 
 ## Cleanup and limits
 
