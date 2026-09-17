@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.76 - 2026-09-17
+
+- Pair with Tinyhat plugin 0.32.23 for specific channel progress and verified
+  answer delivery. Promote this runtime before the plugin. Existing platform
+  APIs remain compatible. Update running Computers and bake and verify a new
+  preinstalled image against this release after promotion.
+
 - Preserve receipt feedback through the router-to-worker handoff. Slack replies
   now stay in the same thread as their working status, including root DM messages.
   Drain in-flight receipt requests before renewal and release failed receipt leases
