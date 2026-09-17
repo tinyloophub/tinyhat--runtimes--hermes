@@ -19,6 +19,7 @@ from pathlib import Path
 
 from hermes_runtime.agent_systems import _write_atomic
 from hermes_runtime.channel_agent import native
+from hermes_runtime.channel_agent.message import format_message
 from hermes_runtime.channel_agent.paths import prepare_socket_directory, socket_path
 from hermes_runtime.channel_agent.revision import installed_revision
 from hermes_runtime.channel_agent.state import State
@@ -429,7 +430,7 @@ class Service:
         )
         try:
             native_id, _ = await self.run_native(
-                json.dumps(event, ensure_ascii=False), task=task, event=event
+                format_message(event, self.directory), task=task, event=event
             )
             # Completion is work completion, not a requirement to send a message.
             self.state.update_task(

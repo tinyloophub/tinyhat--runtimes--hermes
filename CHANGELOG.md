@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Show readable incoming channel messages in Codex and Claude Code sessions,
+  retaining reply context, media inputs and a private local original-update reference.
+
 - Keep receiver liveness and pending approvals available after a task failure;
   report the failure separately. Route with low reasoning effort for prompt
   feedback while leaving task execution on the owner's configured effort.
