@@ -25,7 +25,9 @@ from hermes_runtime.channel_agent.state import State
 from hermes_runtime.channel_agent.transports import Transports
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
 
-log = logging.getLogger(__name__)
+# The service is launched with -m, where __name__ is __main__. Keep diagnostics
+# under the package logger that owns the private rotating file handler.
+log = logging.getLogger("hermes_runtime.channel_agent.service")
 
 
 class Service:
