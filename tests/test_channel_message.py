@@ -69,13 +69,52 @@ class MessageTests(unittest.TestCase):
                     f"- {kind.capitalize()}: /private/media/original.dat", text
                 )
 
-    def test_media_failure_visible_and_email_supported(self):
+    def test_media_failure_visible(self):
         text = format_message(
             self.event(provider="email", media_error="Cannot read audio."),
             Path("/inbox"),
         )
         self.assertIn("Attachment unavailable: Cannot read audio.", text)
         self.assertIn("— Email", text)
+
+    def test_email_subject_body_and_list_reply_references(self):
+        event = {
+            "provider": "email", "event_id": "email:M1", "message_id": "M1",
+            "subject": "Quarterly numbers", "text": "thoughts?",
+            "email_message_ids": ["current@example.test"],
+            "reply_to": ["prior@example.test", "original@example.test"],
+        }
+        text = format_message(event, Path("/inbox"))
+        self.assertTrue(text.startswith("Subject: Quarterly numbers\n\nthoughts?"))
+        self.assertIn("reply to prior@example.test, original@example.test", text)
+        self.assertNotIn("['", text)
+        self.assertIn('ID: "email:M1"', text)
+
+    def test_document_and_embedded_links_have_readable_context(self):
+        text = format_message(self.event(text="", raw={
+            "document": {"file_name": "report.pdf", "mime_type": "application/pdf",
+                         "file_id": "do-not-display"},
+            "caption_entities": [{"type": "text_link", "url": "https://example.test/report"}],
+        }), Path("/inbox"))
+        self.assertTrue(text.startswith(
+            "Attachment not downloaded: Document · report.pdf · application/pdf"))
+        self.assertIn("Links in this message:\nhttps://example.test/report", text)
+        self.assertNotIn("do-not-display", text)
+        self.assertNotIn("[Attachment]", text)
+
+    def test_other_telegram_content_is_named_without_raw_json(self):
+        for kind in ("video", "audio", "sticker", "video_note", "location", "contact", "poll"):
+            with self.subTest(kind=kind):
+                text = format_message(self.event(text="", raw={kind: {}}), Path("/inbox"))
+                self.assertTrue(text.startswith(
+                    "Attachment not downloaded: " + kind.replace("_", " ").capitalize()))
+
+    def test_worker_row_id_can_supply_reference_for_legacy_payload(self):
+        event = self.event()
+        del event["event_id"]
+        text = format_message(event, Path("/inbox"), event_id="telegram:legacy")
+        self.assertIn('ID: "telegram:legacy"', text)
+        self.assertNotIn("Original update", format_message(event, Path("/inbox")))
 
     def test_metadata_cannot_add_extra_lines(self):
         text = format_message(

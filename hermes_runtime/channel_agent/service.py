@@ -430,7 +430,9 @@ class Service:
         )
         try:
             native_id, _ = await self.run_native(
-                format_message(event, self.directory), task=task, event=event
+                format_message(event, self.directory, event_id=row["id"]),
+                task=task,
+                event=event,
             )
             # Completion is work completion, not a requirement to send a message.
             self.state.update_task(

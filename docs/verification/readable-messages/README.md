@@ -27,7 +27,8 @@ production Computer. No live Telegram/Slack delivery or Claude Code response is
 claimed by this check.
 
 Regression coverage includes text and Unicode, reply/thread context, captionless
-images, voice transcripts, attachment failures, email, metadata line boundaries,
+images, voice transcripts, attachment failures, email subjects and reply IDs,
+unprepared Telegram media descriptors, embedded links, metadata line boundaries,
 and the worker retaining the original local event and native image references.
-Full runtime suite: 665 tests passed. The delivery/resilience changes in PR #185
+Full runtime suite: 669 tests passed. The delivery/resilience changes in PR #185
 are separate from this presentation-only change.
