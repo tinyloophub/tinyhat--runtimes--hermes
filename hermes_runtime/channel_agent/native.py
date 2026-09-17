@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,24 @@ ROUTE_SCHEMA = {
     "required": ["task_id", "title", "clarification"],
     "additionalProperties": False,
 }
+
+
+class CodexRequestError(RuntimeError):
+    """Classify the known pre-turn conflict without retaining provider output."""
+
+    def __init__(self, error):
+        self.active_writer = (
+            isinstance(error, dict)
+            and error.get("code") == -32600
+            and isinstance(error.get("message"), str)
+            and re.fullmatch(
+                r"thread [0-9a-f-]{36} already has an active writer", error["message"]
+            )
+            is not None
+        )
+        super().__init__(
+            "codex_active_writer" if self.active_writer else "codex_request_failed"
+        )
 
 
 def model_name(value):
@@ -147,9 +166,7 @@ class Codex:
                     future = self.pending.get(message.get("id"))
                     if future and not future.done():
                         if "error" in message:
-                            future.set_exception(
-                                RuntimeError("Native Codex request failed.")
-                            )
+                            future.set_exception(CodexRequestError(message["error"]))
                         else:
                             future.set_result(message.get("result", {}))
                 elif "id" in message:
@@ -245,10 +262,23 @@ class Codex:
                 sandbox="read-only",
                 config={"tools": {"web_search": False}, "mcp_servers": {}},
             )
+            if self.mcp:
+                config["config"]["mcp_servers"] = {"tinyhat_channel": self.mcp}
         if native_id:
-            result = await self.request(
-                "thread/resume", {**config, "threadId": native_id}
-            )
+            try:
+                result = await self.request(
+                    "thread/resume", {**config, "threadId": native_id}
+                )
+            except CodexRequestError as exc:
+                if not exc.active_writer:
+                    raise
+                # The desktop may own this thread. Continue its stored history
+                # through the official fork API; never steal its writer or
+                # replay a turn that might already have performed actions.
+                result = await self.request(
+                    "thread/fork", {**config, "threadId": native_id}
+                )
+                logging.getLogger(__name__).warning("codex_writer_continuation")
         else:
             result = await self.request("thread/start", {**config, "ephemeral": router})
         self.thread_id = result["thread"]["id"]
@@ -266,6 +296,7 @@ class Codex:
         }
         if router:
             params["outputSchema"] = ROUTE_SCHEMA
+            params["effort"] = "low"
         started = await self.request("turn/start", params)
         self.turn_id = started["turn"]["id"]
         turn = await self.done
@@ -318,30 +349,33 @@ async def claude_turn(
         session_id,
     ]
     env = child_env()
+    mcp = {
+        "mcpServers": {
+            "tinyhat_channel": {
+                "command": sys.executable,
+                "args": ["-m", "hermes_runtime.channel_agent.mcp"],
+                "env": {
+                    "TINYHAT_CHANNEL_SOCKET": str(socket_path),
+                    "TINYHAT_CHANNEL_CAPABILITY": capability,
+                    "TINYHAT_CHANNEL_ROUTER": "1" if router else "0",
+                    "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                },
+            }
+        }
+    }
     if router:
         args += [
             "--tools",
             "",
             "--strict-mcp-config",
             "--mcp-config",
-            '{"mcpServers":{}}',
+            json.dumps(mcp),
+            "--allowedTools",
+            "mcp__tinyhat_channel__channel_api_help,mcp__tinyhat_channel__channel_typing",
             "--json-schema",
             json.dumps(ROUTE_SCHEMA),
         ]
     else:
-        mcp = {
-            "mcpServers": {
-                "tinyhat_channel": {
-                    "command": sys.executable,
-                    "args": ["-m", "hermes_runtime.channel_agent.mcp"],
-                    "env": {
-                        "TINYHAT_CHANNEL_SOCKET": str(socket_path),
-                        "TINYHAT_CHANNEL_CAPABILITY": capability,
-                        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
-                    },
-                }
-            }
-        }
         args += [
             "--mcp-config",
             json.dumps(mcp),

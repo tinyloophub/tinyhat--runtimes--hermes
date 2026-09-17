@@ -31,7 +31,7 @@ TOOLS = [
     },
     {
         "name": "channel_typing",
-        "description": "Optional Telegram typing lease while you work. Explicitly start/renew for 1–120 seconds or stop with 0. No messages are sent. Ends when this turn ends.",
+        "description": "Temporary Telegram typing or Slack working status. Start/renew for 1–120 seconds or stop with 0. No messages are sent. Ends when this turn ends; follow the owner's response preferences.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -93,7 +93,14 @@ def main():
                     "serverInfo": {"name": "tinyhat_channel", "version": "1.0"},
                 }
             elif method == "tools/list":
-                result = {"tools": TOOLS}
+                result = {
+                    "tools": [
+                        tool
+                        for tool in TOOLS
+                        if os.environ.get("TINYHAT_CHANNEL_ROUTER") != "1"
+                        or tool["name"] in {"channel_api_help", "channel_typing"}
+                    ]
+                }
             elif method == "tools/call":
                 params = message["params"]
                 value = call(params["name"], params.get("arguments", {}))

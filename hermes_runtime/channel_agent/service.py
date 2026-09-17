@@ -6,6 +6,8 @@ import asyncio
 import contextlib
 import fcntl
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import secrets
@@ -22,6 +24,8 @@ from hermes_runtime.channel_agent.revision import installed_revision
 from hermes_runtime.channel_agent.state import State
 from hermes_runtime.channel_agent.transports import Transports
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
+
+log = logging.getLogger(__name__)
 
 
 class Service:
@@ -66,16 +70,27 @@ class Service:
             approval["request"] = re.sub(
                 r"(?:xox[baprs]-|xapp-|sk-)[A-Za-z0-9_-]+", "[redacted]", text
             )
+        latest = self.state.db.execute(
+            "SELECT status FROM tasks WHERE framework=? AND status IN ('failed','completed') "
+            "ORDER BY updated DESC LIMIT 1",
+            (self.framework,),
+        ).fetchone()
+        failed = latest is not None and latest[0] == "failed"
+        error = self.error or ("native_turn_failed" if failed else None)
         return {
             "schema": "tinyhat.channel-agent.v1",
             "active": self.framework,
             "model": self.model,
-            "status": "draining" if self.draining else "running",
+            "status": "draining"
+            if self.draining
+            else "unavailable"
+            if error
+            else "running",
             "updated_at": time.time(),
             "pid": os.getpid(),
             "revision": self.revision,
             "channels": self.transports.connected,
-            "error": self.error,
+            "error": error,
             "queued": len(self.state.queued()),
             "tasks": tasks,
             "approvals": approvals,
@@ -119,6 +134,7 @@ class Service:
 
     async def publish_status(self):
         while not self.shutdown.is_set():
+            self.transports.ensure_listeners()
             self.publish()
             await asyncio.sleep(3)
 
@@ -160,7 +176,9 @@ class Service:
                     (approval_id,),
                 )
 
-    async def tool(self, task_id, event, name, arguments):
+    async def tool(self, task_id, event, router, name, arguments):
+        if router and name not in {"channel_api_help", "channel_typing"}:
+            raise ValueError("Routing permits only temporary activity feedback.")
         if name == "channel_api_help":
             return self.transports.help(event)
         if name == "channel_typing":
@@ -235,8 +253,10 @@ class Service:
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         callback = None
         capability = secrets.token_urlsafe(32)
+        tool_id = task["id"] if task else "routing:" + secrets.token_hex(12)
+        if event:
+            self.capabilities[capability] = (tool_id, event, router)
         if task:
-            self.capabilities[capability] = (task["id"], event)
 
             def callback(sid):
                 self.state.update_task(task["id"], status="running", native_id=sid)
@@ -255,22 +275,27 @@ class Service:
                     on_model=self.report_model,
                 )
             mcp = (
-                None
-                if router
-                else {
+                {
                     "command": sys.executable,
                     "args": ["-m", "hermes_runtime.channel_agent.mcp"],
                     "env": {
                         "TINYHAT_CHANNEL_SOCKET": str(self.socket_path),
                         "TINYHAT_CHANNEL_CAPABILITY": capability,
                         "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                        "TINYHAT_CHANNEL_ROUTER": "1" if router else "0",
                     },
-                    "enabled_tools": [
-                        "channel_api",
-                        "channel_api_help",
-                        "channel_typing",
-                    ],
+                    "enabled_tools": (
+                        ["channel_api_help", "channel_typing"]
+                        if router
+                        else [
+                            "channel_api",
+                            "channel_api_help",
+                            "channel_typing",
+                        ]
+                    ),
                 }
+                if event
+                else None
             )
 
             async def approve(request):
@@ -296,6 +321,8 @@ class Service:
                 await agent.close()
         finally:
             self.capabilities.pop(capability, None)
+            if router:
+                await self.transports.stop_typing(tool_id)
 
     async def route(self, row):
         event = json.loads(row["payload"])
@@ -356,7 +383,9 @@ class Service:
             # Other frameworks remain visible as context, but State.route
             # rejects resuming their incompatible native session IDs.
             _, text = await asyncio.wait_for(
-                self.run_native(json.dumps(context, ensure_ascii=False), router=True),
+                self.run_native(
+                    json.dumps(context, ensure_ascii=False), event=event, router=True
+                ),
                 120,
             )
             decision = json.loads(text)
@@ -392,6 +421,7 @@ class Service:
             self.state.event_state(row["id"], "interrupted")
             raise
         except Exception:
+            log.warning("native_turn_failed")
             self.state.update_task(task_id, status="failed", error="native_turn_failed")
             self.state.event_state(row["id"], "failed")
         finally:
@@ -439,6 +469,11 @@ class Service:
                 await asyncio.wait_for(self.discover_model(), 10)
             await self.transports.start()
             while not self.shutdown.is_set():
+                if publisher.done():
+                    # Let heartbeat supervision restart an unhealthy receiver.
+                    # A live PID alone must not strand intake permanently.
+                    await publisher
+                    raise RuntimeError("Channel health publisher stopped.")
                 self.publish()
                 # One router is independent of two concurrent native workers.
                 for row in self.state.queued(ready_only=True):
@@ -452,9 +487,11 @@ class Service:
                                 self.work(row, task_id)
                             )
                     except ValueError:
+                        log.warning("routing_decision_invalid")
                         self.error = "routing_decision_invalid"
                         self.state.route_failed(row["id"], permanent=True)
                     except Exception:
+                        log.warning("routing_unavailable")
                         self.error = "routing_unavailable"
                         self.state.route_failed(row["id"])
                 await asyncio.sleep(1)
@@ -481,6 +518,17 @@ def main():
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--framework", choices=["codex", "claude_code"], required=True)
     args = parser.parse_args()
+    os.umask(0o077)
+    # Only fixed diagnostic codes are logged here, never provider exceptions,
+    # event payloads, auth URLs, or credentials. Bound retention locally.
+    path = Path(args.state_dir) / "receiver.log"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.touch(mode=0o600, exist_ok=True)
+    handler = RotatingFileHandler(path, maxBytes=262144, backupCount=2)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger = logging.getLogger("hermes_runtime.channel_agent")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
     asyncio.run(Service(args.state_dir, args.framework).run())
 
 
