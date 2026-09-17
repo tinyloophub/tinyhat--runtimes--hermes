@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Preserve receipt feedback through the router-to-worker handoff. Slack replies
+  now stay in the same thread as their working status, including root DM messages.
+  Drain in-flight receipt requests before renewal and release failed receipt leases
+  so stale cleanup cannot hide newer activity or consume receipt capacity.
+
 ## 0.0.75 - 2026-09-17
 
 - Pair with Tinyhat plugin 0.32.22 for skill-managed receipt defaults and saved

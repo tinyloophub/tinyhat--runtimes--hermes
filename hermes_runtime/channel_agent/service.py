@@ -202,7 +202,8 @@ class Service:
             if router and "receipt_feedback" in arguments:
                 raise ValueError("Only the worker may save response preferences.")
             result = await self.transports.keep_typing(
-                task_id, event, arguments.get("seconds"),
+                "receipt:" + event["event_id"] if router else task_id,
+                event, arguments.get("seconds"),
                 **(
                     {"receipt_feedback": arguments["receipt_feedback"]}
                     if "receipt_feedback" in arguments else {}
@@ -352,10 +353,10 @@ class Service:
                 await agent.close()
         finally:
             self.capabilities.pop(capability, None)
-            if event:
+            if event and not router:
                 await self.transports.stop_receipt(event)
-            if router:
-                await self.transports.stop_typing(tool_id)
+            # Routing is a handoff, not completion. Its bounded receipt lease
+            # remains visible until the worker takes over or finishes.
 
     async def route(self, row):
         event = json.loads(row["payload"])
