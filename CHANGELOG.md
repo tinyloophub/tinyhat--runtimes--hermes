@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Show bounded Telegram typing or Slack working status as soon as a new owner
+  message is stored, before routing, media processing or worker availability.
+  Feedback failures cannot block intake. The response skill still controls
+  replies, streams and ongoing activity; owners can save a quiet preference.
+
 ## 0.0.74 - 2026-09-17
 
 - Pair with Tinyhat plugin 0.32.21 for early typing and streaming defaults.

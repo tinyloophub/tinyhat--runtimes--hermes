@@ -29,7 +29,7 @@ def plugin_module(name):
 
 class Transports:
     def __init__(self, state, accept, stop_task):
-        self.state, self.accept, self.stop_task = state, accept, stop_task
+        self.state, self._accept, self.stop_task = state, accept, stop_task
         self.values = {**os.environ, **read_env_values(env_file_candidates())}
         self.methods = json.loads(
             (
@@ -51,6 +51,79 @@ class Transports:
         self.listener_by_provider = {}
         self.draining = False
         self.typing = {}
+        self.receipt_jobs = {}
+        self.receipt_events = {}
+        self.receipt_default = True
+        try:
+            policy = json.loads(
+                (
+                    plugin_dir(DEFAULT_TINYHAT_PLUGIN_NAME)
+                    / "skills/tinyhat-respond/receipt.json"
+                ).read_text()
+            )
+            if type(policy.get("enabled")) is bool:
+                self.receipt_default = policy["enabled"]
+        except (OSError, ValueError, AttributeError):
+            pass  # Older plugins still receive the standard activity receipt.
+
+    @staticmethod
+    def receipt_scope(event):
+        return "receipt_feedback:" + json.dumps(
+            [event["provider"], event["conversation"], event.get("sender", "")]
+        )
+
+    def receipt_enabled(self, event):
+        return self.state.setting(self.receipt_scope(event), self.receipt_default)
+
+    def accept(self, key, event, **kwargs):
+        event = {**event, "event_id": key}
+        inserted = self._accept(key, event, **kwargs)
+        # Authorization has already passed; acknowledge only a durable new event.
+        # Never wait on provider feedback before acknowledging Socket Mode or
+        # polling the next Telegram update, even while both workers are occupied.
+        if (
+            inserted
+            and not self.draining
+            and event["provider"] in {"telegram", "slack"}
+            and self.receipt_enabled(event)
+        ):
+            if len(self.receipt_events) >= 64:
+                log.warning("channel_receipt_capacity")
+                return inserted
+            receipt_id = "receipt:" + key
+            self.receipt_events[receipt_id] = event
+            job = asyncio.create_task(self.receipt(receipt_id, event))
+            self.receipt_jobs[receipt_id] = job
+            job.add_done_callback(lambda _: self.receipt_jobs.pop(receipt_id, None))
+        return inserted
+
+    async def receipt(self, receipt_id, event):
+        try:
+            await asyncio.wait_for(self.keep_typing(receipt_id, event, 60), 5)
+            log.info("channel_receipt_started")
+        except Exception:
+            log.warning("channel_receipt_unavailable")
+        finally:
+            lease = self.typing.get(receipt_id)
+            if lease and not lease.done():
+
+                def finished(_):
+                    self.receipt_events.pop(receipt_id, None)
+                    self.typing.pop(receipt_id, None)
+
+                lease.add_done_callback(finished)
+            else:
+                self.receipt_events.pop(receipt_id, None)
+                self.typing.pop(receipt_id, None)
+
+    async def stop_receipt(self, event):
+        receipt_id = "receipt:" + event.get("event_id", "")
+        job = self.receipt_jobs.pop(receipt_id, None)
+        if job:
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
+        await self.stop_typing(receipt_id)
+        self.receipt_events.pop(receipt_id, None)
 
     async def request(self, provider, method, payload, *, app=False):
         if provider == "telegram":
@@ -323,6 +396,7 @@ class Transports:
                 "email": "send accepts subject and body; owner recipient is fixed.",
             }[provider],
             "helpers": ["channel_typing"] if provider in {"telegram", "slack"} else [],
+            "receipt_feedback": self.receipt_enabled(event),
             "scope": "The runtime supplies destination, thread and streaming recipient. Edit only messages returned to this task.",
         }
 
@@ -332,16 +406,29 @@ class Transports:
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
 
-    async def keep_typing(self, task_id, event, seconds):
-        # An agent-requested lease, never an automatic reply policy.
+    async def keep_typing(self, task_id, event, seconds, *, receipt_feedback=None):
+        # Receipt activity and agent-requested activity share a bounded lease.
+        # Neither sends an authored reply or forces one response per event.
         if (
             event["provider"] not in {"telegram", "slack"}
             or type(seconds) is not int
             or not 0 <= seconds <= 120
         ):
             raise ValueError("Activity needs a Telegram/Slack event and 0–120 seconds.")
+        if receipt_feedback is not None:
+            if type(receipt_feedback) is not bool:
+                raise ValueError("Receipt feedback must be a boolean.")
+            self.state.set(self.receipt_scope(event), receipt_feedback)
+            if not receipt_feedback:
+                await asyncio.gather(*(
+                    self.stop_receipt(pending)
+                    for pending in list(self.receipt_events.values())
+                    if self.receipt_scope(pending) == self.receipt_scope(event)
+                ))
+        if not task_id.startswith("receipt:"):
+            await self.stop_receipt(event)
         await self.stop_typing(task_id)
-        if not seconds:
+        if not seconds or not self.receipt_enabled(event):
             return {"stopped": True}
         if event["provider"] == "slack":
             return await self.slack_typing(task_id, event, seconds)
@@ -378,11 +465,7 @@ class Transports:
             ):
                 return {"already_working": True}
         method, status, clear = "agents.sessions.setStatus", "processing", "active"
-        try:
-            await self.request("slack", method, {**params, "status": status})
-        except Exception:
-            method, clear = "assistant.threads.setStatus", ""
-            await self.request("slack", method, {**params, "status": "Working…"})
+        clear_methods = [(method, clear)]
         self.state.set(scope, task_id)
 
         async def lease():
@@ -390,15 +473,29 @@ class Transports:
                 await asyncio.sleep(seconds)
             finally:
                 if self.state.setting(scope) == task_id:
-                    try:
-                        await self.request("slack", method, {**params, "status": clear})
-                    except Exception:
-                        pass
+                    for clear_method, clear_status in clear_methods:
+                        try:
+                            await asyncio.wait_for(
+                                self.request("slack", clear_method, {**params, "status": clear_status}), 5
+                            )
+                        except Exception:
+                            pass
                     self.state.set(scope, None)
 
+        # Own cleanup before the request: a timed-out status write may still
+        # have reached Slack. Never leave an uncertain processing status forever.
         self.typing[task_id] = asyncio.create_task(lease())
-        # Let the lease enter its finally block before it can be cancelled.
         await asyncio.sleep(0)
+        try:
+            try:
+                await self.request("slack", method, {**params, "status": status})
+            except Exception:
+                method, clear = "assistant.threads.setStatus", ""
+                clear_methods.append((method, clear))
+                await self.request("slack", method, {**params, "status": "Working…"})
+        except (Exception, asyncio.CancelledError):
+            await self.stop_typing(task_id)
+            raise
         return {"typing_for_seconds": seconds}
 
     async def action(self, task_id, event, arguments):
@@ -567,10 +664,14 @@ class Transports:
             )
 
     async def close(self):
-        for task_id in list(self.typing):
-            await self.stop_typing(task_id)
         try:
             await self.stop_intake()
         finally:
+            await asyncio.gather(*(
+                self.stop_receipt(event) for event in list(self.receipt_events.values())
+            ))
+            await asyncio.gather(*(
+                self.stop_typing(task_id) for task_id in list(self.typing)
+            ))
             if self.session:
                 await self.session.close()

@@ -31,11 +31,12 @@ TOOLS = [
     },
     {
         "name": "channel_typing",
-        "description": "Temporary Telegram typing or Slack working status. Start/renew for 1–120 seconds or stop with 0. No messages are sent. Ends when this turn ends; follow the owner's response preferences.",
+        "description": "Temporary Telegram typing or Slack working status. Start/renew for 1–120 seconds or stop with 0. No messages are sent. Ends when this turn ends. Optional receipt_feedback saves the owner's preference for automatic receipts and activity in this conversation; false disables, true restores. Only save a preference when the owner asks.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "seconds": {"type": "integer", "minimum": 0, "maximum": 120}
+                "seconds": {"type": "integer", "minimum": 0, "maximum": 120},
+                "receipt_feedback": {"type": "boolean"}
             },
             "required": ["seconds"],
             "additionalProperties": False,

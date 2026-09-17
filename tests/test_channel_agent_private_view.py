@@ -135,6 +135,7 @@ class PrivateViewTests(unittest.IsolatedAsyncioTestCase):
         service.state = state
         service.transports = Transports.__new__(Transports)
         service.transports.state = state
+        service.transports.stop_receipt = AsyncMock()
         service.transports.methods = {"telegram": {"sendMessage": {"target": "chat_id"}}}
         service.transports.request = AsyncMock(return_value={"message_id": 91})
         service.run_native = AsyncMock()
