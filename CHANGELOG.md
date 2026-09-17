@@ -2,10 +2,20 @@
 
 ## Unreleased
 
+## 0.0.73 - 2026-09-16
+
 - Keep Codex and Claude Code browser sign-ins independent. An unfinished login
   for one provider no longer blocks the other. Repeated requests for the same
   provider reuse its worker, and each provider has its own browser receipt.
   Report both sign-in states without exposing login URLs or credentials.
+- Serialize concurrent sign-in selection and state writes. Verify that startup
+  readiness waits for both installed sign-in shortcuts before acknowledging
+  the Computer's agent context.
+- Provider-specific status in the Computer page is available with
+  [tinyloophub/tinyloop#1350](https://github.com/tinyloophub/tinyloop/pull/1350).
+  The runtime remains compatible with the existing platform. Promotion does
+  not update existing Computers; bake and verify new fleet images against
+  this final release.
 
 ## 0.0.72 - 2026-09-16
 
