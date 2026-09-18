@@ -19,6 +19,10 @@ it could help. It did not mention missing Hats, funding, a profile interview, or
 unverified channel readiness. This verifies the fixes together; it is not a
 claim that these branches have been released or baked into a production image.
 
+![Real bot reply, cropped after its personal salutation](onboarding-reply.png)
+
+This crop removes the owner's name and avatar, retaining the bot's actual reply.
+
 The first installation created SOUL.md before Hermes ran. After Hermes CLI
 configuration inspection, its permissions/content and defaults remained:
 
