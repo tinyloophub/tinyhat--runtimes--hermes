@@ -1539,7 +1539,8 @@ def _assert_missing_install_model(*, existing_config: bool) -> None:
         if existing_config:
             assert (Path(home) / "config.yaml").read_text() == "model: owner/chosen\n"
         else:
-            assert (Path(home) / "config.yaml").read_text() == "model: ''\n"
+            from hermes_runtime.conversation_defaults import DEFAULT_CONFIG
+            assert (Path(home) / "config.yaml").read_text() == DEFAULT_CONFIG
             assert (Path(home) / "config.yaml").stat().st_mode & 0o777 == 0o600
 
     assert len(install_calls) == 1

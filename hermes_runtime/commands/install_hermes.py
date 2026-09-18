@@ -1176,7 +1176,23 @@ def _seed_unconfigured_model() -> None:
     # documented unconfigured sentinel before installation, so failed/retried
     # installations also leave model selection to the platform at assignment.
     with os.fdopen(fd, "w") as config:
-        config.write("model: ''\n")
+        from ..conversation_defaults import DEFAULT_CONFIG
+
+        config.write(DEFAULT_CONFIG)
+
+
+def _seed_conversation_soul() -> None:
+    """Seed Hermes's documented identity file; never replace an owner's voice."""
+    from ..conversation_defaults import DEFAULT_SOUL
+
+    path = hermes_home() / "SOUL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, "w") as soul:
+        soul.write(DEFAULT_SOUL)
 
 
 async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
@@ -1186,6 +1202,7 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     if not installed_before:
         _seed_unconfigured_model()
+        _seed_conversation_soul()
         prerequisites = await maybe_install_debian_prerequisites()
         install_result = await run_shell(
             hermes_install_script(),

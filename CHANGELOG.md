@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Give fresh Hermes installations an owner-editable conversational voice and
+  enable streaming replies by default. Greet naturally, keep optional Hat
+  setup out of ordinary conversation, and prefer concise, useful visuals.
+  Preserve existing configuration and SOUL files. Telegram rich messages stay
+  enabled; experimental rich drafts remain disabled for client compatibility.
+
 ## 0.0.76 - 2026-09-17
 
 - Pair with Tinyhat plugin 0.32.23 for specific channel progress and verified
