@@ -851,6 +851,8 @@ def _codex_auth_plugin_manifest() -> str:
 
 def _simple_flow_list_items(value: str) -> list[str] | None:
     clean = value.split("#", 1)[0].strip()
+    if clean.lower() in ("null", "~"):
+        return []
     if not clean.startswith("[") or not clean.endswith("]"):
         return None
     inner = clean[1:-1].strip()
@@ -862,6 +864,12 @@ def _simple_flow_list_items(value: str) -> list[str] | None:
         if item:
             items.append(item)
     return items
+
+
+def _normalize_empty_mapping(lines: list[str], index: int) -> None:
+    prefix, _, value = lines[index].partition(":")
+    if value.split("#", 1)[0].strip().lower() in ("{}", "null", "~"):
+        lines[index] = prefix + ":"
 
 
 def _normalize_plugin_list_key(
@@ -891,6 +899,7 @@ def _normalize_plugin_list_key(
 
 
 def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> list[str]:
+    _normalize_empty_mapping(lines, plugins_index)
     plugins_end = _block_end(lines, plugins_index, indent=0)
     disabled_index = _find_key(
         lines,
@@ -926,6 +935,7 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
         )
         return lines
 
+    _normalize_empty_mapping(lines, plugins_index)
     plugins_end = _block_end(lines, plugins_index, indent=0)
     enabled_index = _find_key(
         lines,
@@ -1188,6 +1198,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         )
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, platforms_index)
     platforms_end = _block_end(lines, platforms_index, indent=0)
     telegram_index = _find_key(
         lines,
@@ -1208,6 +1219,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, telegram_index)
     telegram_end = _block_end(lines, telegram_index, indent=2)
     extra_index = _find_key(
         lines,
@@ -1227,6 +1239,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, extra_index)
     extra_end = _block_end(lines, extra_index, indent=4)
     command_menu_index = _find_key(
         lines,
@@ -1245,6 +1258,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, command_menu_index)
     existing_max_commands, existing_priority = _parse_existing_priority(
         lines,
         command_menu_index,

@@ -40,5 +40,10 @@ disposable fixture when re-exercising first contact. Production updates preserve
 existing owner files; fresh defaults require a new verified image and replacement
 of unassigned warm Computers only.
 
-704 runtime tests passed on Python 3.13; repository validation and compilation
+705 runtime tests passed on Python 3.13; repository validation and compilation
 passed. Camera QR scanning and a signed release/image rollout were not tested.
+
+The review follow-up additionally exercises eleven empty/null configuration
+shapes through repeated setup. The final parser was also copied to the disposable
+Linux Computer and used twice against its live public configuration: YAML stayed
+valid, and its selected model and streaming settings were unchanged.

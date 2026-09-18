@@ -4,6 +4,9 @@
 
 - Initialize an empty Hermes model before connecting Telegram or Slack, without
   waiting for email provisioning. Keep owner-selected models and providers intact.
+  Deploy platform support for the machine-only `model_setup` channel field before
+  promoting this runtime. Missing initial model access now leaves setup pending
+  with a retryable error instead of connecting a bot that cannot answer.
 - Preserve valid YAML when Telegram setup updates plugin/menu lists written by
   Hermes with indentless sequence items; repeated setup keeps model settings valid.
   Repair orphan menu entries left by older setup attempts.

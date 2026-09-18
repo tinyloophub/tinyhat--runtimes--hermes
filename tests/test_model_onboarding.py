@@ -26,7 +26,7 @@ class ModelOnboardingTests(TestCase):
             home = Path(tmp)
             config = home / "config.yaml"
             config.write_text("model:\n  provider: auto\nstreaming:\n  enabled: true\n")
-            setup = {"openrouter_api_key": "fixture-key", "openrouter_default_model": "example/model"}
+            setup = {"openrouter_api_key": "fixture-key", "openrouter_default_model": "example/model", "openrouter_base_url": "https://openrouter.ai/api/v1"}
             self.assertTrue(self.run_setup(home, setup)["changed"])
             parsed = yaml.safe_load(config.read_text())
             self.assertEqual(parsed["model"]["default"], "example/model")
@@ -34,6 +34,7 @@ class ModelOnboardingTests(TestCase):
             self.assertNotIn("platforms", parsed)
             self.assertEqual(config.stat().st_mode & 0o777, 0o600)
             self.assertEqual((home / ".env").stat().st_mode & 0o777, 0o600)
+            self.assertIn('OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"', (home / ".env").read_text())
             self.assertFalse(self.run_setup(home, setup)["changed"])
 
     def test_owner_model_or_provider_is_preserved_without_platform_secrets(self):

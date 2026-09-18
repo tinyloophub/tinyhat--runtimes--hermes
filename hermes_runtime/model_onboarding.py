@@ -46,7 +46,10 @@ def _configure_file():
         raise ValueError("Initial model access is not ready")
     # Only the new Computer's empty model is initialized. Subscription/custom
     # providers, selected models, owner files and other channels are preserved.
-    _upsert_env_file(home / ".env", {"OPENROUTER_API_KEY": key})
+    values = {"OPENROUTER_API_KEY": key}
+    if setup.get("openrouter_base_url"):
+        values["OPENROUTER_BASE_URL"] = setup["openrouter_base_url"]
+    _upsert_env_file(home / ".env", values)
     config["model"] = {"default": model, "provider": "openrouter", "max_tokens": 4096}
     _write_atomic(path, yaml.safe_dump(config, sort_keys=False), 0o600)
     print(json.dumps({"changed": True}))
