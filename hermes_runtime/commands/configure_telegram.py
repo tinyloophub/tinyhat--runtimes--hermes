@@ -943,9 +943,15 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
 
     lines, enabled_index = _normalize_plugin_list_key(lines, enabled_index)
     enabled_end = _block_end(lines, enabled_index, indent=2)
-    for line in lines[enabled_index + 1 : enabled_end]:
-        if line.strip() == f"- {CODEX_PLUGIN_NAME}":
-            return lines
+    matches = [
+        index
+        for index in range(enabled_index + 1, enabled_end)
+        if lines[index].strip() == f"- {CODEX_PLUGIN_NAME}"
+    ]
+    if matches:
+        for index in reversed(matches[1:]):
+            lines.pop(index)
+        return lines
     lines[enabled_index + 1 : enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
     return lines
 
@@ -1073,13 +1079,21 @@ def _remove_tinyhat_telegram_menu_block(
     next_lines: list[str] = []
     managed_lines: list[str] = []
     skipping = False
+    after_managed = False
     for line in lines:
         if line.strip() == TELEGRAM_MENU_START_MARKER:
             skipping = True
             continue
         if skipping and line.strip() == TELEGRAM_MENU_END_MARKER:
             skipping = False
+            after_managed = True
             continue
+        if after_managed and _line_indent(line) == 8 and line.lstrip().startswith("- "):
+            # Recover orphan scalar priorities left by older setup versions
+            # after Hermes emitted an indentless list. Keep their values.
+            managed_lines.append("  " + line)
+            continue
+        after_managed = False
         if skipping:
             managed_lines.append(line)
         else:

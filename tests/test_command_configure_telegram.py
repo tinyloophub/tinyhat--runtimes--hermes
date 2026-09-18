@@ -1679,6 +1679,36 @@ def test_telegram_setup_preserves_hermes_indentless_yaml_after_repeated_setup() 
             path.write_text(yaml.safe_dump(parsed, sort_keys=False))
 
 
+def test_telegram_setup_repairs_orphan_priorities_from_older_setup() -> None:
+    try:
+        import yaml
+    except ImportError:
+        raise unittest.SkipTest("YAML runs in the Hermes interpreter")
+    source = (
+        "model:\n  provider: openrouter\n  default: owner/model\n"
+        "plugins:\n  enabled:\n    - tinyhat-codex\n  - tinyhat\n  - tinyhat-codex\n"
+        "platforms:\n  telegram:\n    extra:\n      command_menu:\n"
+        f"        {configure_telegram.TELEGRAM_MENU_START_MARKER}\n"
+        "        max_commands: 40\n        priority:\n          - tinyhat_settings\n"
+        f"        {configure_telegram.TELEGRAM_MENU_END_MARKER}\n"
+        "        - custom\n        - model\n"
+        "agent:\n  max_turns: 75\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.yaml"
+        path.write_text(source)
+        for _ in range(2):
+            configure_telegram._install_codex_auth_plugin_commands(path)
+            configure_telegram._install_telegram_command_menu_priority(path)
+            parsed = yaml.safe_load(path.read_text())
+            assert parsed["model"]["default"] == "owner/model"
+            assert parsed["agent"]["max_turns"] == 75
+            assert parsed["plugins"]["enabled"] == ["tinyhat-codex", "tinyhat"]
+            menu = parsed["platforms"]["telegram"]["extra"]["command_menu"]
+            assert menu["max_commands"] == 40
+            assert "custom" in menu["priority"] and "model" in menu["priority"]
+
+
 def test_install_telegram_command_menu_priority_keeps_lower_existing_cap() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "config.yaml"

@@ -387,8 +387,9 @@ it.
 
 Fresh installations seed Hermes' public `SOUL.md` with concise, natural
 conversation defaults, including useful visuals and brief channel progress.
-The initial `config.yaml` enables streaming and hides private reasoning and
-tool logs. These files belong to the owner: installation retries and updates
+The initial `config.yaml` enables streaming, disables the first-contact profile
+interview, and hides private reasoning and tool logs. These files belong to the
+owner: installation retries and updates
 never overwrite an existing file. Telegram native rich messages are enabled
 by the day-one capability configuration; experimental rich drafts stay off
 because some Telegram desktop clients overlay draft frames incorrectly.

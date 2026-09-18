@@ -6,10 +6,12 @@
   waiting for email provisioning. Keep owner-selected models and providers intact.
 - Preserve valid YAML when Telegram setup updates plugin/menu lists written by
   Hermes with indentless sequence items; repeated setup keeps model settings valid.
+  Repair orphan menu entries left by older setup attempts.
 
 - Give fresh Hermes installations an owner-editable conversational voice and
   enable streaming replies by default. Greet naturally, keep optional Hat
   setup out of ordinary conversation, and prefer concise, useful visuals.
+  Disable the initial profile interview and keep funding advice out of greetings.
   Preserve existing configuration and SOUL files. Telegram rich messages stay
   enabled; experimental rich drafts remain disabled for client compatibility.
   These defaults apply to Computers created with this runtime. After release,
