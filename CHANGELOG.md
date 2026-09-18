@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Initialize an empty Hermes model before connecting Telegram or Slack, without
+  waiting for email provisioning. Keep owner-selected models and providers intact.
+- Preserve valid YAML when Telegram setup updates plugin/menu lists written by
+  Hermes with indentless sequence items; repeated setup keeps model settings valid.
+
 - Give fresh Hermes installations an owner-editable conversational voice and
   enable streaming replies by default. Greet naturally, keep optional Hat
   setup out of ordinary conversation, and prefer concise, useful visuals.

@@ -44,6 +44,7 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             yield self.adapter
 
         self.patches = [
+            patch.object(command, "ensure_model", AsyncMock(return_value=False)),
             patch.object(
                 command, "_telegram_delete_webhook", return_value={"ok": True}
             ),
@@ -88,6 +89,21 @@ class ConfigureChannelsTests(unittest.IsolatedAsyncioTestCase):
             self.config["assignment"], "slack", "rev1"
         )
         self.assertIn("?assignment=", self.platform.get_json.call_args.args[0])
+
+    async def test_missing_model_blocks_connected_acknowledgement(self):
+        command.ensure_model.side_effect = RuntimeError("Model access is not ready")
+        with self.assertRaises(RuntimeError):
+            await command.run(self.ctx, self.input)
+        self.adapter.install_channel.assert_not_called()
+        self.adapter.record_applied.assert_not_called()
+        command._run_gateway_for_managed_setup.assert_not_awaited()
+
+    async def test_new_model_restarts_an_existing_channel(self):
+        self.channel["status"] = "connected"
+        self.adapter.applied_revision.return_value = "rev1"
+        command.ensure_model.return_value = True
+        await command.run(self.ctx, self.input)
+        command._run_gateway_for_managed_setup.assert_awaited()
 
     async def test_existing_slack_discovers_link_without_restart_or_reinstall(self):
         self.channel.update(status="connected", identity_reporting_supported=True)

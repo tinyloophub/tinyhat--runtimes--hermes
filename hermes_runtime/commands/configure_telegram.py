@@ -872,7 +872,15 @@ def _normalize_plugin_list_key(
     _prefix, _separator, value = line.partition(":")
     items = _simple_flow_list_items(value)
     if items is None:
-        return lines, key_index
+        # PyYAML (and Hermes config commands) emit indentless sequences.
+        # Normalize their scalar items before inserting our indented item.
+        indent = _line_indent(line)
+        next_lines = lines[:]
+        end = _block_end(lines, key_index, indent=indent)
+        for index in range(key_index + 1, end):
+            if _line_indent(lines[index]) == indent and lines[index].lstrip().startswith("- "):
+                next_lines[index] = "  " + lines[index]
+        return next_lines, key_index
 
     next_lines = lines[:]
     indent = _line_indent(line)
@@ -1004,11 +1012,18 @@ def _find_key(
     return None
 
 
+def _ends_yaml_block(line: str, indent: int) -> bool:
+    if not line.strip():
+        return False
+    depth = _line_indent(line)
+    return depth < indent or (depth == indent and not line.lstrip().startswith("- "))
+
+
 def _block_end(lines: list[str], start: int, *, indent: int) -> int:
     index = start + 1
     while index < len(lines):
         line = lines[index]
-        if line.strip() and _line_indent(line) <= indent:
+        if _ends_yaml_block(line, indent):
             break
         index += 1
     return index
@@ -1038,7 +1053,7 @@ def _parse_telegram_menu_values(
             item_index = index + 1
             while item_index < end:
                 item_line = lines[item_index]
-                if item_line.strip() and _line_indent(item_line) <= key_indent:
+                if _ends_yaml_block(item_line, key_indent):
                     break
                 item = item_line.strip()
                 if item.startswith("- "):
@@ -1106,7 +1121,7 @@ def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list
             child_end = index + 1
             while child_end < end:
                 child = lines[child_end]
-                if child.strip() and _line_indent(child) <= 8:
+                if _ends_yaml_block(child, 8):
                     break
                 child_end += 1
             index = child_end
