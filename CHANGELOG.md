@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.77 - 2026-09-18
+
+- Pair with Tinyhat plugin 0.32.24 for natural greetings and a brief first-contact
+  credit introduction. Deploy the compatible platform from
+  [tinyloophub/tinyloop#1359](https://github.com/tinyloophub/tinyloop/pull/1359)
+  before promoting this runtime, then promote the plugin.
+
 - Initialize an empty Hermes model before connecting Telegram or Slack, without
   waiting for email provisioning. Keep owner-selected models and providers intact.
   Deploy platform support for the machine-only `model_setup` channel field before
