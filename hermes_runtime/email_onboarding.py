@@ -104,13 +104,9 @@ def merge_config(config: dict, model: str) -> dict:
     # can write the latter before receiving a platform model. Preserve a
     # selected model or an explicit subscription/custom provider. For an
     # unconfigured platform provider, replace the block with its initial model.
-    current = config.get("model")
-    selected = (
-        current.get("default") or current.get("model")
-        if isinstance(current, dict) else current
-    )
-    provider = current.get("provider") if isinstance(current, dict) else None
-    if not selected and provider in (None, "", "auto", "openrouter"):
+    from hermes_runtime.model_onboarding import has_selection
+
+    if not has_selection(config):
         config["model"] = {
             "default": model, "provider": "openrouter", "max_tokens": 4096,
         }

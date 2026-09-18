@@ -1,4 +1,4 @@
-"""Apply saved chat channels without reinstalling Hermes or changing its model."""
+"""Apply saved chat channels while preserving configured Hermes models."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from typing import Any
 from hermes_runtime.client import PlatformError
 from hermes_runtime.hermes_cli import find_hermes_binary
 from hermes_runtime.plugin_manager import DEFAULT_TINYHAT_PLUGIN_NAME, plugin_dir
+from hermes_runtime.model_onboarding import ensure_model
 from hermes_runtime.commands.configure_telegram import (
     _configure_tinyhat_menu_button,
     _run_gateway_for_managed_setup,
@@ -260,7 +261,8 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
     """Activate providers independently; a failed sibling cannot undo success.
 
     Restore confirmed failures, retain healthy-but-unverified configuration,
-    and fail the command honestly. Model, email and files are not replaced.
+    and fail the command honestly. Only an empty model is initialized; owner
+    selections, email and files are not replaced.
     """
     from hermes_runtime.channel_agent.control import selected
     if selected(ctx) != "hermes":
@@ -397,6 +399,12 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                 if not channel.get("revision"):
                     raise RuntimeError("A channel revision is required.")
                 channels.append({**channel, "revision": str(channel["revision"])})
+            # Mailbox provisioning can still be pending when Telegram/Slack is
+            # connected. Seed only an empty model before declaring chat ready.
+            model_changed = await ensure_model(config.get("model_setup")) if channels else False
+            if model_changed:
+                changed = True
+                await current()
             pending = []
             for channel in channels:
                 applied = await asyncio.to_thread(
@@ -405,6 +413,7 @@ async def run(ctx: Any, command: dict[str, Any]) -> dict[str, Any]:
                 if (
                     channel.get("status") != "connected"
                     or applied != channel["revision"]
+                    or model_changed
                 ):
                     pending.append(channel)
                 else:

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Initialize an empty Hermes model before connecting Telegram or Slack, without
+  waiting for email provisioning. Keep owner-selected models and providers intact.
+  Deploy platform support for the machine-only `model_setup` channel field before
+  promoting this runtime. Missing initial model access now leaves setup pending
+  with a retryable error instead of connecting a bot that cannot answer.
+- Preserve valid YAML when Telegram setup updates plugin/menu lists written by
+  Hermes with indentless sequence items; repeated setup keeps model settings valid.
+  Repair orphan menu entries left by older setup attempts.
+
+- Give fresh Hermes installations an owner-editable conversational voice and
+  enable streaming replies by default. Greet naturally, keep optional Hat
+  setup out of ordinary conversation, and prefer concise, useful visuals.
+  Disable the initial profile interview and keep funding advice out of greetings.
+  Preserve existing configuration and SOUL files. Telegram rich messages stay
+  enabled; experimental rich drafts remain disabled for client compatibility.
+  These defaults apply to Computers created with this runtime. After release,
+  bake and verify a new image before replacing unassigned warm Computers;
+  preserve assigned Computers and their owner configuration.
+
 ## 0.0.76 - 2026-09-17
 
 - Pair with Tinyhat plugin 0.32.23 for specific channel progress and verified

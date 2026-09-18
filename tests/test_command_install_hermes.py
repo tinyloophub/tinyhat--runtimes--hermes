@@ -1239,6 +1239,8 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
         return {"ok": True, "changed": False}
 
     with (
+        tempfile.TemporaryDirectory() as home,
+        patch("hermes_runtime.commands.install_hermes.hermes_home", return_value=Path(home)),
         patch(
             "hermes_runtime.commands.install_hermes.find_hermes_binary",
             return_value=Path("/usr/local/bin/hermes"),
@@ -1280,6 +1282,9 @@ def test_install_hermes_is_noop_when_cli_exists() -> None:
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
         )
+
+        assert not (Path(home) / "SOUL.md").exists()
+        assert not (Path(home) / "config.yaml").exists()
 
     assert install_calls == []
     assert result["installed_before"] is True
@@ -1532,14 +1537,19 @@ def _assert_missing_install_model(*, existing_config: bool) -> None:
     ):
         if existing_config:
             (Path(home) / "config.yaml").write_text("model: owner/chosen\n")
+            (Path(home) / "SOUL.md").write_text("The owner's own voice.\n")
         result = asyncio.run(
             run_command(SimpleNamespace(), {"kind": "install_hermes"})
         )
 
         if existing_config:
             assert (Path(home) / "config.yaml").read_text() == "model: owner/chosen\n"
+            assert (Path(home) / "SOUL.md").read_text() == "The owner's own voice.\n"
         else:
-            assert (Path(home) / "config.yaml").read_text() == "model: ''\n"
+            from hermes_runtime.conversation_defaults import DEFAULT_CONFIG, DEFAULT_SOUL
+            assert (Path(home) / "SOUL.md").read_text() == DEFAULT_SOUL
+            assert (Path(home) / "SOUL.md").stat().st_mode & 0o777 == 0o600
+            assert (Path(home) / "config.yaml").read_text() == DEFAULT_CONFIG
             assert (Path(home) / "config.yaml").stat().st_mode & 0o777 == 0o600
 
     assert len(install_calls) == 1

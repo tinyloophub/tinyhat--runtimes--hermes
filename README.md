@@ -383,6 +383,24 @@ it.
 | `activate_update` | `hermes_runtime/commands/activate_update.py` | Requests activation of an already staged update. | Writes `ACTIVATE_ON_RESTART` and exits after reporting success so the process manager restarts the runtime. |
 | `restart_runtime_service` | `hermes_runtime/commands/restart_runtime_service.py` | Restarts the Tinyhat runtime service/process so startup can take effect, including an already activated staged update. | Requests process exit after the command result is reported. Requires systemd or Docker restart policy to start the runtime again. Does not reboot the VPS or restart Hermes Agent separately. |
 
+### Fresh installation conversation defaults
+
+Fresh installations seed Hermes' public `SOUL.md` with concise, natural
+conversation defaults, including useful visuals and brief channel progress.
+The initial `config.yaml` enables streaming, disables the first-contact profile
+interview, and hides private reasoning and tool logs. These files belong to the
+owner: installation retries and updates
+never overwrite an existing file. Telegram native rich messages are enabled
+by the day-one capability configuration; experimental rich drafts stay off
+because some Telegram desktop clients overlay draft frames incorrectly.
+
+Sources: [Hermes configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration/)
+and [Telegram messaging](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/telegram/).
+
+These defaults apply to Computers created with this runtime. After releasing,
+build and verify a new preinstalled image, then replace only unassigned warm
+Computers. Updating assigned Computers preserves their existing SOUL and config.
+
 ### `install_hermes` status probe controls
 
 After the official Hermes installer completes, `install_hermes` verifies

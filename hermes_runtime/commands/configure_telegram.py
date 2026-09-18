@@ -851,6 +851,8 @@ def _codex_auth_plugin_manifest() -> str:
 
 def _simple_flow_list_items(value: str) -> list[str] | None:
     clean = value.split("#", 1)[0].strip()
+    if clean.lower() in ("null", "~"):
+        return []
     if not clean.startswith("[") or not clean.endswith("]"):
         return None
     inner = clean[1:-1].strip()
@@ -864,6 +866,12 @@ def _simple_flow_list_items(value: str) -> list[str] | None:
     return items
 
 
+def _normalize_empty_mapping(lines: list[str], index: int) -> None:
+    prefix, _, value = lines[index].partition(":")
+    if value.split("#", 1)[0].strip().lower() in ("{}", "null", "~"):
+        lines[index] = prefix + ":"
+
+
 def _normalize_plugin_list_key(
     lines: list[str],
     key_index: int,
@@ -872,7 +880,15 @@ def _normalize_plugin_list_key(
     _prefix, _separator, value = line.partition(":")
     items = _simple_flow_list_items(value)
     if items is None:
-        return lines, key_index
+        # PyYAML (and Hermes config commands) emit indentless sequences.
+        # Normalize their scalar items before inserting our indented item.
+        indent = _line_indent(line)
+        next_lines = lines[:]
+        end = _block_end(lines, key_index, indent=indent)
+        for index in range(key_index + 1, end):
+            if _line_indent(lines[index]) == indent and lines[index].lstrip().startswith("- "):
+                next_lines[index] = "  " + lines[index]
+        return next_lines, key_index
 
     next_lines = lines[:]
     indent = _line_indent(line)
@@ -883,6 +899,7 @@ def _normalize_plugin_list_key(
 
 
 def _remove_plugin_from_disabled(lines: list[str], *, plugins_index: int) -> list[str]:
+    _normalize_empty_mapping(lines, plugins_index)
     plugins_end = _block_end(lines, plugins_index, indent=0)
     disabled_index = _find_key(
         lines,
@@ -918,6 +935,7 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
         )
         return lines
 
+    _normalize_empty_mapping(lines, plugins_index)
     plugins_end = _block_end(lines, plugins_index, indent=0)
     enabled_index = _find_key(
         lines,
@@ -935,9 +953,15 @@ def _ensure_plugin_enabled_config(lines: list[str]) -> list[str]:
 
     lines, enabled_index = _normalize_plugin_list_key(lines, enabled_index)
     enabled_end = _block_end(lines, enabled_index, indent=2)
-    for line in lines[enabled_index + 1 : enabled_end]:
-        if line.strip() == f"- {CODEX_PLUGIN_NAME}":
-            return lines
+    matches = [
+        index
+        for index in range(enabled_index + 1, enabled_end)
+        if lines[index].strip() == f"- {CODEX_PLUGIN_NAME}"
+    ]
+    if matches:
+        for index in reversed(matches[1:]):
+            lines.pop(index)
+        return lines
     lines[enabled_index + 1 : enabled_index + 1] = [f"    - {CODEX_PLUGIN_NAME}"]
     return lines
 
@@ -1004,11 +1028,18 @@ def _find_key(
     return None
 
 
+def _ends_yaml_block(line: str, indent: int) -> bool:
+    if not line.strip():
+        return False
+    depth = _line_indent(line)
+    return depth < indent or (depth == indent and not line.lstrip().startswith("- "))
+
+
 def _block_end(lines: list[str], start: int, *, indent: int) -> int:
     index = start + 1
     while index < len(lines):
         line = lines[index]
-        if line.strip() and _line_indent(line) <= indent:
+        if _ends_yaml_block(line, indent):
             break
         index += 1
     return index
@@ -1038,7 +1069,7 @@ def _parse_telegram_menu_values(
             item_index = index + 1
             while item_index < end:
                 item_line = lines[item_index]
-                if item_line.strip() and _line_indent(item_line) <= key_indent:
+                if _ends_yaml_block(item_line, key_indent):
                     break
                 item = item_line.strip()
                 if item.startswith("- "):
@@ -1058,13 +1089,21 @@ def _remove_tinyhat_telegram_menu_block(
     next_lines: list[str] = []
     managed_lines: list[str] = []
     skipping = False
+    after_managed = False
     for line in lines:
         if line.strip() == TELEGRAM_MENU_START_MARKER:
             skipping = True
             continue
         if skipping and line.strip() == TELEGRAM_MENU_END_MARKER:
             skipping = False
+            after_managed = True
             continue
+        if after_managed and _line_indent(line) == 8 and line.lstrip().startswith("- "):
+            # Recover orphan scalar priorities left by older setup versions
+            # after Hermes emitted an indentless list. Keep their values.
+            managed_lines.append("  " + line)
+            continue
+        after_managed = False
         if skipping:
             managed_lines.append(line)
         else:
@@ -1106,7 +1145,7 @@ def _remove_command_menu_keys(lines: list[str], command_menu_index: int) -> list
             child_end = index + 1
             while child_end < end:
                 child = lines[child_end]
-                if child.strip() and _line_indent(child) <= 8:
+                if _ends_yaml_block(child, 8):
                     break
                 child_end += 1
             index = child_end
@@ -1159,6 +1198,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         )
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, platforms_index)
     platforms_end = _block_end(lines, platforms_index, indent=0)
     telegram_index = _find_key(
         lines,
@@ -1179,6 +1219,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, telegram_index)
     telegram_end = _block_end(lines, telegram_index, indent=2)
     extra_index = _find_key(
         lines,
@@ -1198,6 +1239,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, extra_index)
     extra_end = _block_end(lines, extra_index, indent=4)
     command_menu_index = _find_key(
         lines,
@@ -1216,6 +1258,7 @@ def _ensure_telegram_command_menu_config(lines: list[str]) -> tuple[list[str], i
         ]
         return lines, fallback_max_commands
 
+    _normalize_empty_mapping(lines, command_menu_index)
     existing_max_commands, existing_priority = _parse_existing_priority(
         lines,
         command_menu_index,
