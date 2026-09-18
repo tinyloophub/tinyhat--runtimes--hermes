@@ -1165,7 +1165,10 @@ async def _prefetch_local_stt_model() -> dict[str, Any]:
 
 
 def _seed_unconfigured_model() -> None:
-    """Keep installer defaults out of fresh images without replacing owner config."""
+    """Seed fresh image/installer defaults without replacing owner files."""
+    # Image builders call this before invoking the public Hermes installer.
+    # Seed the identity here too, before upstream creates its template SOUL.
+    _seed_conversation_soul()
     path = hermes_home() / "config.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -1202,7 +1205,6 @@ async def run(_ctx: Any, _command: dict[str, Any]) -> dict[str, Any]:
 
     if not installed_before:
         _seed_unconfigured_model()
-        _seed_conversation_soul()
         prerequisites = await maybe_install_debian_prerequisites()
         install_result = await run_shell(
             hermes_install_script(),

@@ -14,6 +14,14 @@ from hermes_runtime.conversation_defaults import DEFAULT_CONFIG, DEFAULT_SOUL
 
 
 class ConversationDefaultsTests(unittest.TestCase):
+    def test_image_builder_entrypoint_seeds_identity_before_upstream_install(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HERMES_HOME": home}):
+            # Image builders seed this sentinel, run the upstream installer,
+            # then call run() with an already-installed Hermes binary.
+            _seed_unconfigured_model()
+            self.assertEqual((Path(home) / "SOUL.md").read_text(), DEFAULT_SOUL)
+            self.assertEqual((Path(home) / "config.yaml").read_text(), DEFAULT_CONFIG)
+
     def test_fresh_install_and_retries_preserve_owner_preferences(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HERMES_HOME": home}):
             _seed_conversation_soul()
