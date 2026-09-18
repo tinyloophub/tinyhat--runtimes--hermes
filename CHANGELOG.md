@@ -14,7 +14,8 @@
 - Give fresh Hermes installations an owner-editable conversational voice and
   enable streaming replies by default. Greet naturally, keep optional Hat
   setup out of ordinary conversation, and prefer concise, useful visuals.
-  Disable the initial profile interview and keep funding advice out of greetings.
+  Disable the initial profile interview. Allow Tinyhat's one-time starter-credit
+  note as one brief sentence in the same reply; leave funding details until asked.
   Preserve existing configuration and SOUL files. Telegram rich messages stay
   enabled; experimental rich drafts remain disabled for client compatibility.
   These defaults apply to Computers created with this runtime. After release,
