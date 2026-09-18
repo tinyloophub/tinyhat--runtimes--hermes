@@ -7,6 +7,9 @@
   setup out of ordinary conversation, and prefer concise, useful visuals.
   Preserve existing configuration and SOUL files. Telegram rich messages stay
   enabled; experimental rich drafts remain disabled for client compatibility.
+  These defaults apply to Computers created with this runtime. After release,
+  bake and verify a new image before replacing unassigned warm Computers;
+  preserve assigned Computers and their owner configuration.
 
 ## 0.0.76 - 2026-09-17
 
